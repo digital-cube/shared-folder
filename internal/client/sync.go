@@ -135,7 +135,8 @@ type Result struct {
 	// disk or the server changed under them; the next cycle takes them up.
 	Pending int
 	// Unsettled counts uploads held back because the file is still being
-	// written (Options.Settle); RetryAt is when the first may go.
+	// written, and deletions from folders that are still changing
+	// (Options.Settle); RetryAt is when the first may go.
 	Unsettled int
 	RetryAt   time.Time
 	// Blocked: the mass-delete guard holds deletions back (State.HeldDeletes).
@@ -379,11 +380,12 @@ func (cs *cycleState) round(ctx context.Context) (work int, err error) {
 		Manifest: manifest, Local: sc.Local, Remote: remote,
 		Ignored: func(p string, isDir bool) bool { return untracked(p) || m.Match(p, isDir) },
 	})
+	cs.res.Pending, cs.res.Unsettled, cs.res.RetryAt = 0, 0, time.Time{}
+	// before the guard, which counts only deletions that are settled
+	acts = cs.holdUnsettled(acts)
 	if acts, err = cs.guard(acts, manifest); err != nil {
 		return work, err
 	}
-	cs.res.Pending, cs.res.Unsettled, cs.res.RetryAt = 0, 0, time.Time{}
-	acts = cs.holdUnsettled(acts)
 	var hard []error
 	for _, a := range acts {
 		if err := ctx.Err(); err != nil {

@@ -17,7 +17,9 @@ pozadini (`shf daemon`): server javlja nove promene preko WebSocket-a, a
 klijent prati lokalni folder. Zaštita od masovnog brisanja zadržava brisanja
 dok ih korisnik ne potvrdi. Admin na serveru pregleda, vraća i čisti trash,
 proverava `storage/` prema bazi i gleda statistike foldera
-([docs/admin.md](docs/admin.md)).
+([docs/admin.md](docs/admin.md)). Testovi s kraja na kraj (`make e2e`)
+proveravaju sve zajedno: pravi `shfd`, dva ili tri `shf daemon`-a i rsync
+preko SSH-a.
 
 | Paket | Šta radi | Odeljak specifikacije |
 |---|---|---|
@@ -27,7 +29,7 @@ proverava `storage/` prema bazi i gleda statistike foldera
 | `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash (lista, vraćanje, čišćenje), `verify [--repair]`, statistike, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 4, 6 |
 | `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu), admin pozivi (`admin/trash`, `admin/verify`, `admin/stats`, samo uloga `admin`) i lokalni admin socket | 4 |
 | `internal/transport` | interfejs `Transport` i lokalna implementacija (testovi) | 5 |
-| `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada, download u `.shf-tmp-*` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
+| `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada i downloada (i posle ponovnog pokretanja klijenta), download u `.shf-tmp-part-<hash>` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
 | `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
 | `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
 | `internal/shfdcli` | komande `shfd`; admin komande idu kroz `admin.sock` pokrenutog servera ili, bez njega, kroz isti handler u procesu | 8.5 |
@@ -36,6 +38,7 @@ proverava `storage/` prema bazi i gleda statistike foldera
 | `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent | 8.3 |
 | `internal/shfcli` | komande `shf` | 8.5 |
 | `internal/sshdtest` | privremeni `sshd` za integracione testove | — |
+| `e2e` | testovi s kraja na kraj (build tag `e2e`, `make e2e`): pravi `shfd`, `shf daemon`-i i rsync preko SSH-a | 6, 7, 8 |
 
 ## Server
 
@@ -106,7 +109,9 @@ ponovo pokrenite `shf service install`.
 - dok WebSocket ne radi, pita server za HEAD na 60 s;
 - prati folder (inotify na Linux-u, kqueue na macOS-u, preko fsnotify-a),
   uz `.shfignore`, i pokreće ciklus 2 s posle poslednje promene;
-- fajl šalje tek kad mu veličina i mtime miruju 3 s;
+- fajl šalje tek kad mu veličina i mtime miruju 3 s, a brisanje tek kad
+  folder iz kog je fajl nestao miruje 3 s (da premeštanje koje je još u toku
+  ne ispadne brisanje i nov fajl);
 - pri pokretanju i jednom u 24 h radi puno poređenje sa serverom;
 - ciklusi se ne preklapaju; ono što stigne tokom ciklusa pokreće sledeći;
 - promene koje sam upiše tokom preuzimanja ne šalje nazad.
@@ -124,9 +129,16 @@ podrazumevanu vrednost:
   "reconnect_max": "60s",
   "ping": "30s",
   "retry_max": "60s",
-  "mass_delete": {"files": 20, "percent": 10}
+  "mass_delete": {"files": 20, "percent": 10},
+  "bwlimit": 0
 }
 ```
+
+`bwlimit` ograničava brzinu svakog prenosa u KiB/s (rsync `--bwlimit`), 0 je
+bez ograničenja. Prekinut prenos (pukla veza, ugašen ili srušen klijent) se
+nastavlja od onoga što je već stiglo: server za istu najavu vraća isti
+`upload_id`, a preuzimanje ostaje u `.shf-tmp-part-<hash>` pored odredišta.
+Sa `shf daemon -v` svaki prenos se loguje (`msg=transfer … sent=… matched=…`).
 
 ### Zaštita od masovnog brisanja
 
@@ -166,6 +178,7 @@ make build   # bin/shfd i bin/shf
 make test    # go test ./...
 make lint    # go vet + gofmt -l (i golangci-lint ako je instaliran)
 make check   # lint + test + build
+make e2e     # testovi s kraja na kraj (nisu deo check-a; vidi dole)
 ```
 
 `./bin/shfd version`, `./bin/shf help`.
@@ -187,3 +200,41 @@ fajl koji se polako upisuje šalje se jednom, preuzimanja se ne šalju nazad.
 
 Test `internal/ignore.TestGitCompat` poredi matcher sa samim `git`-om na
 nasumičnim stablima; preskače se ako `git` nije instaliran ili uz `go test -short`.
+
+### Testovi s kraja na kraj (`make e2e`)
+
+```sh
+make e2e                                   # oko 1,5 min, testovi idu paralelno
+make e2e E2E_FLAGS='-count=1 -v -run TestConflict'   # jedan scenario
+E2E_LOGS=1 make e2e E2E_FLAGS='-count=1 -v'          # logovi i kad test prođe
+```
+
+Paket `e2e/` (build tag `e2e`; `make check` ga samo prevodi, ne pokreće)
+proverava servis kao celinu: gradi `shfd` i `shf`, a za svaki test pravi
+privremeni data-root, pokreće `sshd` na slobodnom portu sa privremenom
+konfiguracijom i `authorized_keys`, `shfd serve`, folder i članove, pridružuje
+klijente (`shf join`, pravi SSH ključ i rsync) i pokreće `shf daemon` za
+svakog, sa skraćenim intervalima iz `settings.json`. Čeka se uslov sa rokom,
+nikad fiksni `sleep`. Na kraju svakog scenarija: folder svakog klijenta je
+jednak `storage/` (bez putanja koje taj klijent ignoriše), `shfd verify` je
+čist i dnevnik nema rupa u rednim brojevima. Kad test padne, ispisuju se
+`service.log`, izlaz `shfd serve` i log svakog klijenta. Procesi se gase i
+direktorijumi brišu i kad test padne.
+
+Scenariji (`docs/specifikacija.md`, odeljci 6–8): osnovni tok, pregažena
+verzija u trash-u, konflikt dok su oba odvojena, isti sadržaj istovremeno,
+izmena protiv brisanja (oba redosleda), povratak posle 200 promena,
+`.shfignore`, prekinut prenos od 200 MB (upload i download, klijent ubijen na
+trećini), masovno brisanje (`confirm` i `restore-local`), pridruživanje u
+neprazan folder, opoziv člana (API i SSH), vraćanje iz trash-a i pad servera
+usred uploada.
+
+Šta treba na mašini (Linux):
+
+- Go iz `go.mod`, `rsync` 3.2.4+, OpenSSH klijent (`ssh`, `ssh-keygen`) i
+  server (`sshd`, ne mora da radi kao servis): `apt install rsync
+  openssh-client openssh-server`. Bez njih se testovi preskaču sa porukom šta
+  nedostaje.
+- Ništa od root-a: `sshd` se pokreće kao vi, na `127.0.0.1` i slobodnom
+  portu, sa sopstvenim host ključem; vaš `~/.ssh` se ne čita i ne menja.
+- Oko 1,5 GB slobodnog mesta u `$TMPDIR` (scenariji sa velikim fajlovima).

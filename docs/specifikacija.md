@@ -120,6 +120,12 @@ fajl po putanji i hash-u. Prva implementacija je rsync preko SSH-a:
   `tmp/<upload_id>` i čitanje isključivo iz `storage/`. Klijent nikad ne piše
   direktno u `storage/`, tako da servis ostaje jedini pisac.
 - Upload ide sa `--partial`, pa se prekinut prenos nastavlja.
+
+  Implementacija (TCK292YM96): server za istu najavu istog člana (putanja,
+  base_hash, new_hash, veličina) dok nije commit-ovana vraća isti `upload_id`,
+  pa se upload nastavlja i kad se klijent u međuvremenu ugasi ili sruši.
+  Preuzimanje ide u `.shf-tmp-part-<hash>` pored odredišta, koji ostaje kad se
+  prenos prekine; sledeće preuzimanje istog sadržaja nastavlja od njega.
 - Posle preuzimanja klijent proverava hash; ako je fajl u međuvremenu
   zamenjen, ponavlja preuzimanje.
 
@@ -220,9 +226,12 @@ Preuzimanje ide u privremeni fajl u istom folderu, pa atomski rename.
 Implementacija (TCKTJMT57D): ciklus se sastoji od rundi (najviše 5); runda
 preuzme dnevnik, primeni pristigle `.shfignore` fajlove, skenira, napravi plan
 (`client.Plan`, čista funkcija nad tri stanja) i primeni ga, a ciklus se
-završava prvom rundom bez posla. Lokalna izmena u sudaru postaje konflikt
-kopija tako što se lokalni fajl preimenuje u ime koje je server dodelio (bez
-ponovnog preuzimanja), a serverova verzija se preuzima na originalno ime.
+završava prvom rundom bez posla. Ciklus koji dostigne pet rundi samo zato što
+drugi članovi stalno menjaju server, a sve što je planirao je urađeno, nije
+neuspeh (TCK292YM96): novije promene uzima sledeći ciklus. Lokalna izmena u
+sudaru postaje konflikt kopija tako što se lokalni fajl preimenuje u ime koje
+je server dodelio (bez ponovnog preuzimanja), a serverova verzija se preuzima
+na originalno ime.
 Fajl čiji je mtime u trenutku upisa u manifest mlađi od 2 s upisuje se sa
 mtime 0, pa se sledeći put ponovo hešira (izmena iste veličine u istom
 otkucaju sata se ne gubi).
@@ -243,7 +252,11 @@ Praćenje foldera ide preko fsnotify-a (inotify; na macOS-u kqueue), poštuje
 `.shfignore` i skuplja događaje 2 s; folder koji se stalno menja ipak se
 sinhronizuje najkasnije 20 s (10 × odlaganje) posle prve promene. Fajl se šalje
 kad mu je mtime star 3 s ili kad je viđen sa istom veličinom i mtime-om pre 3 s;
-do tada ciklus taj upload preskače i javlja kad da proba ponovo. Puno poređenje
+do tada ciklus taj upload preskače i javlja kad da proba ponovo. Isto važi za
+brisanje (TCK292YM96): šalje se kad folder iz kog je fajl nestao (najbliži koji
+još postoji) miruje 3 s ili kad je fajl viđen kao nestao pre 3 s, pa se
+premeštanje u nov folder koje je skeniranje uhvatilo napola ipak prepozna kao
+`move`. Puno poređenje
 (pri pokretanju i na 24 h) ponovo gradi stanje servera iz celog dnevnika.
 Klijent pamti šta je sam upisao na disk (`Options.OnWrite`), pa događaji
 praćenja za te putanje ne pokreću ciklus. Intervali i pragovi su u

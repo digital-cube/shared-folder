@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -299,26 +303,94 @@ func (c *Client) settled(p string, e Entry, now time.Time) (time.Time, bool) {
 	return until, false
 }
 
+// goneKey is the key of a vanished path in Client.seen.
+const goneKey = "\x00gone:"
+
+// goneSettled reports whether the deletion of p may be sent: the folder
+// it vanished from (the nearest one still on disk) has not changed for
+// Options.Settle, or p was first seen missing that long ago. A file is
+// also gone from its folder in the middle of a move, and while the user
+// is still moving things a scan may not see the other end yet (it read
+// the parent before the move's new folder was made); a moment later the
+// two are paired as a move instead of a deletion and a new file.
+// Otherwise it returns when to look again.
+func (c *Client) goneSettled(p string, now time.Time) (time.Time, bool) {
+	d := c.opts.Settle
+	if d <= 0 {
+		return time.Time{}, true
+	}
+	var mt time.Time
+	for dir := path.Dir(p); ; dir = path.Dir(dir) {
+		if fi, err := os.Stat(filepath.Join(c.cfg.Folder, filepath.FromSlash(dir))); err == nil {
+			mt = fi.ModTime()
+			break
+		}
+		if dir == "." {
+			break
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen == nil {
+		c.seen = map[string]sighting{}
+	}
+	s, ok := c.seen[goneKey+p]
+	if !ok {
+		s = sighting{size: -1, at: now}
+		c.seen[goneKey+p] = s
+	}
+	if (!mt.IsZero() && now.Sub(mt) >= d) || now.Sub(s.at) >= d {
+		delete(c.seen, goneKey+p)
+		return time.Time{}, true
+	}
+	until := s.at.Add(d)
+	if !mt.IsZero() && mt.Add(d).Before(until) {
+		until = mt.Add(d)
+	}
+	return until, false
+}
+
+// forgetGone drops the sightings of vanished paths that are not deleted
+// any more (they came back), so a later deletion waits again.
+func (c *Client) forgetGone(keep map[string]bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.seen {
+		if p, ok := strings.CutPrefix(k, goneKey); ok && !keep[p] {
+			delete(c.seen, k)
+		}
+	}
+}
+
 // holdUnsettled takes out of a plan the uploads of files that are still
-// being written; the result says when to try again.
+// being written and the deletions from folders that are still changing;
+// the result says when to try again.
 func (cs *cycleState) holdUnsettled(acts []Action) []Action {
 	if cs.c.opts.Settle <= 0 {
 		return acts
 	}
 	now := cs.c.opts.Now()
+	gone := map[string]bool{}
 	out := acts[:0]
 	for _, a := range acts {
+		var until time.Time
+		ok := true
 		switch a.Op {
 		case OpUpload, OpConflict, OpMove:
-			if until, ok := cs.c.settled(a.Path, a.Local, now); !ok {
-				cs.res.Unsettled++
-				if cs.res.RetryAt.IsZero() || until.Before(cs.res.RetryAt) {
-					cs.res.RetryAt = until
-				}
-				continue
+			until, ok = cs.c.settled(a.Path, a.Local, now)
+		case OpDelete, OpRmdir:
+			gone[a.Path] = true
+			until, ok = cs.c.goneSettled(a.Path, now)
+		}
+		if !ok {
+			cs.res.Unsettled++
+			if cs.res.RetryAt.IsZero() || until.Before(cs.res.RetryAt) {
+				cs.res.RetryAt = until
 			}
+			continue
 		}
 		out = append(out, a)
 	}
+	cs.c.forgetGone(gone)
 	return out
 }

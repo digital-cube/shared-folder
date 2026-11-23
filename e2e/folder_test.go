@@ -167,11 +167,15 @@ func TestMassDelete(t *testing.T) {
 			for i := 0; i < 60; i++ {
 				ana.write(photo(i), fmt.Sprintf("photo %d", i))
 			}
-			eventually(t, long, "bob has the 60 photos", func() error {
-				if err := bob.sameAsStorage(); err != nil {
-					return err
+			// every photo, by name: comparing bob with storage/ and then
+			// ana with storage/ could see two different moments
+			eventually(t, long, "the server and bob have the 60 photos", func() error {
+				for i := 0; i < 60; i++ {
+					if !fileExists(c.storage(photo(i))) || !fileExists(bob.abs(photo(i))) {
+						return errorf("%s is missing", photo(i))
+					}
 				}
-				return ana.sameAsStorage()
+				return nil
 			})
 
 			for i := 0; i < 50; i++ {
