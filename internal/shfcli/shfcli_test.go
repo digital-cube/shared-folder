@@ -3,6 +3,7 @@ package shfcli_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -88,5 +89,77 @@ func TestCommands(t *testing.T) {
 	hs.Close()
 	if code, out = run("sync", folder); code != 1 {
 		t.Errorf("sync against a stopped server: %d %s", code, out)
+	}
+}
+
+func TestMassDeleteCommands(t *testing.T) {
+	root := t.TempDir()
+	srv, err := server.Open(root, server.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(httpapi.New(srv, nil))
+	defer func() { hs.Close(); srv.Close() }()
+	share, token, err := srv.CreateShare("tim", "ana")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, folder := t.TempDir(), filepath.Join(t.TempDir(), "tim")
+	os.MkdirAll(folder, 0o755)
+	for i := range 100 {
+		os.WriteFile(filepath.Join(folder, fmt.Sprintf("f%03d.txt", i)), []byte(fmt.Sprint(i)), 0o644)
+	}
+	// the limit comes from settings.json: 5 files (10 % would allow 10)
+	os.WriteFile(filepath.Join(home, client.SettingsFile), []byte(`{"mass_delete": {"files": 5, "percent": 10}}`), 0o644)
+	run := func(args ...string) (int, string) {
+		var out, errb bytes.Buffer
+		code := shfcli.Run(args, shfcli.Env{
+			Stdout: &out, Stderr: &errb, Ctx: context.Background(),
+			Getenv:  func(k string) string { return map[string]string{client.EnvStateHome: home}[k] },
+			Options: client.Options{Transport: transport.Local{DataRoot: root}},
+		})
+		return code, out.String() + errb.String()
+	}
+	if code, out := run("join", hs.URL, share, token, folder); code != 0 {
+		t.Fatalf("join: %s", out)
+	}
+	remove := func() {
+		for i := range 6 {
+			os.Remove(filepath.Join(folder, fmt.Sprintf("f%03d.txt", i)))
+		}
+	}
+	onServer := func(i int) bool {
+		_, err := os.Stat(filepath.Join(root, share, "storage", fmt.Sprintf("f%03d.txt", i)))
+		return err == nil
+	}
+
+	remove()
+	code, out := run("sync", folder)
+	if code != 0 || !strings.Contains(out, "BLOCKED") || !onServer(0) {
+		t.Fatalf("sync: %d\n%s", code, out)
+	}
+	code, out = run("status", folder)
+	if code != 0 || !strings.Contains(out, "blocked: 6 deletions held back") || !strings.Contains(out, "delete f000.txt") {
+		t.Fatalf("status: %d\n%s", code, out)
+	}
+	code, out = run("restore-local", folder)
+	if code != 0 || !strings.Contains(out, "restoring 6") {
+		t.Fatalf("restore-local: %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(folder, "f000.txt")); err != nil {
+		t.Fatalf("not restored: %v", err)
+	}
+	if code, out = run("status", folder); !strings.Contains(out, "state:      ok") {
+		t.Fatalf("status after restore: %s", out)
+	}
+
+	remove()
+	run("sync", folder)
+	code, out = run("confirm", folder)
+	if code != 0 || !strings.Contains(out, "released 6") || onServer(0) {
+		t.Fatalf("confirm: %d\n%s", code, out)
+	}
+	if code, out = run("confirm", folder); code != 0 || !strings.Contains(out, "nothing to do") {
+		t.Fatalf("second confirm: %d\n%s", code, out)
 	}
 }

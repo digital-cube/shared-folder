@@ -22,12 +22,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,6 +50,19 @@ type Options struct {
 	// disk or the server; an error stops the cycle there (tests use it to
 	// interrupt a cycle).
 	AfterApply func(Action) error
+	// MassDelete are the limits of the mass-delete guard (nil: the
+	// defaults, DefaultMassDelete).
+	MassDelete *MassDelete
+	// Settle, when positive, holds back the upload of a file until its
+	// size and mtime have not changed for that long (the daemon: 3 s), so
+	// a file is not sent while it is still being written. Result.RetryAt
+	// says when to look again.
+	Settle time.Duration
+	// OnWrite, when set, is called after the cycle itself changed a path
+	// on disk (a download, a local removal, rename or new directory), with
+	// what the path now is (Kind None: removed). The daemon uses it to
+	// tell its own writes from the user's.
+	OnWrite func(path string, now Entry)
 }
 
 // maxRounds bounds the rounds of one cycle. A round fetches the server's
@@ -63,6 +78,9 @@ type Client struct {
 	api  *api
 	tr   transport.Transport
 	opts Options
+
+	mu   sync.Mutex
+	seen map[string]sighting // files held back by Settle
 }
 
 // Open opens a joined folder's state.
@@ -91,6 +109,9 @@ func Open(cfg *Config, opts Options) (*Client, error) {
 	return &Client{cfg: cfg, st: st, api: newAPI(cfg.URL, cfg.ShareID, cfg.Token, opts.HTTPClient), tr: tr, opts: opts}, nil
 }
 
+// Head asks the server for the folder's HEAD.
+func (c *Client) Head(ctx context.Context) (int64, error) { return c.api.head(ctx) }
+
 // Close releases the state.
 func (c *Client) Close() error { return c.st.Close() }
 
@@ -107,7 +128,32 @@ type Result struct {
 	// Pending are steps that were planned but not applied because the
 	// disk or the server changed under them; the next cycle takes them up.
 	Pending int
+	// Unsettled counts uploads held back because the file is still being
+	// written (Options.Settle); RetryAt is when the first may go.
+	Unsettled int
+	RetryAt   time.Time
+	// Blocked: the mass-delete guard holds deletions back (State.HeldDeletes).
+	Blocked bool
 }
+
+// SyncOptions tune one cycle.
+type SyncOptions struct {
+	// Full rebuilds the server's state from its whole change log instead
+	// of reading only the events after the last one seen: the periodic
+	// full comparison that catches anything a missed event left behind.
+	Full bool
+	// Stop, when closed, ends the cycle after the step in progress (the
+	// daemon on SIGTERM). The cycle then fails with ErrStopped.
+	Stop <-chan struct{}
+}
+
+// ErrStopped: the cycle ended early because SyncOptions.Stop was closed.
+var ErrStopped = errors.New("stopped")
+
+// ErrFolderUnavailable: the folder's root is missing or not readable (an
+// unmounted disk). Nothing is synchronized, and nothing is taken for a
+// deletion.
+var ErrFolderUnavailable = errors.New("folder unavailable")
 
 // errPending marks a step skipped because its ground moved: the disk
 // changed since the scan, or the server since the change log was read.
@@ -123,21 +169,53 @@ var problemCodes = map[string]bool{
 // folder; any other error means something was not synchronized, and the
 // result still says what was.
 func (c *Client) Sync(ctx context.Context) (*Result, error) {
+	return c.SyncWith(ctx, SyncOptions{})
+}
+
+// SyncWith runs one cycle with options.
+func (c *Client) SyncWith(ctx context.Context, so SyncOptions) (*Result, error) {
 	unlock, err := lock(c.cfg.Dir)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	if fi, err := os.Stat(c.cfg.Folder); err != nil || !fi.IsDir() {
-		return nil, fmt.Errorf("folder %s is missing; not synchronizing (an empty folder would look like everything was deleted)", c.cfg.Folder)
-	}
+	return c.syncLocked(ctx, so)
+}
 
+// checkRoot fails with ErrFolderUnavailable unless the folder's root is a
+// directory that can be listed.
+func (c *Client) checkRoot() error {
+	fi, err := os.Stat(c.cfg.Folder)
+	if err == nil && !fi.IsDir() {
+		err = errors.New("not a directory")
+	}
+	if err == nil {
+		var f *os.File
+		if f, err = os.Open(c.cfg.Folder); err == nil {
+			_, err = f.Readdirnames(1)
+			f.Close()
+			if errors.Is(err, io.EOF) {
+				err = nil
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v; not synchronizing (a missing folder would look like everything was deleted)", ErrFolderUnavailable, c.cfg.Folder, err)
+	}
+	return nil
+}
+
+func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error) {
+	if err := c.checkRoot(); err != nil {
+		return nil, err
+	}
+	var err error
 	r := &Result{}
 	r.StartedAt = c.opts.Now()
 	if r.FromSeq, err = c.st.Seq(); err != nil {
 		return nil, err
 	}
-	cs := &cycleState{c: c, res: r, rejected: map[string]string{}}
+	cs := &cycleState{c: c, res: r, rejected: map[string]string{}, so: so}
 	var cycleErr error
 	settled := false
 	for round := 0; round < maxRounds && cycleErr == nil; round++ {
@@ -158,6 +236,7 @@ func (c *Client) Sync(ctx context.Context) (*Result, error) {
 	r.ToSeq = max(r.ToSeq, r.FromSeq)
 	r.Head, _ = c.st.metaInt(metaHead)
 	r.Problems = cs.problems
+	r.Blocked, _ = c.st.Blocked()
 	r.FinishedAt = c.opts.Now()
 	if cycleErr != nil {
 		r.Error = cycleErr.Error()
@@ -181,15 +260,49 @@ type cycleState struct {
 	// rejected are paths the server refused this cycle; later rounds leave
 	// them alone instead of asking again.
 	rejected map[string]string
+	so       SyncOptions
+	fetched  bool // the first fetch (a full one with so.Full) is done
+}
+
+func (cs *cycleState) stopped() bool {
+	select {
+	case <-cs.so.Stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// wrote tells Options.OnWrite about a change the cycle made on disk.
+func (cs *cycleState) wrote(p string, e Entry) {
+	if f := cs.c.opts.OnWrite; f != nil {
+		f(p, e)
+	}
 }
 
 func (cs *cycleState) log(op, p, detail string) {
 	cs.res.Items = append(cs.res.Items, Item{Op: op, Path: p, Detail: detail})
 }
 
-// fetch reads the server's log after remote_seq into the remote table.
+// fetch reads the server's log after remote_seq into the remote table;
+// the first fetch of a full cycle reads the whole log and replaces it.
 func (cs *cycleState) fetch(ctx context.Context) error {
 	c := cs.c
+	full := cs.so.Full && !cs.fetched
+	cs.fetched = true
+	if full {
+		evs, head, err := c.api.changes(ctx, 0)
+		if err != nil {
+			return fmt.Errorf("reading changes: %w", err)
+		}
+		remote := map[string]Entry{}
+		applyEvents(remote, evs)
+		to := int64(0)
+		if len(evs) > 0 {
+			to = evs[len(evs)-1].Seq
+		}
+		return c.st.replaceRemote(remote, to, head)
+	}
 	since, err := c.st.metaInt(metaRemoteSeq)
 	if err != nil {
 		return err
@@ -256,11 +369,18 @@ func (cs *cycleState) round(ctx context.Context) (work int, err error) {
 		Manifest: manifest, Local: sc.Local, Remote: remote,
 		Ignored: func(p string, isDir bool) bool { return untracked(p) || m.Match(p, isDir) },
 	})
-	cs.res.Pending = 0
+	if acts, err = cs.guard(acts, manifest); err != nil {
+		return work, err
+	}
+	cs.res.Pending, cs.res.Unsettled, cs.res.RetryAt = 0, 0, time.Time{}
+	acts = cs.holdUnsettled(acts)
 	var hard []error
 	for _, a := range acts {
 		if err := ctx.Err(); err != nil {
 			return work, err
+		}
+		if cs.stopped() {
+			return work, ErrStopped
 		}
 		if !a.IsBookkeeping() {
 			work++
@@ -436,6 +556,7 @@ func (cs *cycleState) apply(ctx context.Context, a Action, sc *scanResult) error
 		if err != nil {
 			return err
 		}
+		cs.wrote(a.Path, e)
 		cs.received("download", a.Path)
 		return c.st.SetManifest(a.Path, e, Synced)
 	case OpRemoveLocal:
@@ -448,12 +569,14 @@ func (cs *cycleState) apply(ctx context.Context, a Action, sc *scanResult) error
 		if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
+		cs.wrote(a.Path, Entry{})
 		cs.received("remove", a.Path)
 		return c.st.SetManifest(a.Path, Entry{}, "")
 	case OpRmdirLocal:
 		err := os.Remove(abs(a.Path))
 		switch {
 		case err == nil || errors.Is(err, fs.ErrNotExist):
+			cs.wrote(a.Path, Entry{})
 			cs.received("rmdir", a.Path)
 			return c.st.SetManifest(a.Path, Entry{}, "")
 		case isNotEmpty(err):
@@ -469,6 +592,7 @@ func (cs *cycleState) apply(ctx context.Context, a Action, sc *scanResult) error
 		if err := os.MkdirAll(dst, 0o755); err != nil {
 			return err
 		}
+		cs.wrote(a.Path, Entry{Kind: Dir})
 		cs.received("mkdir", a.Path)
 		return c.st.SetManifest(a.Path, Entry{Kind: Dir}, Synced)
 	case OpMoveLocal:
@@ -493,6 +617,8 @@ func (cs *cycleState) apply(ctx context.Context, a Action, sc *scanResult) error
 		if err != nil {
 			return err
 		}
+		cs.wrote(a.From, Entry{})
+		cs.wrote(a.Path, e)
 		cs.res.Received++
 		cs.log("↓ move", a.Path, "from "+a.From)
 		return c.st.MoveManifest(a.From, a.Path, e)
@@ -556,6 +682,8 @@ func (cs *cycleState) upload(ctx context.Context, a Action, abs func(string) str
 	if err := os.Rename(src, cp); err != nil {
 		return err
 	}
+	cs.wrote(a.Path, Entry{})
+	cs.wrote(res.ConflictPath, a.Local)
 	if err := c.st.MoveManifest(a.Path, res.ConflictPath, a.Local); err != nil {
 		return err
 	}
@@ -569,6 +697,7 @@ func (cs *cycleState) upload(ctx context.Context, a Action, abs func(string) str
 		}
 		return err
 	}
+	cs.wrote(a.Path, e)
 	cs.received("download", a.Path)
 	return c.st.SetManifest(a.Path, e, Synced)
 }

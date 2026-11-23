@@ -12,8 +12,10 @@ Postoje zajednički paketi i jezgro servera `shfd`: folderi, članovi sa
 tokenima, dnevnik promena, kontrolni HTTP API, pravila konflikta i trash.
 Fajlovi se prenose rsync-om preko SSH-a, sa prinudnom komandom
 `shfd rsync-gate` po članu ([docs/server-ssh.md](docs/server-ssh.md)).
-Klijent `shf` se pridružuje folderu i radi jedan potpun ciklus dvosmerne
-sinhronizacije kad se pokrene (`shf sync`); pozadinski rad dolazi kasnije.
+Klijent `shf` se pridružuje folderu i sinhronizuje ga ručno (`shf sync`) ili u
+pozadini (`shf daemon`): server javlja nove promene preko WebSocket-a, a
+klijent prati lokalni folder. Zaštita od masovnog brisanja zadržava brisanja
+dok ih korisnik ne potvrdi.
 
 | Paket | Šta radi | Odeljak specifikacije |
 |---|---|---|
@@ -21,13 +23,15 @@ sinhronizacije kad se pokrene (`shf sync`); pozadinski rad dolazi kasnije.
 | `internal/hashx` | SHA-256 celog fajla, strimovano, hex malim slovima | 5 |
 | `internal/ignore` | `.shfignore` sa semantikom `.gitignore`, ugnježdeni fajlovi, ugrađena lista i privremeni fajlovi klijenta | 7 |
 | `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 6 |
-| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key` | 4 |
+| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu) | 4 |
 | `internal/transport` | interfejs `Transport` i lokalna implementacija (testovi) | 5 |
 | `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada, download u `.shf-tmp-*` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
 | `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
 | `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
 | `internal/shfdcli` | komande `shfd` | 8.5 |
-| `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status` | 7, 8.1, 8.2 |
+| `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
+| `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad | 8.3 |
+| `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent | 8.3 |
 | `internal/shfcli` | komande `shf` | 8.5 |
 | `internal/sshdtest` | privremeni `sshd` za integracione testove | — |
 
@@ -64,6 +68,74 @@ foldera je van njega, u `$XDG_STATE_HOME/shf/<share-id>/` (na macOS-u
 prenos su potrebni `ssh` i rsync 3.2.4+; adresu sshd-a klijent dobija od
 servera (`shfd serve --ssh-endpoint`) ili iz `--ssh`.
 
+### Pozadinski klijent
+
+```sh
+shf daemon                 # u prvom planu; Ctrl-C / SIGTERM završava tekuću stavku i izlazi
+shf service install        # systemd user jedinica (Linux) ili launchd agent (macOS), odmah i pri svakom prijavljivanju
+shf service status         # da li radi, poslednje linije loga
+shf service uninstall
+```
+
+Jedan proces služi sve foldere kojima se korisnik pridružio (`shf join`);
+folder pridružen dok proces radi preuzima se u roku od jednog intervala
+poll-a. Na Linux-u je jedinica `~/.config/systemd/user/shf.service`, log se
+čita sa `journalctl --user -u shf`; na macOS-u je agent
+`~/Library/LaunchAgents/rs.digitalcube.shf.plist`, a log
+`~/Library/Logs/shf.log`. Ako je pri instalaciji postavljen
+`SHF_STATE_HOME`, upisuje se u jedinicu. Posle zamene binarnog fajla
+ponovo pokrenite `shf service install`.
+
+Šta pozadinski klijent radi za svaki folder:
+
+- drži WebSocket ka serveru (`GET /v1/shares/{id}/ws`) i pokreće ciklus kad
+  HEAD servera pređe lokalni seq; kad veza pukne, ponovo se povezuje sa
+  rastućim razmakom (1 s, 2 s, … do 60 s) i slučajnim odstupanjem;
+- dok WebSocket ne radi, pita server za HEAD na 60 s;
+- prati folder (inotify na Linux-u, kqueue na macOS-u, preko fsnotify-a),
+  uz `.shfignore`, i pokreće ciklus 2 s posle poslednje promene;
+- fajl šalje tek kad mu veličina i mtime miruju 3 s;
+- pri pokretanju i jednom u 24 h radi puno poređenje sa serverom;
+- ciklusi se ne preklapaju; ono što stigne tokom ciklusa pokreće sledeći;
+- promene koje sam upiše tokom preuzimanja ne šalje nazad.
+
+Intervali i pragovi su u `$SHF_STATE_HOME/settings.json` (podrazumevano
+`~/.local/state/shf/settings.json`); ključ koji nedostaje zadržava
+podrazumevanu vrednost:
+
+```json
+{
+  "debounce": "2s",
+  "settle": "3s",
+  "poll": "60s",
+  "full_sync": "24h",
+  "reconnect_max": "60s",
+  "ping": "30s",
+  "retry_max": "60s",
+  "mass_delete": {"files": 20, "percent": 10}
+}
+```
+
+### Zaštita od masovnog brisanja
+
+Kad bi ciklus serveru poslao brisanje više od `mass_delete.files` fajlova
+ili više od `mass_delete.percent` % fajlova foldera (šta god je manje),
+ne šalje se nijedno brisanje iz tog ciklusa; novi i izmenjeni fajlovi i
+preuzimanja idu normalno. Folder je tada `blocked` i svako dalje brisanje
+čeka zajedno sa ostalima; to se upisuje u lokalni log (`shf log`).
+
+```sh
+shf status          # state: blocked i spisak brisanja koja čekaju
+shf confirm         # šalje ih (sačeka ciklus pozadinskog klijenta ako je u toku)
+shf restore-local   # vraća te fajlove sa servera i skida blokadu
+```
+
+Negativna vrednost isključuje taj prag. Pažnja: po specifikaciji važi
+manji prag, pa u folderu sa manje od 10 fajlova i jedno brisanje blokira
+(10 % od 9 je 0,9). Ako koren foldera ne postoji ili se ne može čitati
+(isključen disk), klijent ne radi ništa i javlja grešku; to se nikad ne
+tumači kao brisanje.
+
 ## Raspored
 
 ```
@@ -94,6 +166,12 @@ rade upload, download i prekinut upload koji se nastavlja. Preskaču se kad
 Testovi klijenta (`internal/client`) pokreću pravi `shfd` u procesu sa dva
 klijenta u privremenim folderima i lokalnim transportom; `TestJoinOverSSH`
 radi `join` i sync preko pravog rsync-a i `sshd`-a (preskače se kao gore).
+
+Testovi pozadinskog klijenta (`internal/daemon`) pokreću dva `shf daemon`-a
+nad pravim `shfd`-om u procesu i rade u realnom vremenu (oko 7 s, paralelno):
+fajl stiže drugom klijentu bez komande (sa podrazumevanim intervalima, u roku
+od 10 s), rezervni poll bez WebSocket-a, ponovno povezivanje posle prekida,
+fajl koji se polako upisuje šalje se jednom, preuzimanja se ne šalju nazad.
 
 Test `internal/ignore.TestGitCompat` poredi matcher sa samim `git`-om na
 nasumičnim stablima; preskače se ako `git` nije instaliran ili uz `go test -short`.

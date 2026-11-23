@@ -25,6 +25,8 @@ type env struct {
 	url   string
 	share string
 	n     int
+	// tune adjusts the options of members that join after it is set.
+	tune func(*client.Options)
 }
 
 func newEnv(t *testing.T) *env {
@@ -49,8 +51,15 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
+// options are the client options of every member. The mass-delete guard
+// is off: with its defaults a folder of fewer than ten files could not
+// delete a single one without shf confirm. guard_test.go turns it on.
 func (e *env) options() client.Options {
-	return client.Options{Transport: transport.Local{DataRoot: e.root}}
+	o := client.Options{Transport: transport.Local{DataRoot: e.root}, MassDelete: &client.MassDelete{Files: -1, Percent: -1}}
+	if e.tune != nil {
+		e.tune(&o)
+	}
+	return o
 }
 
 // token adds a member and returns its token.

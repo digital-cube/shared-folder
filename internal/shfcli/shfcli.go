@@ -3,8 +3,12 @@
 //
 //	shf join <url> <share-id> <token> <folder> [--ssh USER@HOST[:PORT]]
 //	shf sync [<folder>]
+//	shf daemon
 //	shf status [<folder>]
+//	shf confirm [<folder>]
+//	shf restore-local [<folder>]
 //	shf log [<folder>] [-n N]
+//	shf service install|uninstall|status
 package shfcli
 
 import (
@@ -13,14 +17,19 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/digital-cube/shared-folder/internal/client"
+	"github.com/digital-cube/shared-folder/internal/daemon"
+	"github.com/digital-cube/shared-folder/internal/service"
 	"github.com/digital-cube/shared-folder/internal/version"
 )
 
@@ -29,8 +38,12 @@ const usage = `shf — shared folder client
 Usage:
   shf join <url> <share-id> <token> <folder> [--ssh USER@HOST[:PORT]]
   shf sync [<folder>]
+  shf daemon
   shf status [<folder>]
+  shf confirm [<folder>]
+  shf restore-local [<folder>]
   shf log [<folder>] [-n N]
+  shf service install|uninstall|status
   shf version
   shf help
 
@@ -40,6 +53,19 @@ The SSH endpoint for file transfer comes from the server; --ssh overrides
 it. sync runs one full two-way cycle and exits non-zero if anything was
 not synchronized. status and log read the local state; <folder> defaults
 to the current directory (or any folder inside a joined one).
+
+daemon synchronizes every joined folder in the background: changes on
+the server arrive over a WebSocket (polling while it is down), local
+changes are seen as they happen. service install makes it start with
+your session (systemd user unit on Linux, launchd agent on macOS).
+
+A cycle that would delete more than 20 files, or more than 10 % of the
+folder (whichever is less), on the server sends none of the deletions:
+the folder is blocked. status lists them, confirm sends them,
+restore-local brings the files back from the server.
+
+The intervals and limits are in $SHF_STATE_HOME/settings.json (see
+README.md); missing keys keep their defaults.
 
 The state of each joined folder is kept outside it, in
 $XDG_STATE_HOME/shf/<share-id>/ (~/.local/state/shf, on macOS
@@ -97,6 +123,14 @@ func Run(args []string, env Env) int {
 		err = syncCmd(ctx, args[1:], env)
 	case "status":
 		err = status(ctx, args[1:], env)
+	case "confirm":
+		err = resolveHeld(ctx, args[1:], env, "confirm")
+	case "restore-local":
+		err = resolveHeld(ctx, args[1:], env, "restore-local")
+	case "daemon":
+		err = daemonCmd(ctx, args[1:], env)
+	case "service":
+		err = serviceCmd(args[1:], env)
 	case "log":
 		err = logCmd(args[1:], env)
 	default:
@@ -209,7 +243,15 @@ func open(args []string, env Env) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.Open(cfg, env.Options)
+	opts := env.Options
+	if opts.MassDelete == nil {
+		set, err := client.LoadSettings(home)
+		if err != nil {
+			return nil, err
+		}
+		opts.MassDelete = &set.MassDelete
+	}
+	return client.Open(cfg, opts)
 }
 
 func syncCmd(ctx context.Context, args []string, env Env) error {
@@ -241,6 +283,10 @@ func printResult(w io.Writer, r *client.Result) {
 		for _, p := range r.Problems {
 			fmt.Fprintf(w, "  %s: %s\n", p.Path, p.Reason)
 		}
+	}
+	if r.Blocked {
+		fmt.Fprintln(w, "BLOCKED: deletions were held back (too many at once); shf status lists them,")
+		fmt.Fprintln(w, "  shf confirm sends them, shf restore-local brings the files back")
 	}
 }
 
@@ -299,6 +345,139 @@ func status(ctx context.Context, args []string, env Env) error {
 		for _, p := range s.Problems {
 			fmt.Fprintf(w, "  %s: %s\n", p.Path, p.Reason)
 		}
+	}
+	switch {
+	case s.Blocked:
+		fmt.Fprintf(w, "state:      blocked: %d deletions held back (too many at once)\n", len(s.Held))
+		fmt.Fprintln(w, "            shf confirm sends them, shf restore-local brings the files back")
+	case len(s.Held) > 0:
+		fmt.Fprintf(w, "state:      %d confirmed deletions wait for the next cycle\n", len(s.Held))
+	default:
+		fmt.Fprintln(w, "state:      ok")
+	}
+	for _, h := range s.Held {
+		what := "delete"
+		if h.Kind == client.Dir {
+			what = "rmdir "
+		}
+		mark := ""
+		if h.Confirmed {
+			mark = " (confirmed)"
+		}
+		fmt.Fprintf(w, "  %s %s  since %s%s\n", what, h.Path, h.Since.Local().Format(time.DateTime), mark)
+	}
+	return nil
+}
+
+// resolveHeld is shf confirm and shf restore-local. Both wait for a cycle
+// in progress (the daemon's) and then run one.
+func resolveHeld(ctx context.Context, args []string, env Env, cmd string) error {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	pos, err := parse(fs, args, 0, 1)
+	if err != nil {
+		return err
+	}
+	c, err := open(pos, env)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var n int
+	var res *client.Result
+	if cmd == "confirm" {
+		n, res, err = c.Confirm(ctx)
+	} else {
+		n, res, err = c.RestoreLocal(ctx)
+	}
+	if errors.Is(err, client.ErrNothingHeld) {
+		fmt.Fprintln(env.Stdout, "nothing to do: no deletions are held back")
+		return nil
+	}
+	if n > 0 {
+		if cmd == "confirm" {
+			fmt.Fprintf(env.Stdout, "released %d held deletions\n", n)
+		} else {
+			fmt.Fprintf(env.Stdout, "restoring %d held paths from the server\n", n)
+		}
+	}
+	if res != nil {
+		printResult(env.Stdout, res)
+	}
+	return err
+}
+
+func daemonCmd(ctx context.Context, args []string, env Env) error {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	verbose := fs.Bool("v", false, "log every cycle")
+	if _, err := parse(fs, args, 0, 0); err != nil {
+		return err
+	}
+	home, err := client.StateHome(env.Getenv)
+	if err != nil {
+		return err
+	}
+	set, err := client.LoadSettings(home)
+	if err != nil {
+		return err
+	}
+	level := slog.LevelInfo
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(env.Stderr, &slog.HandlerOptions{Level: level}))
+	log.Info("shf daemon starting", "version", version.Version, "state", home)
+	return daemon.Run(ctx, daemon.Config{Home: home, Settings: set, Options: env.Options, Log: log})
+}
+
+func serviceCmd(args []string, env Env) error {
+	if len(args) != 1 {
+		return usageError("service: want install, uninstall or status")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	senv := service.Env{GOOS: runtime.GOOS, Getenv: env.Getenv, Exe: exe}
+	if d := env.Getenv(client.EnvStateHome); d != "" {
+		if senv.StateHome, err = filepath.Abs(d); err != nil {
+			return err
+		}
+	}
+	m, err := service.For(senv)
+	if err != nil {
+		return err
+	}
+	w := env.Stdout
+	switch args[0] {
+	case "install":
+		if err := m.Install(); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "installed %s\nshf daemon runs now and with every login; it serves every joined folder\n", m.File())
+	case "uninstall":
+		if err := m.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "removed %s; shf daemon stopped\n", m.File())
+	case "status":
+		report, running, err := m.Status()
+		if errors.Is(err, service.ErrNotInstalled) {
+			fmt.Fprintln(w, "not installed (shf service install)")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		state := "not running"
+		if running {
+			state = "running"
+		}
+		fmt.Fprintf(w, "installed: %s\nstate:     %s\n\n%s\n", m.File(), state, report)
+	default:
+		return usageError("service: unknown subcommand %q", args[0])
 	}
 	return nil
 }

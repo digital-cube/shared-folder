@@ -241,6 +241,11 @@ func (s *Share) write(m *Member, fn func(o *op) error) ([]Event, int64, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, 0, err
 	}
+	if len(o.events) > 0 {
+		// After the disk steps (or their failure, which the next write
+		// retries): a member told about the new HEAD fetches the files.
+		defer s.notify(o.events[len(o.events)-1].Seq)
+	}
 	if s.crashAfterCommit != nil {
 		if err := s.crashAfterCommit(); err != nil {
 			return nil, 0, err

@@ -220,6 +220,22 @@ otkucaju sata se ne gubi).
   svakom pokretanju.
 - Pokretanje: systemd user servis na Linux-u, launchd na macOS-u.
 
+Implementacija (TCK5FHY9NF): `shf daemon` (`internal/daemon`) služi sve
+pridružene foldere jednim procesom. WebSocket se ponovo povezuje sa rastućim
+razmakom (1 s do 60 s, slučajno odstupanje); dok ne radi, poll HEAD-a na 60 s.
+Praćenje foldera ide preko fsnotify-a (inotify; na macOS-u kqueue), poštuje
+`.shfignore` i skuplja događaje 2 s; folder koji se stalno menja ipak se
+sinhronizuje najkasnije 20 s (10 × odlaganje) posle prve promene. Fajl se šalje
+kad mu je mtime star 3 s ili kad je viđen sa istom veličinom i mtime-om pre 3 s;
+do tada ciklus taj upload preskače i javlja kad da proba ponovo. Puno poređenje
+(pri pokretanju i na 24 h) ponovo gradi stanje servera iz celog dnevnika.
+Klijent pamti šta je sam upisao na disk (`Options.OnWrite`), pa događaji
+praćenja za te putanje ne pokreću ciklus. Intervali i pragovi su u
+`<state home>/settings.json`. Na SIGTERM tekuća stavka se završava (najduže
+60 s), pa proces izlazi. Server šalje `{"head": N}` po povezivanju i posle
+svakog upisa koji je dodao događaje, pinguje na 30 s, a opoziv člana zatvara
+njegove veze (u istom procesu odmah, iz `shfd member revoke` u roku od 10 s).
+
 ### 8.4 Zaštita od masovnog brisanja
 
 Ako bi ciklus poslao brisanje više od 20 fajlova ili više od 10% foldera,
@@ -229,6 +245,16 @@ restore-local` vraća fajlove sa servera. Desktop obaveštenje ili prozor dolazi
 sa tray aplikacijom, u kasnijoj fazi. Prvo povezivanje sa nepraznim lokalnim
 folderom samo spaja: ništa se ne briše ni lokalno ni na serveru.
 
+Implementacija (TCK5FHY9NF): prag je manji od „više od 20 fajlova“ i „više od
+10 % sinhronizovanih fajlova foldera“ (oba u `settings.json`, negativna
+vrednost isključuje prag). Broje se brisanja fajlova; `rmdir`-ovi koji idu uz
+njih čekaju zajedno sa njima, a premeštanja nisu brisanja. Zadržana brisanja
+stoje u `state.db` (`held_deletes`); dok ih ima, i svako novo brisanje čeka.
+Blokada se skida sama kad se fajlovi vrate na disk. `shf confirm` i
+`shf restore-local` čekaju da se završi ciklus pozadinskog klijenta, pa
+pokreću svoj. Koren koji ne postoji, nije direktorijum ili se ne može čitati
+daje `ErrFolderUnavailable` i ciklus ne radi ništa.
+
 ### 8.5 Komande
 
 `shf join <url> <share-id> <token> <folder>`, `shf sync` (jedan ciklus),
@@ -237,7 +263,8 @@ folderom samo spaja: ništa se ne briše ni lokalno ni na serveru.
 Postoje (TCKTJMT57D): `join` (uz `--ssh user@host[:port]` kad treba zameniti
 ono što server javlja preko `shfd serve --ssh-endpoint`), `sync`, `status`,
 `log`; folder je podrazumevano tekući direktorijum ili bilo koji ispod
-pridruženog foldera.
+pridruženog foldera. Dodato (TCK5FHY9NF): `daemon`, `confirm`,
+`restore-local`, `service install|uninstall|status`.
 
 Admin (na serveru): `shfd serve`, `shfd share create`, `shfd member add|revoke|list`,
 `shfd trash list|restore|purge`, `shfd verify [--repair]`, `shfd stats`.

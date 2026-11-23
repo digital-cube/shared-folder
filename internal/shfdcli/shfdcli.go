@@ -348,11 +348,13 @@ func serve(args []string, env Env) error {
 	if err != nil {
 		return err
 	}
+	api := httpapi.New(srv, log)
 	hs := &http.Server{
-		Handler:           httpapi.New(srv, log),
+		Handler:           api,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+	hs.RegisterOnShutdown(api.Close) // WebSockets are not tracked by Shutdown
 	ctx := env.Ctx
 	if ctx == nil {
 		var stop context.CancelFunc

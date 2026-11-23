@@ -223,6 +223,15 @@ CREATE TABLE IF NOT EXISTS cycles (
     conflicts   INTEGER NOT NULL,
     error       TEXT NOT NULL DEFAULT ''
 );
+-- Deletions held back by the mass-delete guard (docs/specifikacija.md, 8.4);
+-- rows with confirmed = 0 mean the folder is blocked.
+CREATE TABLE IF NOT EXISTS held_deletes (
+    path      TEXT PRIMARY KEY,
+    kind      TEXT NOT NULL CHECK (kind IN ('file', 'dir')),
+    base_hash TEXT NOT NULL DEFAULT '',
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    since     TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS cycle_items (
     cycle_id INTEGER NOT NULL REFERENCES cycles (id) ON DELETE CASCADE,
     n        INTEGER NOT NULL,
@@ -447,6 +456,35 @@ func (s *State) ApplyEvents(evs []Event, toSeq, head int64) error {
 	}
 	return tx.Commit()
 }
+
+// replaceRemote replaces the remote table with the server's state rebuilt
+// from its whole log (a full comparison).
+func (s *State) replaceRemote(remote map[string]Entry, toSeq, head int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM remote`); err != nil {
+		return err
+	}
+	for p, e := range remote {
+		if _, err := tx.Exec(`INSERT INTO remote (path, kind, hash, size, mtime) VALUES (?, ?, ?, ?, ?)`,
+			p, e.Kind.String(), e.Hash, e.Size, e.Mtime); err != nil {
+			return err
+		}
+	}
+	if err := setMeta(tx, metaRemoteSeq, toSeq); err != nil {
+		return err
+	}
+	if err := setMeta(tx, metaHead, head); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RemoteSeq is the seq the server's state is known up to.
+func (s *State) RemoteSeq() (int64, error) { return s.metaInt(metaRemoteSeq) }
 
 // Problem is a path the user has to resolve.
 type Problem struct {

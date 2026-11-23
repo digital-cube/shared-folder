@@ -173,6 +173,10 @@ type Status struct {
 	PendingErr error
 	Problems   []Problem
 	Busy       bool // a cycle is running
+	// Held are the deletions the mass-delete guard holds back; Blocked
+	// says some of them wait for shf confirm or shf restore-local.
+	Held    []HeldDelete
+	Blocked bool
 }
 
 // Status reports the folder's state without changing anything: it asks
@@ -200,6 +204,12 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if s.Problems, err = c.st.Problems(); err != nil {
 		return nil, err
 	}
+	if s.Held, err = c.st.HeldDeletes(); err != nil {
+		return nil, err
+	}
+	for _, h := range s.Held {
+		s.Blocked = s.Blocked || !h.Confirmed
+	}
 	if unlock, err := lock(c.cfg.Dir); errors.Is(err, ErrBusy) {
 		s.Busy = true
 	} else if err == nil {
@@ -218,7 +228,7 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	}
 	s.Head = head
 	applyEvents(remote, evs)
-	n, err := c.pending(remote)
+	n, err := c.pending(remote, s.Held)
 	if err != nil {
 		s.PendingErr = err
 		return s, nil
@@ -227,7 +237,11 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	return s, nil
 }
 
-func (c *Client) pending(remote map[string]Entry) (int, error) {
+func (c *Client) pending(remote map[string]Entry, held []HeldDelete) (int, error) {
+	isHeld := map[string]bool{}
+	for _, h := range held {
+		isHeld[h.Path] = true
+	}
 	manifest, err := c.st.Manifest()
 	if err != nil {
 		return 0, err
@@ -244,7 +258,7 @@ func (c *Client) pending(remote map[string]Entry) (int, error) {
 		Ignored: func(p string, isDir bool) bool { return sc.untracked(p) || m.Match(p, isDir) }})
 	n := 0
 	for _, a := range acts {
-		if !a.IsBookkeeping() {
+		if !a.IsBookkeeping() && !(isDeletion(a) && isHeld[a.Path]) {
 			n++
 		}
 	}

@@ -8,18 +8,21 @@
 //	POST /v1/shares/{id}/ops
 //	POST /v1/shares/{id}/sync-report
 //	PUT  /v1/shares/{id}/ssh-key
+//	GET  /v1/shares/{id}/ws            (WebSocket, see ws.go)
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/server"
@@ -51,12 +54,40 @@ type ErrorBody struct {
 	} `json:"error"`
 }
 
+// Option tunes the handler.
+type Option func(*api)
+
+// WithPingInterval sets how often the WebSocket pings a client; a client
+// that does not answer within the same interval is disconnected
+// (default 30 s).
+func WithPingInterval(d time.Duration) Option { return func(a *api) { a.ping = d } }
+
+// WithMemberCheck sets how often an open WebSocket re-reads its member
+// from the database, which closes it after a revocation made by another
+// process (shfd member revoke). A revocation in this process closes it at
+// once. Default 10 s.
+func WithMemberCheck(d time.Duration) Option { return func(a *api) { a.memberCheck = d } }
+
+// Handler is the API. Close disconnects the open WebSockets, which
+// http.Server.Shutdown does not track.
+type Handler struct {
+	http.Handler
+	a *api
+}
+
+// Close ends every open WebSocket with "going away".
+func (h *Handler) Close() { h.a.cancel() }
+
 // New returns the API handler.
-func New(srv *server.Server, log *slog.Logger) http.Handler {
+func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	a := &api{srv: srv, log: log}
+	a := &api{srv: srv, log: log, ping: 30 * time.Second, memberCheck: 10 * time.Second}
+	for _, o := range opts {
+		o(a)
+	}
+	a.ctx, a.cancel = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/shares/{id}/changes", a.auth(a.changes))
 	mux.Handle("POST /v1/shares/{id}/uploads", a.auth(a.announce))
@@ -64,15 +95,20 @@ func New(srv *server.Server, log *slog.Logger) http.Handler {
 	mux.Handle("POST /v1/shares/{id}/ops", a.auth(a.ops))
 	mux.Handle("POST /v1/shares/{id}/sync-report", a.auth(a.syncReport))
 	mux.Handle("PUT /v1/shares/{id}/ssh-key", a.auth(a.setSSHKey))
+	mux.HandleFunc("GET /v1/shares/{id}/ws", a.ws)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, server.CodeNotFound, "no such endpoint")
 	})
-	return mux
+	return &Handler{Handler: mux, a: a}
 }
 
 type api struct {
 	srv *server.Server
 	log *slog.Logger
+
+	ping, memberCheck time.Duration
+	ctx               context.Context // canceled by Handler.Close
+	cancel            context.CancelFunc
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error)
@@ -82,23 +118,8 @@ type handler func(w http.ResponseWriter, r *http.Request, sh *server.Share, m *s
 // successful call (2xx) refreshes the member's last_seen_at.
 func (a *api) auth(h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || strings.TrimSpace(token) == "" {
-			writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "missing bearer token")
-			return
-		}
-		sh, err := a.srv.Share(r.PathValue("id"))
-		if server.CodeOf(err) == server.CodeUnknownShare {
-			writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "token not valid for this folder")
-			return
-		}
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		m, err := sh.Authenticate(strings.TrimSpace(token))
-		if err != nil {
-			a.fail(w, r, err)
+		sh, m, ok := a.authenticate(w, r)
+		if !ok {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
@@ -112,6 +133,31 @@ func (a *api) auth(h handler) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
+}
+
+// authenticate resolves the folder and member of a request, answering it
+// with an error when that fails.
+func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Share, *server.Member, bool) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || strings.TrimSpace(token) == "" {
+		writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "missing bearer token")
+		return nil, nil, false
+	}
+	sh, err := a.srv.Share(r.PathValue("id"))
+	if server.CodeOf(err) == server.CodeUnknownShare {
+		writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "token not valid for this folder")
+		return nil, nil, false
+	}
+	if err != nil {
+		a.fail(w, r, err)
+		return nil, nil, false
+	}
+	m, err := sh.Authenticate(strings.TrimSpace(token))
+	if err != nil {
+		a.fail(w, r, err)
+		return nil, nil, false
+	}
+	return sh, m, true
 }
 
 func (a *api) changes(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {

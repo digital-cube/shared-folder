@@ -45,6 +45,8 @@ type Share struct {
 
 	keys *authkeys.File // nil when SSH keys are not managed
 
+	watch watchers // subscribers to the HEAD (the WebSocket)
+
 	// crashAfterCommit, when set, is called after the database commit and
 	// before the disk steps run. Tests use it to simulate a crash there.
 	crashAfterCommit func() error
@@ -167,6 +169,7 @@ func (s *Share) RevokeMember(username string) error {
 	if err != nil {
 		return err
 	}
+	s.revokeWatchers(id)
 	if s.keys != nil {
 		if err := s.keys.Remove(s.ID, id); err != nil {
 			return fmt.Errorf("member %s is revoked, but removing the SSH key from %s failed: %w", username, s.keys.Path, err)
