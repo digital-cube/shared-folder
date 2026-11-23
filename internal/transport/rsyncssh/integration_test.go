@@ -406,6 +406,73 @@ func TestIntegrationResumeUpload(t *testing.T) {
 	}
 }
 
+// An interrupted download keeps its partial content next to the
+// destination (named after the hash); the next Fetch of the same content
+// resumes it instead of starting from zero.
+func TestIntegrationResumeDownload(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	const size = 48 << 20
+	data := make([]byte, size)
+	rng := rand.NewChaCha8([32]byte{4, 5, 6})
+	rng.Read(data)
+	src := writeFile(t, t.TempDir(), "big.bin", data)
+	ar := w.announce("veliki.bin", src)
+	if err := w.transport(nil).Send(ctx, upload(ar, w.sh.ID), src); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := w.sh.Commit(w.ana, ar.UploadID); err != nil || res.Status != server.StatusApplied {
+		t.Fatalf("commit: %+v %v", res, err)
+	}
+	hash, _ := hashx.File(src)
+	local := t.TempDir()
+	dst := filepath.Join(local, "veliki.bin")
+	part := filepath.Join(local, PartialPrefix+hash)
+
+	slow := w.transport(func(c *Config) { c.BwLimit = 8 << 10 }) // 8 MiB/s
+	cctx, cancel := context.WithCancel(ctx)
+	errc := make(chan error, 1)
+	go func() { errc <- slow.Fetch(cctx, w.sh.ID, "veliki.bin", hash, dst) }()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		if fi, err := os.Stat(part); err == nil && fi.Size() >= 6<<20 {
+			break
+		}
+		select {
+		case err := <-errc:
+			t.Fatalf("download finished before it could be interrupted: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-errc; err == nil {
+		t.Fatal("interrupted Fetch returned nil")
+	}
+	fi, err := os.Stat(part)
+	if err != nil || fi.Size() == 0 || fi.Size() >= size {
+		t.Fatalf("partial download: %v %v", fi, err)
+	}
+	partial := fi.Size()
+	if _, err := os.Stat(dst); err == nil {
+		t.Fatal("the destination appeared before the download was complete")
+	}
+
+	var st Stats
+	fast := w.transport(func(c *Config) { c.OnTransfer = func(s Stats) { st = s } })
+	if err := fast.Fetch(ctx, w.sh.ID, "veliki.bin", hash, dst); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("interrupted after %d bytes; resumed: matched %d, literal %d of %d", partial, st.Matched, st.Literal, st.Size)
+	if st.Matched < partial/2 || st.Literal > size-partial/2 {
+		t.Errorf("resume started from zero: %+v (partial was %d)", st, partial)
+	}
+	if got, _ := os.ReadFile(dst); !bytes.Equal(got, data) {
+		t.Error("downloaded content differs")
+	}
+	if _, err := os.Stat(part); err == nil {
+		t.Error("the partial file is still there after the rename")
+	}
+}
+
 func TestIntegrationHostKeyAndRevoke(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()

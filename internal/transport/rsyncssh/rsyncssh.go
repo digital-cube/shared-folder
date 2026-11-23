@@ -4,13 +4,16 @@
 // "shfd rsync-gate", which allows exactly these two transfers:
 //
 //	upload    rsync --partial … <src> host:tmp/<upload_id>
-//	download  rsync --inplace … host:storage/<path> <dir>/.shf-tmp-*
+//	download  rsync --inplace … host:storage/<path> <dir>/.shf-tmp-part-<hash>
 //
 // An interrupted upload leaves its partial content as tmp/<upload_id> on
 // the server (--partial); sending again resumes from it through rsync's
-// delta algorithm instead of starting from zero. A download goes into a
-// temporary file next to its destination, its SHA-256 is checked, and only
-// then is it renamed over the destination.
+// delta algorithm instead of starting from zero (the server hands out the
+// same upload_id when the same content is announced again). A download
+// goes into a temporary file next to its destination, named after the
+// content's hash and kept when the download is interrupted, so the next
+// one resumes it the same way; its SHA-256 is checked, and only then is it
+// renamed over the destination.
 //
 // ssh runs with the member's key only (no agent, no ~/.ssh/config),
 // BatchMode, and its own known_hosts in the client's state directory: the
@@ -108,7 +111,14 @@ var (
 	shareIDRE  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	uploadIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	versionRE  = regexp.MustCompile(`rsync\s+version\s+v?(\d+)\.(\d+)\.(\d+)`)
+	hashRE     = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
+
+// PartialPrefix starts the name of a download in progress, kept when it is
+// interrupted so the next attempt resumes it: PartialPrefix + the SHA-256
+// of the content. It is one of the client's temporary files, which the
+// scan never takes for the user's.
+const PartialPrefix = ignore.ClientTempPrefix + "part-"
 
 // New checks the configuration and that rsync (new enough) and ssh are
 // installed.
@@ -299,8 +309,10 @@ func (t *Transport) Send(ctx context.Context, u transport.Upload, src string) er
 	return nil
 }
 
-// Fetch downloads storage/<p> into a temporary .shf-tmp-* file in the
-// directory of dst, checks that its SHA-256 is hash and renames it to dst.
+// Fetch downloads storage/<p> into a temporary file in the directory of
+// dst (PartialPrefix + hash), checks that its SHA-256 is hash and renames
+// it to dst. An interrupted Fetch leaves the temporary file, and fetching
+// the same content again resumes it.
 // When the server's file is gone or has other content (replaced between
 // the listing and the download) it returns transport.ErrChanged and
 // leaves dst untouched; the caller fetches the newer version.
@@ -315,21 +327,38 @@ func (t *Transport) Fetch(ctx context.Context, shareID, p, hash, dst string) err
 	if err := t.prepareState(); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ignore.ClientTempPrefix+"*")
-	if err != nil {
-		return err
+	// The temporary file is named after the content. An interrupted
+	// download (a lost connection, the client stopped or killed) leaves it
+	// in place, and the next Fetch of the same content continues from it:
+	// rsync takes what is there as the basis and sends only the rest.
+	var tmpName string
+	if hashRE.MatchString(hash) {
+		tmpName = filepath.Join(filepath.Dir(dst), PartialPrefix+strings.ToLower(hash))
+		f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		f.Close()
+	} else {
+		tmp, err := os.CreateTemp(filepath.Dir(dst), ignore.ClientTempPrefix+"*")
+		if err != nil {
+			return err
+		}
+		tmpName = tmp.Name()
+		tmp.Close()
+		defer os.Remove(tmpName) // a no-op after the rename
 	}
-	tmpName := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpName) // a no-op after the rename
 
 	remote := "storage/" + p
 	// --inplace writes straight into our temporary file (no second
 	// temporary name of rsync's own); -I transfers even when size and
-	// time happen to match the empty placeholder.
+	// time happen to match the placeholder.
 	args := append(t.baseArgs(), "--inplace", "-I", "--", t.remote(remote), tmpName)
 	st, err := t.run(ctx, args, remote)
 	if err != nil {
+		if errors.Is(err, transport.ErrChanged) {
+			os.Remove(tmpName) // that content is gone from the server
+		}
 		return err
 	}
 	got, err := hashx.File(tmpName)
@@ -337,6 +366,7 @@ func (t *Transport) Fetch(ctx context.Context, shareID, p, hash, dst string) err
 		return err
 	}
 	if !strings.EqualFold(got, hash) {
+		os.Remove(tmpName)
 		return fmt.Errorf("%s: downloaded content has hash %s, wanted %s: %w", p, got, hash, transport.ErrChanged)
 	}
 	if err := os.Rename(tmpName, dst); err != nil {

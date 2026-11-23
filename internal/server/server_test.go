@@ -305,3 +305,55 @@ func TestRegistry(t *testing.T) {
 		t.Errorf("unknown share: %v", err)
 	}
 }
+
+// An upload announced again before its commit (the client was stopped in
+// the middle of sending) is the same upload, so rsync --partial resumes
+// tmp/<id>; other content, another path or a committed upload is not.
+func TestAnnounceAgainResumesTheOpenUpload(t *testing.T) {
+	f := newFixture(t)
+	sh, m := f.share()
+	content := []byte("a large file, sent in two goes")
+	req := AnnounceRequest{Path: "big.bin", NewHash: sum(content), Size: int64(len(content)), Mtime: 1}
+	first, err := sh.Announce(m, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sh.abs(first.Dest), content[:10], 0o600); err != nil { // interrupted
+		t.Fatal(err)
+	}
+	req.Mtime = 2
+	again, err := sh.Announce(m, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.UploadID != first.UploadID || again.Dest != first.Dest {
+		t.Fatalf("announced again: %+v, first %+v", again, first)
+	}
+	other := req
+	other.NewHash, other.Size = sum([]byte("other")), 5
+	if o, err := sh.Announce(m, other); err != nil || o.UploadID == first.UploadID {
+		t.Fatalf("other content got upload %+v, %v", o, err)
+	}
+	elsewhere := req
+	elsewhere.Path = "copy.bin"
+	if o, err := sh.Announce(m, elsewhere); err != nil || o.UploadID == first.UploadID {
+		t.Fatalf("other path got upload %+v, %v", o, err)
+	}
+
+	if err := os.WriteFile(sh.abs(again.Dest), content, 0o600); err != nil { // resumed to the end
+		t.Fatal(err)
+	}
+	if res, err := sh.Commit(m, again.UploadID); err != nil || res.Status != StatusApplied {
+		t.Fatalf("commit: %+v, %v", res, err)
+	}
+	var mtime int64
+	sh.db.QueryRow(`SELECT mtime FROM files WHERE path = 'big.bin'`).Scan(&mtime)
+	if mtime != 2 {
+		t.Errorf("mtime %d, want the second announcement's 2", mtime)
+	}
+	req.BaseHash = sum(content)
+	req.NewHash, req.Size = sum([]byte("v2")), 2
+	if n, err := sh.Announce(m, req); err != nil || n.UploadID == first.UploadID {
+		t.Fatalf("after the commit: %+v, %v", n, err)
+	}
+}

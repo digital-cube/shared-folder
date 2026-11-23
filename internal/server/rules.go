@@ -427,7 +427,9 @@ type AnnounceResult struct {
 }
 
 // Announce registers an upload. When new_hash already is the current
-// content of the path there is nothing to send.
+// content of the path there is nothing to send. Announcing again what
+// the member already announced and did not commit returns the same
+// upload, so its partial content is resumed.
 func (s *Share) Announce(m *Member, req AnnounceRequest) (*AnnounceResult, error) {
 	p, err := normPath(req.Path)
 	if err != nil {
@@ -455,6 +457,24 @@ func (s *Share) Announce(m *Member, req AnnounceRequest) (*AnnounceResult, error
 	}
 	if cur != nil && cur.Hash == req.NewHash {
 		return &AnnounceResult{Status: StatusUnchanged, Path: p, Head: head}, nil
+	}
+	// The member's open upload of the same content (a send that was
+	// interrupted, also by a restart of the client) is handed out again,
+	// so rsync --partial continues from what tmp/<id> already holds
+	// instead of starting over. One whose commit has begun is not.
+	var open string
+	err = s.db.QueryRow(`SELECT id FROM uploads WHERE member_id = ? AND path = ? AND base_hash = ? AND new_hash = ? AND size = ?
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, m.ID, p, req.BaseHash, req.NewHash, req.Size).Scan(&open)
+	switch {
+	case err == nil:
+		if _, serr := os.Lstat(s.abs(TmpDir + "/" + open + ".commit")); errors.Is(serr, os.ErrNotExist) {
+			if _, err := s.db.Exec(`UPDATE uploads SET mtime = ? WHERE id = ?`, req.Mtime, open); err != nil {
+				return nil, err
+			}
+			return &AnnounceResult{Status: StatusUpload, Path: p, UploadID: open, Dest: TmpDir + "/" + open, Head: head}, nil
+		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return nil, err
 	}
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

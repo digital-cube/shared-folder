@@ -5,7 +5,7 @@ LDFLAGS  := -X github.com/digital-cube/shared-folder/internal/version.Version=$(
 GOFMT    ?= $(shell $(GO) env GOROOT 2>/dev/null)/bin/gofmt
 GOLANGCI := $(shell command -v golangci-lint 2>/dev/null)
 
-.PHONY: all build test lint fmt check clean
+.PHONY: all build test lint fmt check clean e2e
 
 all: check
 
@@ -20,6 +20,7 @@ test:
 ## lint: go vet + gofmt (and golangci-lint when it is installed)
 lint:
 	$(GO) vet ./...
+	$(GO) vet -tags e2e ./e2e/
 	@out=$$($(GOFMT) -l .); if [ -n "$$out" ]; then echo "gofmt needed on:"; echo "$$out"; exit 1; fi
 ifneq ($(GOLANGCI),)
 	$(GOLANGCI) run ./...
@@ -33,6 +34,12 @@ fmt:
 
 ## check: lint, test and build — what CI and reviewers run
 check: lint test build
+
+## e2e: end-to-end tests: real shfd, shf daemons, rsync over a throwaway sshd
+##      (not part of check; see README.md for what the machine needs)
+E2E_FLAGS ?= -count=1 -timeout 30m
+e2e:
+	GO=$(GO) $(GO) test -tags e2e $(E2E_FLAGS) ./e2e/
 
 clean:
 	rm -rf $(BIN_DIR)

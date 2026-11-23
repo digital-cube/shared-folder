@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digital-cube/shared-folder/internal/client"
+	"github.com/digital-cube/shared-folder/internal/transport/rsyncssh"
 )
 
 // folder runs one joined folder.
@@ -170,6 +171,15 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 		opts.MassDelete = &md
 	}
 	opts.OnWrite = f.onWrite
+	if opts.BwLimit == 0 {
+		opts.BwLimit = f.set.BwLimit
+	}
+	if opts.OnTransfer == nil {
+		opts.OnTransfer = func(st rsyncssh.Stats) {
+			f.log.Debug("transfer", "direction", st.Direction, "path", st.Path, "size", st.Size,
+				"sent", st.Literal, "matched", st.Matched)
+		}
+	}
 	c, err := client.Open(f.fc, opts)
 	if err != nil {
 		f.log.Error("cannot open the folder's state; not synchronizing it", "err", err)

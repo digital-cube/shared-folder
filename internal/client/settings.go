@@ -56,6 +56,9 @@ type Settings struct {
 	RetryMax Duration `json:"retry_max"`
 	// MassDelete are the limits of the mass-delete guard.
 	MassDelete MassDelete `json:"mass_delete"`
+	// BwLimit caps the bandwidth of each transfer in KiB/s (rsync's
+	// --bwlimit); 0 means unlimited.
+	BwLimit int `json:"bwlimit"`
 }
 
 // DefaultSettings are the values of the specification.
@@ -92,6 +95,9 @@ func LoadSettings(home string) (Settings, error) {
 		if d <= 0 {
 			return s, fmt.Errorf("%s: %s must be positive", file, name)
 		}
+	}
+	if s.BwLimit < 0 {
+		return s, fmt.Errorf("%s: bwlimit must not be negative", file)
 	}
 	if s.Settle < 0 {
 		return s, fmt.Errorf("%s: settle must not be negative", file)

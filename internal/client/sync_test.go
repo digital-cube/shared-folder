@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -392,5 +393,45 @@ func TestJoinChecks(t *testing.T) {
 	cfg, err := client.Find(ana.home, ana.abs("d"))
 	if err != nil || cfg.ShareID != e.share {
 		t.Errorf("Find: %v %v", cfg, err)
+	}
+}
+
+// A cycle whose every round finds new work only because another member
+// keeps changing the server is not a failure: everything it planned was
+// done, and the newer changes are the next cycle's.
+func TestBusyServerIsNoFailure(t *testing.T) {
+	e := newEnv(t)
+	ana, bob := e.joined("ana"), e.joined("bob")
+	ana.write("f0.txt", "0")
+	ana.sync()
+	n := 0
+	busy, err := client.Open(bob.c.Config(), client.Options{
+		Transport:  e.options().Transport,
+		MassDelete: &client.MassDelete{Files: -1, Percent: -1},
+		AfterApply: func(client.Action) error {
+			// ana adds a file after each of bob's steps
+			n++
+			ana.write(fmt.Sprintf("f%d.txt", n), fmt.Sprint(n))
+			ana.sync()
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	res, err := busy.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("sync against a busy server: %v (%+v)", err, res)
+	}
+	head, err := ana.c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Received < 5 || res.ToSeq >= head {
+		t.Fatalf("the cycle was not cut off by the moving log: received %d, seq %d, head %d", res.Received, res.ToSeq, head)
+	}
+	if res.Pending != 0 {
+		t.Errorf("pending %d", res.Pending)
 	}
 }

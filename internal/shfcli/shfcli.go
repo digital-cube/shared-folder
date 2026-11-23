@@ -244,12 +244,15 @@ func open(args []string, env Env) (*client.Client, error) {
 		return nil, err
 	}
 	opts := env.Options
+	set, err := client.LoadSettings(home)
+	if err != nil {
+		return nil, err
+	}
 	if opts.MassDelete == nil {
-		set, err := client.LoadSettings(home)
-		if err != nil {
-			return nil, err
-		}
 		opts.MassDelete = &set.MassDelete
+	}
+	if opts.BwLimit == 0 {
+		opts.BwLimit = set.BwLimit
 	}
 	return client.Open(cfg, opts)
 }

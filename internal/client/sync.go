@@ -63,6 +63,11 @@ type Options struct {
 	// what the path now is (Kind None: removed). The daemon uses it to
 	// tell its own writes from the user's.
 	OnWrite func(path string, now Entry)
+	// BwLimit caps rsync's bandwidth in KiB/s (0: unlimited).
+	BwLimit int
+	// OnTransfer, when set, receives rsync's statistics of every finished
+	// transfer (how much was sent and how much the other side already had).
+	OnTransfer func(rsyncssh.Stats)
 }
 
 // maxRounds bounds the rounds of one cycle. A round fetches the server's
@@ -97,6 +102,7 @@ func Open(cfg *Config, opts Options) (*Client, error) {
 		tr, err = rsyncssh.New(rsyncssh.Config{
 			ShareID: cfg.ShareID, Host: cfg.SSH.Host, Port: cfg.SSH.Port, User: cfg.SSH.User,
 			KeyFile: cfg.KeyFile(), StateDir: cfg.Dir,
+			BwLimit: opts.BwLimit, OnTransfer: opts.OnTransfer,
 		})
 		if err != nil {
 			return nil, err
@@ -226,7 +232,11 @@ func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error
 			break
 		}
 	}
-	if cycleErr == nil && !settled {
+	// Rounds that kept finding new work only because the server's log
+	// moved on (other members busy) did everything they planned: newer
+	// changes are the next cycle's, which is no failure. Steps left undone
+	// because the ground moved under them are.
+	if cycleErr == nil && !settled && r.Pending > 0 {
 		cycleErr = fmt.Errorf("the folder kept changing; %d steps wait for the next cycle", r.Pending)
 	}
 	if cycleErr == nil {
