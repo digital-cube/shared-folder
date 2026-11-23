@@ -20,11 +20,25 @@
 // server's host key is remembered on the first connection and must match
 // on every later one. The user's ~/.ssh/known_hosts is never read or
 // written.
+//
+// Transfers share one SSH connection (OpenSSH multiplexing: ControlMaster
+// auto, ControlPersist): the first transfer opens a master connection
+// that stays up for ControlPersist after the last one, and every later
+// transfer is only a new session on it, without a new key exchange and
+// authentication. sshd still applies the forced command to every session,
+// so each transfer goes through rsync-gate exactly as before, and a
+// revoked member is refused on the open connection too (rsync-gate checks
+// the member on every call). Close asks the master to stop, and so does
+// a transfer that finds the member refused or the connection broken. The master's
+// socket lives in the state directory, or, when that path is too long for
+// a unix socket, in a private directory under $XDG_RUNTIME_DIR or /tmp.
 package rsyncssh
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -51,7 +65,8 @@ var (
 	// in known_hosts. Never retried automatically.
 	ErrHostKey = errors.New("server host key does not match the remembered one")
 	// ErrAuth: the server did not accept the member's key (not registered,
-	// or the member was revoked).
+	// or the member was revoked: refused by sshd on a new connection, by
+	// rsync-gate on a shared one).
 	ErrAuth = errors.New("server refused the SSH key")
 	// ErrDenied: rsync-gate refused the transfer.
 	ErrDenied = errors.New("transfer refused by the server")
@@ -85,6 +100,12 @@ type Config struct {
 	// Rsync and SSH are the binaries; "" looks them up in PATH.
 	Rsync, SSH string
 
+	// ControlPersist is how long the shared SSH connection stays open
+	// after its last transfer (default 60s). NoMultiplex gives every
+	// transfer a connection of its own instead.
+	ControlPersist time.Duration
+	NoMultiplex    bool
+
 	// OnTransfer, when set, receives rsync's statistics of every
 	// successful transfer.
 	OnTransfer func(Stats)
@@ -103,6 +124,9 @@ type Stats struct {
 type Transport struct {
 	cfg        Config
 	rsync, ssh string
+	// ctl is the master connection's control socket; "" when transfers
+	// do not share a connection.
+	ctl string
 }
 
 var _ transport.Transport = (*Transport)(nil)
@@ -144,6 +168,9 @@ func New(cfg Config) (*Transport, error) {
 	if cfg.IOTimeout <= 0 {
 		cfg.IOTimeout = 60 * time.Second
 	}
+	if cfg.ControlPersist <= 0 {
+		cfg.ControlPersist = 60 * time.Second
+	}
 	var err error
 	for _, p := range []*string{&cfg.KeyFile, &cfg.StateDir} {
 		if *p, err = filepath.Abs(*p); err != nil {
@@ -166,7 +193,58 @@ func New(cfg Config) (*Transport, error) {
 	if err := checkRsyncVersion(t.rsync); err != nil {
 		return nil, err
 	}
+	if !cfg.NoMultiplex && multiplexSupported {
+		t.ctl = controlPath(cfg)
+	}
 	return t, nil
+}
+
+// maxControlPath is the longest control socket path that works on every
+// unix: sun_path holds 104 bytes on macOS and the BSDs (108 on Linux),
+// including the terminating NUL, and ssh binds the master to the path
+// plus "." and 16 random characters before renaming it into place.
+const maxControlPath = 104 - 1 - 17
+
+// controlPath picks where the master connection's socket goes, or "" when
+// no candidate is short enough. The name is a hash of everything that
+// makes a connection: a changed server, user or key never reuses a master
+// opened for the old one.
+func controlPath(cfg Config) string {
+	key, _ := os.ReadFile(cfg.KeyFile)
+	h := sha256.New()
+	for _, s := range []string{cfg.Host, strconv.Itoa(cfg.Port), cfg.User, cfg.KeyFile, string(key), cfg.StateDir} {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	sum := hex.EncodeToString(h.Sum(nil))[:16]
+	candidates := []string{filepath.Join(cfg.StateDir, "ssh-"+sum)}
+	if d := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(d) {
+		candidates = append(candidates, filepath.Join(d, "shf", sum))
+	}
+	candidates = append(candidates, filepath.Join("/tmp", "shf-"+strconv.Itoa(os.Getuid()), sum))
+	for _, c := range candidates {
+		if len(c) <= maxControlPath && !strings.ContainsAny(c, "\"\n") {
+			return c
+		}
+	}
+	return ""
+}
+
+// prepareControlDir makes the directory of the control socket. Outside the
+// state directory it must be a private directory of this user: a socket
+// planted there by somebody else would see every transfer.
+func (t *Transport) prepareControlDir() error {
+	dir := filepath.Dir(t.ctl)
+	if dir == t.cfg.StateDir {
+		return nil // made by prepareState
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return checkPrivateDir(dir)
 }
 
 func lookPath(given, name string) (string, error) {
@@ -204,13 +282,18 @@ func checkRsyncVersion(bin string) error {
 	return nil
 }
 
+// ControlPath is the shared connection's control socket, "" when every
+// transfer connects on its own.
+func (t *Transport) ControlPath() string { return t.ctl }
+
 // KnownHosts is where the server's host key is remembered.
 func (t *Transport) KnownHosts() string { return filepath.Join(t.cfg.StateDir, "known_hosts") }
 
-// sshArgs is the ssh command line (without the destination host).
-func (t *Transport) sshArgs() []string {
+// sshArgs is the ssh command line (without the destination host). With
+// mux the connection is shared through the control socket.
+func (t *Transport) sshArgs(mux bool) []string {
 	c := t.cfg
-	return []string{
+	a := []string{
 		t.ssh,
 		"-F", os.DevNull, // ignore ~/.ssh/config and /etc/ssh/ssh_config
 		"-i", c.KeyFile,
@@ -236,6 +319,15 @@ func (t *Transport) sshArgs() []string {
 		"-o", "RequestTTY=no",
 		"-o", "LogLevel=ERROR",
 	}
+	if !mux || t.ctl == "" {
+		return append(a, "-o", "ControlMaster=no", "-o", "ControlPath=none")
+	}
+	return append(a,
+		"-o", "ControlMaster=auto",
+		// ssh expands %-tokens in the path and splits on blanks.
+		"-o", `ControlPath="`+strings.ReplaceAll(t.ctl, "%", "%%")+`"`,
+		"-o", "ControlPersist="+strconv.Itoa(max(1, int(c.ControlPersist.Round(time.Second)/time.Second))),
+	)
 }
 
 // rshQuote quotes a word for rsync's own splitting of the -e string:
@@ -248,7 +340,7 @@ func rshQuote(w string) string {
 }
 
 func (t *Transport) rsh() string {
-	args := t.sshArgs()
+	args := t.sshArgs(true)
 	for i, a := range args {
 		args[i] = rshQuote(a)
 	}
@@ -382,13 +474,14 @@ func (t *Transport) Fetch(ctx context.Context, shareID, p, hash, dst string) err
 // key in StateDir/known_hosts (shf join does this, so a later transfer
 // never meets an unknown host). The forced command refuses the probe's
 // command, which is expected: only a failure of ssh itself (exit status
-// 255) is an error.
+// 255) is an error. The probe never uses a shared connection: it checks
+// that the key is accepted now.
 func (t *Transport) Probe(ctx context.Context) error {
 	if err := t.prepareState(); err != nil {
 		return err
 	}
 	var stderr bytes.Buffer
-	args := append(t.sshArgs()[1:], "--", t.cfg.Host, "shf-probe")
+	args := append(t.sshArgs(false)[1:], "--", t.cfg.Host, "shf-probe")
 	cmd := exec.CommandContext(ctx, t.ssh, args...)
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
@@ -414,7 +507,42 @@ func (t *Transport) report(st Stats) {
 }
 
 func (t *Transport) prepareState() error {
-	return os.MkdirAll(t.cfg.StateDir, 0o700)
+	if err := os.MkdirAll(t.cfg.StateDir, 0o700); err != nil {
+		return err
+	}
+	if t.ctl != "" {
+		if err := t.prepareControlDir(); err != nil {
+			// Not fatal: transfers go without a shared connection.
+			t.ctl = ""
+		}
+	}
+	return nil
+}
+
+// Close stops the shared SSH connection, if one is open: it accepts no new
+// transfers, and exits as soon as those still running (of another process
+// of the same folder, say) are done. The Transport stays usable; the next
+// transfer opens a new connection.
+func (t *Transport) Close() error {
+	t.stopMaster()
+	return nil
+}
+
+func (t *Transport) stopMaster() {
+	if t.ctl == "" {
+		return
+	}
+	if _, err := os.Lstat(t.ctl); err != nil {
+		return // no master
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := append(t.sshArgs(true)[1:], "-O", "stop", "--", t.cfg.Host)
+	cmd := exec.CommandContext(ctx, t.ssh, args...)
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	cmd.Env = cleanEnv(os.Environ())
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Run() // best effort: a stale socket or a master already gone is fine
 }
 
 // run executes rsync and turns its failures into the package's errors.
@@ -431,7 +559,14 @@ func (t *Transport) run(ctx context.Context, args []string, remotePath string) (
 		if ctx.Err() != nil {
 			return Stats{}, fmt.Errorf("rsync %s: %w", remotePath, ctx.Err())
 		}
-		return Stats{}, classify(remotePath, err, stderr.String())
+		err = classify(remotePath, err, stderr.String())
+		if errors.Is(err, ErrAuth) || errors.Is(err, ErrUnreachable) {
+			// Revoked: nothing more goes over this connection. Or the
+			// connection itself failed (a dead link after a network
+			// change hangs until --timeout): the next try connects anew.
+			t.stopMaster()
+		}
+		return Stats{}, err
 	}
 	st := parseStats(stdout.String())
 	st.Path = remotePath
@@ -465,8 +600,13 @@ func classify(remotePath string, err error, stderr string) error {
 		return fmt.Errorf("rsync %s: %w: %s", remotePath, kind, detail)
 	}
 	if m := gateRE.FindStringSubmatch(stderr); m != nil {
-		if m[1] == "not_found" {
+		switch m[1] {
+		case "not_found":
 			return wrap(transport.ErrChanged, m[2])
+		case "member":
+			// Unknown or revoked: what sshd says on a new connection
+			// once the key is gone, said here on a shared one.
+			return wrap(ErrAuth, m[1]+": "+m[2])
 		}
 		return wrap(ErrDenied, m[1]+": "+m[2])
 	}

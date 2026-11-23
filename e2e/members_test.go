@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Scenario 10: a third client joins with a folder that already has some
@@ -88,6 +89,13 @@ func TestRevokedMember(t *testing.T) {
 	if code := c.apiStatus(bob.token, "GET", "/changes?since=0"); code != http.StatusOK {
 		t.Fatalf("bob's token before the revocation: HTTP %d", code)
 	}
+	// An SSH connection of bob's that stays open across the revocation,
+	// as the client's shared (ControlMaster) connection does, and works
+	// before it.
+	sock := c.sshMaster(key)
+	if out, err := c.rsyncVia(sock, "storage/before.txt", filepath.Join(c.base, "probe-mux.txt")); err != nil {
+		t.Fatalf("bob cannot download over his open connection: %v\n%s", err, out)
+	}
 
 	c.mustShfd("member", "revoke", c.share, "bob")
 	bob.revoked = true
@@ -109,6 +117,22 @@ func TestRevokedMember(t *testing.T) {
 	out, err = c.rsyncAs(key, src, "tmp/0123456789abcdef0123456789abcdef", true)
 	if err == nil || !strings.Contains(out, "Permission denied") {
 		t.Errorf("revoked key can still upload: %v\n%s", err, out)
+	}
+	// The connection opened before the revocation is still up, but every
+	// transfer over it is refused: rsync-gate checks the member each time.
+	out, err = c.rsyncVia(sock, "storage/before.txt", filepath.Join(c.base, "probe-mux-2.txt"))
+	if err == nil || !strings.Contains(out, "member bob is revoked") {
+		t.Errorf("revoked member can still download over an open connection: %v\n%s", err, out)
+	}
+	out, err = c.rsyncVia(sock, src, "tmp/0123456789abcdef0123456789abcdef", true)
+	if err == nil || !strings.Contains(out, "member bob is revoked") {
+		t.Errorf("revoked member can still upload over an open connection: %v\n%s", err, out)
+	}
+	if fileExists(filepath.Join(c.base, "probe-mux-2.txt")) {
+		t.Error("a file was downloaded over the revoked member's open connection")
+	}
+	if out, err := exec.Command("ssh", "-S", sock, "-O", "check", "127.0.0.1").CombinedOutput(); err != nil {
+		t.Errorf("the open connection went away, so the refusals above did not test it: %v %s", err, out)
 	}
 
 	// and the running client gets nothing through either
@@ -132,6 +156,57 @@ func TestRevokedMember(t *testing.T) {
 		}
 	}
 	c.converged(arrive)
+}
+
+// sshMaster opens an SSH connection with key and keeps it open until the
+// test ends; rsyncVia runs transfers over it. Its socket is in a short
+// directory of its own (unix socket paths are limited to ~100 bytes).
+func (c *cluster) sshMaster(key string) string {
+	c.t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "shf-e2e-")
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "m")
+	cmd := exec.Command("ssh", "-F", "/dev/null", "-i", key, "-p", fmt.Sprint(c.sshd.Port), "-l", c.sshd.User,
+		"-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+		"-M", "-S", sock, "-N", "127.0.0.1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		c.t.Fatal(err)
+	}
+	c.t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+		os.RemoveAll(dir)
+	})
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if fileExists(sock) {
+			return sock
+		}
+	}
+	c.t.Fatalf("ssh master did not come up: %s", stderr.String())
+	return ""
+}
+
+func (c *cluster) rsyncVia(sock, from, to string, upload ...bool) (string, error) {
+	// ControlMaster=no and no key: without the master this cannot
+	// authenticate at all, so a refusal by rsync-gate came over it.
+	rsh := fmt.Sprintf("ssh -F /dev/null -S %s -o ControlMaster=no -o IdentityFile=/dev/null -o IdentitiesOnly=yes "+
+		"-o IdentityAgent=none -o BatchMode=yes -p %d -l %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+		sock, c.sshd.Port, c.sshd.User)
+	args := []string{"--timeout=20", "-e", rsh}
+	if len(upload) > 0 && upload[0] {
+		args = append(args, "--partial", "--", from, "127.0.0.1:"+to)
+	} else {
+		args = append(args, "--inplace", "--", "127.0.0.1:"+from, to)
+	}
+	cmd := exec.Command("rsync", args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 // apiStatus calls the folder's API with token and returns the HTTP status.

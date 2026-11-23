@@ -127,7 +127,9 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
   stari. Odgovor sadrži sačuvani ključ, njegov SHA256 otisak i `ssh` (korisnik,
   host i port iz `--ssh-endpoint`). `shf join` ovo radi sam.
 - **Opoziv**: `shfd member revoke <share-id> <username>` briše red. `rsync-gate`
-  odbija opozvanog člana i ako red iz nekog razloga još postoji.
+  odbija opozvanog člana i ako red iz nekog razloga još postoji, i na SSH vezi
+  koja je otvorena pre opoziva (vidi niže): član se proverava pri svakom
+  prenosu, ne samo pri prijavi.
 - **Popravka**: `shfd keys sync` ponovo ispiše ceo blok iz baza svih foldera
   (aktivni članovi koji imaju ključ). Korisno posle vraćanja iz rezervne kopije
   ili ručne izmene.
@@ -151,6 +153,18 @@ svom direktorijumu stanja (`known_hosts` pored `state.db`), a ne u
 korisnikovom `~/.ssh/known_hosts`.
 Ako se kasnije promeni, prenos se odbija. Otisak ključa koji članovi mogu da
 uporede: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+
+Klijent drži jednu SSH vezu za sve prenose (OpenSSH multiplexing,
+`ControlMaster=auto`, `ControlPersist=60s`): prvi prenos otvara vezu, a svaki
+sledeći je samo nova sesija na njoj, bez novog key exchange-a i
+autentikacije. `sshd` prinudnu komandu primenjuje na svaku sesiju, pa svaki
+prenos i dalje prolazi kroz `rsync-gate`. Veza se zatvara 60 s posle
+poslednjeg prenosa, pri gašenju `shf daemon`-a i kada server odbije člana.
+Soket veze je u direktorijumu stanja (`ssh-<hash>`), ili, kada je ta putanja
+preduga za unix soket, u `$XDG_RUNTIME_DIR/shf/` odnosno `/tmp/shf-<uid>/`
+(direktorijum samo za korisnika). Na serveru to znači po jedan `sshd` proces
+po aktivnom klijentu umesto po prenosu; `MaxSessions` (podrazumevano 10) je
+dovoljan, jer klijent prenosi fajl po fajl.
 
 ## Šta `rsync-gate` propušta
 

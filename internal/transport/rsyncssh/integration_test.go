@@ -153,6 +153,7 @@ LogLevel VERBOSE
 `, port, hostKey, w.keys.Path, filepath.Join(dir, "sshd.pid"), username)), 0o600)
 		ctx, cancel := context.WithCancel(context.Background())
 		cmd := exec.CommandContext(ctx, sshd, "-D", "-e", "-f", cfg)
+		cmd.WaitDelay = 5 * time.Second
 		cmd.Stdout, cmd.Stderr = w.sshdLog, w.sshdLog
 		if err := cmd.Start(); err != nil {
 			cancel()
@@ -161,6 +162,10 @@ LogLevel VERBOSE
 		exited := make(chan struct{})
 		go func() { cmd.Wait(); close(exited) }()
 		t.Cleanup(func() {
+			// The connections first: a client's shared connection
+			// (ControlPersist) would keep its sshd child, and with it
+			// the log pipe, open after the listener is gone.
+			exec.Command("pkill", "-TERM", "-P", fmt.Sprint(cmd.Process.Pid)).Run()
 			cancel()
 			<-exited
 			if t.Failed() {
@@ -211,7 +216,24 @@ func (w *world) transport(tune func(*Config)) *Transport {
 	if err != nil {
 		w.t.Fatal(err)
 	}
+	w.t.Cleanup(func() { tr.Close() })
 	return tr
+}
+
+// accepted counts the connections sshd authenticated.
+func (w *world) accepted() int {
+	return strings.Count(w.sshdLog.String(), "Accepted publickey for ")
+}
+
+// waitGone waits until the control socket at p is removed.
+func waitGone(t *testing.T, p string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+	}
+	t.Errorf("control socket %s is still there", p)
 }
 
 func (w *world) announce(p string, file string) *server.AnnounceResult {
@@ -308,7 +330,7 @@ func TestIntegrationUploadDownload(t *testing.T) {
 	// The gate refuses what the client package would never send: a shell,
 	// a committed upload id, a path outside storage/.
 	sshCmd := func(remote string) (string, error) {
-		args := append(tr.sshArgs()[1:], "127.0.0.1", remote)
+		args := append(tr.sshArgs(true)[1:], "127.0.0.1", remote)
 		out, err := exec.Command(tr.ssh, args...).CombinedOutput()
 		return string(out), err
 	}
@@ -489,6 +511,9 @@ func TestIntegrationHostKeyAndRevoke(t *testing.T) {
 	h, _ := hashx.File(src)
 
 	// Another host key under the same name: refused, not overwritten.
+	// (Checked when a connection is made, so the shared one goes first.)
+	tr.Close()
+	waitGone(t, tr.ctl)
 	kh, _ := os.ReadFile(tr.KnownHosts())
 	other := filepath.Join(t.TempDir(), "other")
 	exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", other).Run()
@@ -520,7 +545,7 @@ func TestIntegrationHostKeyAndRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := tr.Fetch(ctx, w.sh.ID, "a.txt", h, filepath.Join(local, "b.txt"))
-	if !errors.Is(err, ErrDenied) || !strings.Contains(err.Error(), "revoked") {
+	if !errors.Is(err, ErrAuth) || !strings.Contains(err.Error(), "revoked") {
 		t.Errorf("revoked member, line present: %v", err)
 	}
 	if l := w.logLines(`member=ana dir=- path="" outcome=denied detail="member: member ana is revoked"`); len(l) != 1 {
@@ -558,4 +583,124 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// Transfers share one SSH connection; revoking the member cuts it off at
+// once, on that open connection too; Close ends it.
+func TestIntegrationSharedConnection(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	tr := w.transport(nil)
+	if tr.ctl == "" {
+		t.Fatal("no control socket")
+	}
+	local := t.TempDir()
+	before := w.accepted()
+	var hashes []string
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("f%d.txt", i)
+		src := writeFile(t, local, name, []byte(name))
+		ar := w.announce(name, src)
+		if err := tr.Send(ctx, upload(ar, w.sh.ID), src); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.sh.Commit(w.ana, ar.UploadID); err != nil {
+			t.Fatal(err)
+		}
+		h, _ := hashx.File(src)
+		hashes = append(hashes, h)
+	}
+	for i, h := range hashes {
+		if err := tr.Fetch(ctx, w.sh.ID, fmt.Sprintf("f%d.txt", i), h, filepath.Join(local, fmt.Sprintf("g%d.txt", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := w.accepted() - before; n != 1 {
+		t.Errorf("10 transfers made %d SSH connections, want 1", n)
+	}
+	if fi, err := os.Lstat(tr.ctl); err != nil || fi.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("control socket %s: %v %v", tr.ctl, fi, err)
+	}
+	if len(w.logLines("outcome=ok")) != 10 {
+		t.Errorf("service.log: %q", w.logLines("outcome=ok"))
+	}
+
+	// A second Transport of the same folder (shf status next to the
+	// daemon) uses the same connection.
+	other := w.transport(nil)
+	if other.ctl != tr.ctl {
+		t.Errorf("control paths differ: %s, %s", other.ctl, tr.ctl)
+	}
+	if err := other.Fetch(ctx, w.sh.ID, "f0.txt", hashes[0], filepath.Join(local, "h0.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if n := w.accepted() - before; n != 1 {
+		t.Errorf("%d SSH connections after the second transport, want 1", n)
+	}
+
+	// Revoked while the connection is open: the next transfer over it is
+	// refused (rsync-gate checks the member on every session), and the
+	// client stops the connection.
+	if err := w.sh.RevokeMember("ana"); err != nil {
+		t.Fatal(err)
+	}
+	err := tr.Fetch(ctx, w.sh.ID, "f1.txt", hashes[1], filepath.Join(local, "r1.txt"))
+	if !errors.Is(err, ErrAuth) || !strings.Contains(err.Error(), "revoked") {
+		t.Errorf("revoked member over the open connection: %v", err)
+	}
+	src := writeFile(t, local, "late.txt", []byte("late"))
+	if err := tr.Send(ctx, transport.Upload{ShareID: w.sh.ID, UploadID: strings.Repeat("ab", 16), Dest: "tmp/" + strings.Repeat("ab", 16)}, src); !errors.Is(err, ErrAuth) {
+		t.Errorf("revoked member, upload: %v", err)
+	}
+	if n := w.accepted() - before; n != 1 {
+		t.Errorf("sshd accepted a new connection of a revoked member (%d connections)", n)
+	}
+	if fileExists(filepath.Join(local, "r1.txt")) {
+		t.Error("a revoked member downloaded a file")
+	}
+	if l := w.logLines(`member=ana dir=- path="" outcome=denied detail="member: member ana is revoked"`); len(l) < 1 {
+		t.Errorf("no refusal in service.log")
+	}
+	waitGone(t, tr.ctl)
+}
+
+func TestIntegrationCloseEndsConnection(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	tr := w.transport(func(c *Config) { c.ControlPersist = time.Hour })
+	local := t.TempDir()
+	src := writeFile(t, local, "a.txt", []byte("a"))
+	ar := w.announce("a.txt", src)
+	if err := tr.Send(ctx, upload(ar, w.sh.ID), src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tr.ctl); err != nil {
+		t.Fatalf("no master after a transfer: %v", err)
+	}
+	if err := tr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, tr.ctl)
+	if err := tr.Close(); err != nil { // nothing to stop
+		t.Fatal(err)
+	}
+	// still usable: the next transfer opens a new connection
+	before := w.accepted()
+	if err := tr.Send(ctx, upload(ar, w.sh.ID), src); err != nil {
+		t.Fatal(err)
+	}
+	if n := w.accepted() - before; n != 1 {
+		t.Errorf("%d new connections after Close, want 1", n)
+	}
+
+	// NoMultiplex: a connection per transfer, no socket.
+	plain := w.transport(func(c *Config) { c.NoMultiplex = true })
+	if plain.ctl != "" {
+		t.Errorf("NoMultiplex has a control path %s", plain.ctl)
+	}
+}
+
+func fileExists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }

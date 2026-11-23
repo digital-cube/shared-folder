@@ -94,6 +94,7 @@ LogLevel VERBOSE
 `, port, hostKey, authorizedKeys, filepath.Join(dir, "sshd.pid"), u.Username)), 0o600)
 		ctx, cancel := context.WithCancel(context.Background())
 		cmd := exec.CommandContext(ctx, sshd, "-D", "-e", "-f", cfg)
+		cmd.WaitDelay = 5 * time.Second
 		cmd.Stdout, cmd.Stderr = &s.log, &s.log
 		if err := cmd.Start(); err != nil {
 			cancel()
@@ -102,6 +103,10 @@ LogLevel VERBOSE
 		exited := make(chan struct{})
 		go func() { cmd.Wait(); close(exited) }()
 		t.Cleanup(func() {
+			// The connections first: a client's shared connection
+			// (ControlPersist) would keep its sshd child, and with it
+			// the log pipe, open after the listener is gone.
+			exec.Command("pkill", "-TERM", "-P", fmt.Sprint(cmd.Process.Pid)).Run()
 			cancel()
 			<-exited
 			if t.Failed() {

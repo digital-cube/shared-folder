@@ -96,6 +96,7 @@ func TestClassify(t *testing.T) {
 	for stderr, want := range map[string]error{
 		"shfd rsync-gate: denied (not_found): storage/x does not exist\nrsync: connection unexpectedly closed": transport.ErrChanged,
 		"shfd rsync-gate: denied (upload): abc is not an open upload of ana\n":                                 ErrDenied,
+		"shfd rsync-gate: denied (member): member ana is revoked\n":                                            ErrAuth,
 		"@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.\n":            ErrHostKey,
 		"igor@127.0.0.1: Permission denied (publickey).\n":                                                     ErrAuth,
 		"ssh: connect to host x port 22: Connection refused\n":                                                 ErrUnreachable,
@@ -126,5 +127,40 @@ func TestCleanEnv(t *testing.T) {
 	got := cleanEnv([]string{"HOME=/h", "RSYNC_PROTECT_ARGS=1", "RSYNC_OLD_ARGS=1", "LC_ALL=sr_RS.UTF-8"})
 	if strings.Join(got, " ") != "HOME=/h LC_ALL=C" {
 		t.Errorf("%q", got)
+	}
+}
+
+func TestControlPath(t *testing.T) {
+	key := filepath.Join(t.TempDir(), "id")
+	os.WriteFile(key, []byte("key"), 0o600)
+	cfg := Config{Host: "h", Port: 22, User: "shf", KeyFile: key, StateDir: "/s/abc"}
+	p := controlPath(cfg)
+	if filepath.Dir(p) != cfg.StateDir || len(p) > maxControlPath {
+		t.Errorf("short state dir: %s", p)
+	}
+	if q := controlPath(cfg); q != p {
+		t.Errorf("not stable: %s, %s", p, q)
+	}
+	for _, change := range []func(*Config){
+		func(c *Config) { c.Host = "other" },
+		func(c *Config) { c.Port = 2222 },
+		func(c *Config) { c.User = "x" },
+		func(c *Config) { os.WriteFile(c.KeyFile, []byte("new key"), 0o600) },
+	} {
+		c := cfg
+		change(&c)
+		if q := controlPath(c); q == p {
+			t.Errorf("same control path for another connection: %s", q)
+		}
+	}
+
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	cfg.StateDir = "/" + strings.Repeat("long/", 20) + "state"
+	if p := controlPath(cfg); !strings.HasPrefix(p, "/run/user/1000/shf/") || len(p) > maxControlPath {
+		t.Errorf("long state dir: %s", p)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if p := controlPath(cfg); !strings.HasPrefix(p, "/tmp/shf-") || len(p) > maxControlPath {
+		t.Errorf("long state dir, no XDG_RUNTIME_DIR: %s", p)
 	}
 }

@@ -118,8 +118,14 @@ func Open(cfg *Config, opts Options) (*Client, error) {
 // Head asks the server for the folder's HEAD.
 func (c *Client) Head(ctx context.Context) (int64, error) { return c.api.head(ctx) }
 
-// Close releases the state.
-func (c *Client) Close() error { return c.st.Close() }
+// Close releases the state and ends the transport's shared SSH
+// connection, if it keeps one.
+func (c *Client) Close() error {
+	if cl, ok := c.tr.(io.Closer); ok {
+		cl.Close()
+	}
+	return c.st.Close()
+}
 
 // Config is the folder's configuration.
 func (c *Client) Config() *Config { return c.cfg }
