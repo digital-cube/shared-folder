@@ -1,0 +1,343 @@
+// Package shfdcli is the command line of shfd.
+//
+//	shfd serve --data-root DIR --listen ADDR [--tls-cert F --tls-key F]
+//	shfd share create <name> [--admin USER]
+//	shfd share list
+//	shfd member add <share-id> <username> [--admin]
+//	shfd member revoke <share-id> <username>
+//	shfd member list <share-id>
+//
+// --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command.
+package shfdcli
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"text/tabwriter"
+	"time"
+
+	"github.com/digital-cube/shared-folder/internal/server"
+	"github.com/digital-cube/shared-folder/internal/server/httpapi"
+	"github.com/digital-cube/shared-folder/internal/version"
+)
+
+// EnvDataRoot names the environment variable holding the default data-root.
+const EnvDataRoot = "SHFD_DATA_ROOT"
+
+const usage = `shfd — shared folder server
+
+Usage:
+  shfd serve --data-root DIR [--listen ADDR] [--tls-cert FILE --tls-key FILE]
+  shfd share create <name> [--admin USERNAME]
+  shfd share list
+  shfd member add <share-id> <username> [--admin]
+  shfd member revoke <share-id> <username>
+  shfd member list <share-id>
+  shfd version
+  shfd help
+
+Every command takes --data-root; it defaults to $SHFD_DATA_ROOT.
+serve speaks plain HTTP unless --tls-cert and --tls-key are given (TLS can
+also come from a reverse proxy).
+`
+
+// Env is what a command runs against; tests replace it.
+type Env struct {
+	Stdout, Stderr io.Writer
+	Getenv         func(string) string
+	// Ctx ends serve (SIGINT/SIGTERM when nil).
+	Ctx context.Context
+	// Ready, when set, receives the address serve listens on.
+	Ready func(addr string)
+}
+
+// Main runs with the process environment.
+func Main(args []string) int {
+	return Run(args, Env{Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv})
+}
+
+// Run executes one command and returns the exit code.
+func Run(args []string, env Env) int {
+	if env.Getenv == nil {
+		env.Getenv = func(string) string { return "" }
+	}
+	if len(args) == 0 {
+		fmt.Fprint(env.Stdout, usage)
+		return 0
+	}
+	var err error
+	switch args[0] {
+	case "version", "-version", "--version", "-v":
+		fmt.Fprintf(env.Stdout, "shfd %s\n", version.Version)
+		return 0
+	case "help", "-help", "--help", "-h":
+		fmt.Fprint(env.Stdout, usage)
+		return 0
+	case "serve":
+		err = serve(args[1:], env)
+	case "share":
+		err = shareCmd(args[1:], env)
+	case "member":
+		err = memberCmd(args[1:], env)
+	default:
+		err = usageError("unknown command %q", args[0])
+	}
+	var ue usageErr
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &ue):
+		fmt.Fprintf(env.Stderr, "shfd: %v\n\n%s", err, usage)
+		return 2
+	default:
+		fmt.Fprintf(env.Stderr, "shfd: %v\n", err)
+		return 1
+	}
+}
+
+type usageErr struct{ msg string }
+
+func (e usageErr) Error() string { return e.msg }
+
+func usageError(format string, a ...any) error { return usageErr{fmt.Sprintf(format, a...)} }
+
+// flags parses args where flags and positional arguments may be mixed
+// ("member add ID ana --admin") and checks the number of positionals.
+func flags(fs *flag.FlagSet, args []string, nPos int, env Env) (dataRoot string, pos []string, err error) {
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&dataRoot, "data-root", env.Getenv(EnvDataRoot), "data directory")
+	for {
+		if err := fs.Parse(args); err != nil {
+			return "", nil, usageError("%s: %v", fs.Name(), err)
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			break
+		}
+		pos = append(pos, args[0])
+		args = args[1:]
+	}
+	if len(pos) != nPos {
+		return "", nil, usageError("%s: want %d argument(s), got %d", fs.Name(), nPos, len(pos))
+	}
+	if dataRoot == "" {
+		return "", nil, usageError("%s: --data-root or $%s is required", fs.Name(), EnvDataRoot)
+	}
+	return dataRoot, pos, nil
+}
+
+func shareCmd(args []string, env Env) error {
+	if len(args) == 0 {
+		return usageError("share: want create or list")
+	}
+	switch args[0] {
+	case "create":
+		fs := flag.NewFlagSet("share create", flag.ContinueOnError)
+		admin := fs.String("admin", "admin", "username of the first admin")
+		root, pos, err := flags(fs, args[1:], 1, env)
+		if err != nil {
+			return err
+		}
+		srv, err := server.Open(root, server.Options{})
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		id, token, err := srv.CreateShare(pos[0], *admin)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Stdout, "share-id: %s\nadmin:    %s\ntoken:    %s\n\nThe token is shown only now; it is stored as a hash.\n", id, *admin, token)
+		return nil
+	case "list":
+		fs := flag.NewFlagSet("share list", flag.ContinueOnError)
+		root, _, err := flags(fs, args[1:], 0, env)
+		if err != nil {
+			return err
+		}
+		srv, err := server.Open(root, server.Options{})
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		shares, err := srv.Shares()
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tNAME\tCREATED")
+		for _, s := range shares {
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", s.ID, s.Name, s.CreatedAt.Format(time.RFC3339))
+		}
+		return tw.Flush()
+	}
+	return usageError("share: unknown subcommand %q", args[0])
+}
+
+func memberCmd(args []string, env Env) error {
+	if len(args) == 0 {
+		return usageError("member: want add, revoke or list")
+	}
+	open := func(root, id string) (*server.Server, *server.Share, error) {
+		srv, err := server.Open(root, server.Options{SkipRecovery: true})
+		if err != nil {
+			return nil, nil, err
+		}
+		sh, err := srv.Share(id)
+		if err != nil {
+			srv.Close()
+			return nil, nil, err
+		}
+		return srv, sh, nil
+	}
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("member add", flag.ContinueOnError)
+		admin := fs.Bool("admin", false, "make the member an admin")
+		root, pos, err := flags(fs, args[1:], 2, env)
+		if err != nil {
+			return err
+		}
+		srv, sh, err := open(root, pos[0])
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		token, err := sh.AddMember(pos[1], *admin)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Stdout, "member: %s\ntoken:  %s\n\nThe token is shown only now; it is stored as a hash.\n", pos[1], token)
+		return nil
+	case "revoke":
+		fs := flag.NewFlagSet("member revoke", flag.ContinueOnError)
+		root, pos, err := flags(fs, args[1:], 2, env)
+		if err != nil {
+			return err
+		}
+		srv, sh, err := open(root, pos[0])
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		if err := sh.RevokeMember(pos[1]); err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Stdout, "revoked %s\n", pos[1])
+		return nil
+	case "list":
+		fs := flag.NewFlagSet("member list", flag.ContinueOnError)
+		root, pos, err := flags(fs, args[1:], 1, env)
+		if err != nil {
+			return err
+		}
+		srv, sh, err := open(root, pos[0])
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		ms, err := sh.Members()
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ")
+		for _, m := range ms {
+			st := "active"
+			if m.RevokedAt != nil {
+				st = "revoked " + m.RevokedAt.Format(time.RFC3339)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked)
+		}
+		return tw.Flush()
+	}
+	return usageError("member: unknown subcommand %q", args[0])
+}
+
+func when(t *time.Time) string {
+	if t == nil {
+		return "-"
+	}
+	return t.Format(time.RFC3339)
+}
+
+func serve(args []string, env Env) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	listen := fs.String("listen", ":8443", "address to listen on")
+	cert := fs.String("tls-cert", "", "TLS certificate (PEM)")
+	key := fs.String("tls-key", "", "TLS private key (PEM)")
+	root, _, err := flags(fs, args, 0, env)
+	if err != nil {
+		return err
+	}
+	if (*cert == "") != (*key == "") {
+		return usageError("serve: --tls-cert and --tls-key go together")
+	}
+	srv, err := server.Open(root, server.Options{})
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+	unlock, err := lockDataRoot(srv.Root())
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := srv.OpenAll(); err != nil {
+		return err
+	}
+
+	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	hs := &http.Server{
+		Handler:           httpapi.New(srv, log),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	ctx := env.Ctx
+	if ctx == nil {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+	}
+	errc := make(chan error, 1)
+	go func() {
+		if *cert != "" {
+			errc <- hs.ServeTLS(ln, *cert, *key)
+		} else {
+			errc <- hs.Serve(ln)
+		}
+	}()
+	scheme := "http"
+	if *cert != "" {
+		scheme = "https"
+	}
+	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "version", version.Version)
+	if env.Ready != nil {
+		env.Ready(ln.Addr().String())
+	}
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := hs.Shutdown(sctx); err != nil {
+		return err
+	}
+	log.Info("shfd stopped")
+	return nil
+}

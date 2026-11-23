@@ -1,0 +1,399 @@
+package server
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/digital-cube/shared-folder/internal/pathx"
+)
+
+// Directory and file names inside a share directory.
+const (
+	StorageDir = "storage"
+	TrashDir   = "trash"
+	TmpDir     = "tmp"
+	dbFile     = "service.db"
+	logFile    = "service.log"
+)
+
+// Share is one open folder. All operations that change it run one at a
+// time under mu: the single writer of the folder.
+type Share struct {
+	ID  string
+	dir string
+	db  *sql.DB
+	now func() time.Time
+
+	mu  sync.Mutex // the writer lock; also guards log
+	log *os.File
+
+	// crashAfterCommit, when set, is called after the database commit and
+	// before the disk steps run. Tests use it to simulate a crash there.
+	crashAfterCommit func() error
+}
+
+func openShare(dir, id string, opts Options) (*Share, error) {
+	for _, d := range []string{"", StorageDir, TrashDir, TmpDir} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+			return nil, err
+		}
+	}
+	db, err := openDB(filepath.Join(dir, dbFile), "service")
+	if err != nil {
+		return nil, err
+	}
+	lf, err := os.OpenFile(filepath.Join(dir, logFile), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	s := &Share{ID: id, dir: dir, db: db, now: opts.Now, log: lf}
+	if opts.SkipRecovery {
+		return s, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.replayJournal(); err != nil {
+		s.close()
+		return nil, fmt.Errorf("folder %s: finishing interrupted disk steps: %w", id, err)
+	}
+	if err := s.catchUpLog(); err != nil {
+		s.close()
+		return nil, fmt.Errorf("folder %s: %s: %w", id, logFile, err)
+	}
+	return s, nil
+}
+
+func (s *Share) close() error {
+	return errors.Join(s.db.Close(), s.log.Close())
+}
+
+// Dir is the share directory (<data-root>/<share-id>).
+func (s *Share) Dir() string { return s.dir }
+
+// abs maps a share-relative slash path ("storage/a/b.txt") to the disk.
+func (s *Share) abs(rel string) string { return filepath.Join(s.dir, filepath.FromSlash(rel)) }
+
+// ---- members -------------------------------------------------------------
+
+// Role of a member.
+const (
+	RoleAdmin  = "admin"
+	RoleMember = "member"
+)
+
+// Member is a row of members, without the token hash.
+type Member struct {
+	ID           int64      `json:"id"`
+	Username     string     `json:"username"`
+	Role         string     `json:"role"`
+	SSHPubkey    string     `json:"ssh_pubkey,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
+	LastPushAt   *time.Time `json:"last_push_at,omitempty"`
+	LastSeqAcked int64      `json:"last_seq_acked"`
+}
+
+// NewToken returns a fresh random token: "shf_" and 43 base64url characters
+// (256 bits).
+func NewToken() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return "shf_" + base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+// HashToken is what members.token_hash stores. Tokens carry 256 random bits,
+// so a plain SHA-256 is enough; there is nothing to brute-force.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// AddMember adds a member and returns the token. Only its hash is stored, so
+// this is the one time the token is visible.
+func (s *Share) AddMember(username string, admin bool) (string, error) {
+	if err := pathx.ValidateUsername(username); err != nil {
+		return "", errf(CodeInvalidRequest, "%v", err)
+	}
+	role := RoleMember
+	if admin {
+		role = RoleAdmin
+	}
+	token := NewToken()
+	_, err := s.db.Exec(`INSERT INTO members (username, token_hash, role, created_at) VALUES (?, ?, ?, ?)`,
+		username, HashToken(token), role, fmtTime(s.now()))
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return "", errf(CodeMemberExists, "member %q already exists", username)
+		}
+		return "", err
+	}
+	return token, nil
+}
+
+// RevokeMember revokes a member's token. The member stays in the list (and
+// in the history); revoking twice is not an error.
+func (s *Share) RevokeMember(username string) error {
+	res, err := s.db.Exec(`UPDATE members SET revoked_at = coalesce(revoked_at, ?) WHERE username = ?`,
+		fmtTime(s.now()), username)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errf(CodeUnknownMember, "no member %q", username)
+	}
+	return nil
+}
+
+const memberCols = `id, username, role, ssh_pubkey, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked`
+
+func scanMember(sc interface{ Scan(...any) error }) (*Member, error) {
+	var m Member
+	var created, revoked, seen, push sql.NullString
+	if err := sc.Scan(&m.ID, &m.Username, &m.Role, &m.SSHPubkey, &created, &revoked, &seen, &push, &m.LastSeqAcked); err != nil {
+		return nil, err
+	}
+	if t := parseTime(created); t != nil {
+		m.CreatedAt = *t
+	}
+	m.RevokedAt, m.LastSeenAt, m.LastPushAt = parseTime(revoked), parseTime(seen), parseTime(push)
+	return &m, nil
+}
+
+// Members lists all members, revoked ones included.
+func (s *Share) Members() ([]Member, error) {
+	rows, err := s.db.Query(`SELECT ` + memberCols + ` FROM members ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Member
+	for rows.Next() {
+		m, err := scanMember(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// Authenticate returns the active member whose token this is, or an
+// *Error with CodeUnauthorized for an empty, unknown or revoked token.
+func (s *Share) Authenticate(token string) (*Member, error) {
+	if token == "" {
+		return nil, errf(CodeUnauthorized, "missing token")
+	}
+	m, err := scanMember(s.db.QueryRow(`SELECT `+memberCols+` FROM members WHERE token_hash = ?`, HashToken(token)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errf(CodeUnauthorized, "unknown token")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if m.RevokedAt != nil {
+		return nil, errf(CodeUnauthorized, "token revoked")
+	}
+	return m, nil
+}
+
+// Touch records that the member made a successful call.
+func (s *Share) Touch(memberID int64) error {
+	_, err := s.db.Exec(`UPDATE members SET last_seen_at = ? WHERE id = ?`, fmtTime(s.now()), memberID)
+	return err
+}
+
+// ---- service.log ---------------------------------------------------------
+
+// logEvent appends one line per event: time, seq, member, operation, path.
+// Caller holds s.mu.
+func (s *Share) logEvents(evs []Event) error {
+	var b bytes.Buffer
+	for _, e := range evs {
+		fmt.Fprintf(&b, "%s seq=%d member=%s op=%s path=%s", e.TS.UTC().Format(timeLayout), e.Seq, e.Member, e.Op, strconv.Quote(e.Path))
+		if e.OldPath != "" {
+			fmt.Fprintf(&b, " old_path=%s", strconv.Quote(e.OldPath))
+		}
+		b.WriteByte('\n')
+	}
+	return s.writeLog(b.Bytes())
+}
+
+func (s *Share) writeLog(p []byte) error {
+	if len(p) == 0 {
+		return nil
+	}
+	if _, err := s.log.Write(p); err != nil {
+		return err
+	}
+	return s.log.Sync()
+}
+
+var logSeqRE = regexp.MustCompile(` seq=(\d+) `)
+
+// catchUpLog appends the lines of events that were committed but did not
+// reach service.log (a crash right after a commit). events is the source
+// of truth; the log is its readable copy.
+func (s *Share) catchUpLog() error {
+	last, err := lastLoggedSeq(s.log)
+	if err != nil {
+		return err
+	}
+	var head int64
+	if err := s.db.QueryRow(`SELECT coalesce(max(seq), 0) FROM events`).Scan(&head); err != nil {
+		return err
+	}
+	for last < head {
+		evs, _, _, err := s.changes(last, 1000)
+		if err != nil {
+			return err
+		}
+		if len(evs) == 0 {
+			return nil
+		}
+		if err := s.logEvents(evs); err != nil {
+			return err
+		}
+		last = evs[len(evs)-1].Seq
+	}
+	return nil
+}
+
+// lastLoggedSeq finds the largest seq in the tail of the log.
+func lastLoggedSeq(f *os.File) (int64, error) {
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	const tail = 256 << 10
+	off := max(st.Size()-tail, 0)
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return 0, err
+	}
+	var last int64
+	sc := bufio.NewScanner(bytes.NewReader(buf))
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		if m := logSeqRE.FindSubmatch(sc.Bytes()); m != nil {
+			if n, err := strconv.ParseInt(string(m[1]), 10, 64); err == nil && n > last {
+				last = n
+			}
+		}
+	}
+	return last, nil
+}
+
+// ---- disk journal --------------------------------------------------------
+
+// fsStep is one change on disk. Paths are relative to the share directory.
+// Every step is idempotent, so replaying a journal is always safe:
+//
+//	rename  if dst exists the step is done; otherwise src is renamed to dst.
+//	        A plan never renames onto an existing dst, which is what makes
+//	        "dst exists" mean "already done".
+//	mkdir   create dst (and parents) if missing.
+//	rmdir   remove the empty directory dst if present.
+//	remove  remove the file dst if present.
+type fsStep struct {
+	Op, Src, Dst string
+}
+
+func (s *Share) runStep(st fsStep) error {
+	dst := s.abs(st.Dst)
+	switch st.Op {
+	case "rename":
+		if _, err := os.Lstat(dst); err == nil {
+			return nil
+		}
+		src := s.abs(st.Src)
+		if _, err := os.Lstat(src); err != nil {
+			return fmt.Errorf("rename %s -> %s: source and target both missing: %w", st.Src, st.Dst, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return err
+		}
+		syncDir(filepath.Dir(src))
+		syncDir(filepath.Dir(dst))
+		return nil
+	case "mkdir":
+		if err := os.MkdirAll(dst, 0o700); err != nil {
+			return err
+		}
+		syncDir(filepath.Dir(dst))
+		return nil
+	case "rmdir", "remove":
+		if err := os.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		syncDir(filepath.Dir(dst))
+		return nil
+	}
+	return fmt.Errorf("unknown disk step %q", st.Op)
+}
+
+// replayJournal finishes the disk steps of operations whose database part
+// committed. Caller holds s.mu.
+func (s *Share) replayJournal() error {
+	rows, err := s.db.Query(`SELECT op, src, dst FROM fs_journal ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	var steps []fsStep
+	for rows.Next() {
+		var st fsStep
+		if err := rows.Scan(&st.Op, &st.Src, &st.Dst); err != nil {
+			rows.Close()
+			return err
+		}
+		steps = append(steps, st)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	return s.runSteps(steps)
+}
+
+func (s *Share) runSteps(steps []fsStep) error {
+	for _, st := range steps {
+		if err := s.runStep(st); err != nil {
+			return err
+		}
+	}
+	_, err := s.db.Exec(`DELETE FROM fs_journal`)
+	return err
+}
+
+// syncDir makes a rename inside dir durable. Best effort: not every
+// platform can fsync a directory.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+}
