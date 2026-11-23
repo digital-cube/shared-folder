@@ -7,6 +7,7 @@
 //	POST /v1/shares/{id}/uploads/{upload_id}/commit
 //	POST /v1/shares/{id}/ops
 //	POST /v1/shares/{id}/sync-report
+//	PUT  /v1/shares/{id}/ssh-key
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
@@ -20,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/server"
 )
 
@@ -61,6 +63,7 @@ func New(srv *server.Server, log *slog.Logger) http.Handler {
 	mux.Handle("POST /v1/shares/{id}/uploads/{upload}/commit", a.auth(a.commit))
 	mux.Handle("POST /v1/shares/{id}/ops", a.auth(a.ops))
 	mux.Handle("POST /v1/shares/{id}/sync-report", a.auth(a.syncReport))
+	mux.Handle("PUT /v1/shares/{id}/ssh-key", a.auth(a.setSSHKey))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, server.CodeNotFound, "no such endpoint")
 	})
@@ -164,6 +167,31 @@ func (a *api) syncReport(w http.ResponseWriter, r *http.Request, sh *server.Shar
 	return map[string]string{"status": "ok"}, nil
 }
 
+// SSHKeyRequest is the body of PUT /ssh-key: the member's OpenSSH public
+// key, as in id_ed25519.pub.
+type SSHKeyRequest struct {
+	PublicKey string `json:"public_key"`
+}
+
+// SSHKeyResponse confirms the key that rsync over SSH now accepts for the
+// member; it replaces any earlier one.
+type SSHKeyResponse struct {
+	PublicKey   string `json:"public_key"` // "type base64", without the comment
+	Fingerprint string `json:"fingerprint"`
+}
+
+func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	var req SSHKeyRequest
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	key, err := sh.SetSSHKey(m, req.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	return SSHKeyResponse{PublicKey: key, Fingerprint: authkeys.Fingerprint(key)}, nil
+}
+
 // status maps an error code to its HTTP status.
 func status(c server.Code) int {
 	switch c {
@@ -173,8 +201,10 @@ func status(c server.Code) int {
 		return http.StatusNotFound
 	case server.CodeStaleBase, server.CodeCaseConflict, server.CodeDestExists, server.CodeKindMismatch,
 		server.CodeParentNotDir, server.CodeIsDir, server.CodeDirNotEmpty, server.CodeUploadMissing,
-		server.CodeMemberExists:
+		server.CodeMemberExists, server.CodeKeyInUse:
 		return http.StatusConflict
+	case server.CodeSSHNotConfigured:
+		return http.StatusNotImplemented
 	case server.CodeHashMismatch, server.CodeSizeMismatch:
 		return http.StatusUnprocessableEntity
 	default:

@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/pathx"
 )
 
@@ -39,6 +40,11 @@ type Options struct {
 	// or catching up service.log. The CLI's member commands use it: they
 	// may run next to a live shfd serve, which owns that work.
 	SkipRecovery bool
+	// AuthorizedKeys, when set, is the authorized_keys file of the system
+	// user sshd runs rsync-gate as. Registering a member's SSH key writes
+	// its line there and revoking the member removes it. When nil, SSH
+	// keys cannot be registered.
+	AuthorizedKeys *authkeys.File
 }
 
 // Server owns a data-root.
@@ -211,4 +217,39 @@ func newUUID() string {
 	b[6] = b[6]&0x0f | 0x40 // version 4
 	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// SyncAuthorizedKeys rewrites the managed block of authorized_keys from the
+// databases: one line for every active member with an SSH key, in every
+// folder. Lines whose key clashes with another line are left out and
+// returned as "share-id/username".
+func (s *Server) SyncAuthorizedKeys() (skipped []string, err error) {
+	if s.opts.AuthorizedKeys == nil {
+		return nil, errf(CodeSSHNotConfigured, "no authorized_keys file is configured")
+	}
+	shares, err := s.Shares()
+	if err != nil {
+		return nil, err
+	}
+	var entries []authkeys.Entry
+	for _, si := range shares {
+		sh, err := s.Share(si.ID)
+		if err != nil {
+			return nil, err
+		}
+		ms, err := sh.Members()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			if m.RevokedAt == nil && m.SSHPubkey != "" {
+				entries = append(entries, authkeys.Entry{ShareID: si.ID, MemberID: m.ID, Username: m.Username, Key: m.SSHPubkey})
+			}
+		}
+	}
+	sk, err := s.opts.AuthorizedKeys.Replace(entries)
+	for _, e := range sk {
+		skipped = append(skipped, e.ShareID+"/"+e.Username)
+	}
+	return skipped, err
 }

@@ -10,6 +10,8 @@ Specifikacija prve verzije: [docs/specifikacija.md](docs/specifikacija.md).
 
 Postoje zajednički paketi i jezgro servera `shfd`: folderi, članovi sa
 tokenima, dnevnik promena, kontrolni HTTP API, pravila konflikta i trash.
+Fajlovi se prenose rsync-om preko SSH-a, sa prinudnom komandom
+`shfd rsync-gate` po članu ([docs/server-ssh.md](docs/server-ssh.md)).
 Klijent `shf` za sada ispisuje samo verziju i pomoć.
 
 | Paket | Šta radi | Odeljak specifikacije |
@@ -18,8 +20,11 @@ Klijent `shf` za sada ispisuje samo verziju i pomoć.
 | `internal/hashx` | SHA-256 celog fajla, strimovano, hex malim slovima | 5 |
 | `internal/ignore` | `.shfignore` sa semantikom `.gitignore`, ugnježdeni fajlovi, ugrađena lista i privremeni fajlovi klijenta | 7 |
 | `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 6 |
-| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report` | 4 |
+| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key` | 4 |
 | `internal/transport` | interfejs `Transport` i lokalna implementacija (testovi) | 5 |
+| `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada, download u `.shf-tmp-*` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
+| `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
+| `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
 | `internal/shfdcli` | komande `shfd` | 8.5 |
 
 ## Server
@@ -31,11 +36,14 @@ shfd member add <share-id> bob [--admin]   # ispisuje token člana (samo tada)
 shfd member revoke <share-id> bob
 shfd member list <share-id>
 shfd share list
+shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
 shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem]
 ```
 
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
 reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
+Za prenos fajlova: sistemski korisnik, `sshd` i `SHFD_AUTHORIZED_KEYS` su
+opisani u [docs/server-ssh.md](docs/server-ssh.md).
 
 ## Raspored
 
@@ -43,7 +51,7 @@ reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
 cmd/shfd/        server
 cmd/shf/         klijent
 internal/        zajednički kod
-docs/            specifikacija
+docs/            specifikacija, postavljanje servera
 ```
 
 ## Build i testovi
@@ -58,6 +66,11 @@ make check   # lint + test + build
 ```
 
 `./bin/shfd version`, `./bin/shf help`.
+
+Integracioni testovi u `internal/transport/rsyncssh` pokreću pravi `sshd` na
+slobodnom portu, sa privremenom konfiguracijom i `authorized_keys`, i kroz njega
+rade upload, download i prekinut upload koji se nastavlja. Preskaču se kad
+`rsync`, `ssh`, `ssh-keygen` ili `sshd` nisu instalirani, i uz `go test -short`.
 
 Test `internal/ignore.TestGitCompat` poredi matcher sa samim `git`-om na
 nasumičnim stablima; preskače se ako `git` nije instaliran ili uz `go test -short`.

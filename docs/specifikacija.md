@@ -248,5 +248,6 @@ Redosled: 1 → 2 → 3 i 4 → 5 → 7; tiket 6 posle tiketa 2.
 ## 11. Otvoreno
 
 - Radna imena `shf`, `shfd`.
-- Sistemski sshd sa prinudnom komandom (predlog) ili SSH server ugrađen u
-  `shfd`.
+- ~~Sistemski sshd sa prinudnom komandom (predlog) ili SSH server ugrađen u
+  `shfd`.~~ Prva verzija koristi sistemski sshd sa prinudnom komandom
+  `shfd rsync-gate` (TCKXT59YRT, [server-ssh.md](server-ssh.md)).

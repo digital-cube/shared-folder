@@ -1,0 +1,130 @@
+package rsyncssh
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/digital-cube/shared-folder/internal/transport"
+)
+
+const testShare = "690a2702-1bb6-4866-b49f-cc8bee54f08e"
+
+func script(t *testing.T, body string) string {
+	p := filepath.Join(t.TempDir(), "bin")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func baseConfig(t *testing.T) Config {
+	key := filepath.Join(t.TempDir(), "id")
+	os.WriteFile(key, []byte("k"), 0o600)
+	return Config{ShareID: testShare, Host: "shf.example.org", User: "shfd", KeyFile: key, StateDir: t.TempDir(),
+		SSH: script(t, "exit 0")}
+}
+
+func TestNewChecksTools(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rsync string
+		ok    bool
+	}{
+		"missing":   {"/nonexistent/rsync", false},
+		"openrsync": {script(t, `echo "openrsync: protocol version 29"`), false},
+		"too old":   {script(t, `echo "rsync  version 3.1.3  protocol version 31"`), false},
+		"3.2.4":     {script(t, `echo "rsync  version 3.2.4  protocol version 31"`), true},
+		"3.4.1":     {script(t, `echo "rsync  version v3.4.1  protocol version 32"`), true},
+	} {
+		cfg := baseConfig(t)
+		cfg.Rsync = tc.rsync
+		_, err := New(cfg)
+		if tc.ok != (err == nil) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if !tc.ok && !errors.Is(err, ErrNotInstalled) {
+			t.Errorf("%s: not ErrNotInstalled: %v", name, err)
+		}
+	}
+	cfg := baseConfig(t)
+	cfg.Rsync, cfg.SSH = script(t, `echo "rsync  version 3.2.7"`), "/nonexistent/ssh"
+	if _, err := New(cfg); !errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "ssh not found") {
+		t.Errorf("missing ssh: %v", err)
+	}
+}
+
+func TestNewValidates(t *testing.T) {
+	rs := script(t, `echo "rsync  version 3.2.7"`)
+	for name, mut := range map[string]func(*Config){
+		"share":       func(c *Config) { c.ShareID = "x" },
+		"host option": func(c *Config) { c.Host = "-oProxyCommand=x" },
+		"host user":   func(c *Config) { c.Host = "a@b" },
+		"user":        func(c *Config) { c.User = "a b" },
+		"port":        func(c *Config) { c.Port = 70000 },
+		"no key":      func(c *Config) { c.KeyFile = filepath.Join(t.TempDir(), "none") },
+		"quote":       func(c *Config) { c.StateDir = filepath.Join(t.TempDir(), `a"b`) },
+	} {
+		cfg := baseConfig(t)
+		cfg.Rsync = rs
+		mut(&cfg)
+		if _, err := New(cfg); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestRshQuoteRoundTrip(t *testing.T) {
+	// rsync splits -e on blanks; inside '…' a doubled quote is one quote.
+	for in, want := range map[string]string{
+		"/usr/bin/ssh":              "/usr/bin/ssh",
+		"/Users/a/Library/App Supp": "'/Users/a/Library/App Supp'",
+		"it's":                      "'it''s'",
+		`UserKnownHostsFile="/a b"`: `'UserKnownHostsFile="/a b"'`,
+		"":                          "''",
+	} {
+		if got := rshQuote(in); got != want {
+			t.Errorf("rshQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestClassify(t *testing.T) {
+	exit := &exec.ExitError{}
+	for stderr, want := range map[string]error{
+		"shfd rsync-gate: denied (not_found): storage/x does not exist\nrsync: connection unexpectedly closed": transport.ErrChanged,
+		"shfd rsync-gate: denied (upload): abc is not an open upload of ana\n":                                 ErrDenied,
+		"@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.\n":            ErrHostKey,
+		"igor@127.0.0.1: Permission denied (publickey).\n":                                                     ErrAuth,
+		"ssh: connect to host x port 22: Connection refused\n":                                                 ErrUnreachable,
+		"ssh: Could not resolve hostname nope: Name or service not known\n":                                    ErrUnreachable,
+		"[sender] io timeout after 60 seconds -- exiting\n":                                                    ErrUnreachable,
+	} {
+		if err := classify("storage/x", exit, stderr); !errors.Is(err, want) {
+			t.Errorf("%q: %v, want %v", stderr, err, want)
+		}
+	}
+}
+
+func TestParseStats(t *testing.T) {
+	out := `
+Number of files: 1 (reg: 1)
+Total file size: 50,331,648 bytes
+Total transferred file size: 50,331,648 bytes
+Literal data: 43,221,432 bytes
+Matched data: 7,110,216 bytes
+`
+	st := parseStats(out)
+	if st.Size != 50331648 || st.Literal != 43221432 || st.Matched != 7110216 {
+		t.Errorf("%+v", st)
+	}
+}
+
+func TestCleanEnv(t *testing.T) {
+	got := cleanEnv([]string{"HOME=/h", "RSYNC_PROTECT_ARGS=1", "RSYNC_OLD_ARGS=1", "LC_ALL=sr_RS.UTF-8"})
+	if strings.Join(got, " ") != "HOME=/h LC_ALL=C" {
+		t.Errorf("%q", got)
+	}
+}

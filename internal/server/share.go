@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/pathx"
 )
 
@@ -42,6 +43,8 @@ type Share struct {
 	mu  sync.Mutex // the writer lock; also guards log
 	log *os.File
 
+	keys *authkeys.File // nil when SSH keys are not managed
+
 	// crashAfterCommit, when set, is called after the database commit and
 	// before the disk steps run. Tests use it to simulate a crash there.
 	crashAfterCommit func() error
@@ -62,7 +65,7 @@ func openShare(dir, id string, opts Options) (*Share, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Share{ID: id, dir: dir, db: db, now: opts.Now, log: lf}
+	s := &Share{ID: id, dir: dir, db: db, now: opts.Now, log: lf, keys: opts.AuthorizedKeys}
 	if opts.SkipRecovery {
 		return s, nil
 	}
@@ -149,18 +152,89 @@ func (s *Share) AddMember(username string, admin bool) (string, error) {
 	return token, nil
 }
 
-// RevokeMember revokes a member's token. The member stays in the list (and
-// in the history); revoking twice is not an error.
+// RevokeMember revokes a member's token and removes the member's line from
+// authorized_keys. The member stays in the list (and in the history);
+// revoking twice is not an error. rsync-gate refuses a revoked member even
+// while the line is still there, so a failure to rewrite authorized_keys
+// (returned after the revocation is stored) does not keep access open.
 func (s *Share) RevokeMember(username string) error {
-	res, err := s.db.Exec(`UPDATE members SET revoked_at = coalesce(revoked_at, ?) WHERE username = ?`,
-		fmtTime(s.now()), username)
+	var id int64
+	err := s.db.QueryRow(`UPDATE members SET revoked_at = coalesce(revoked_at, ?) WHERE username = ? RETURNING id`,
+		fmtTime(s.now()), username).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errf(CodeUnknownMember, "no member %q", username)
+	}
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errf(CodeUnknownMember, "no member %q", username)
+	if s.keys != nil {
+		if err := s.keys.Remove(s.ID, id); err != nil {
+			return fmt.Errorf("member %s is revoked, but removing the SSH key from %s failed: %w", username, s.keys.Path, err)
+		}
 	}
 	return nil
+}
+
+// SetSSHKey registers the member's SSH public key: it is stored in
+// members.ssh_pubkey and written to authorized_keys as the member's line,
+// replacing an earlier key. It returns the key as stored ("type base64").
+func (s *Share) SetSSHKey(m *Member, pubkey string) (string, error) {
+	if s.keys == nil {
+		return "", errf(CodeSSHNotConfigured, "this server does not manage SSH keys (no authorized_keys file configured)")
+	}
+	key, err := authkeys.ParsePublicKey(pubkey)
+	if err != nil {
+		return "", errf(CodeInvalidKey, "%v", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var revoked sql.NullString
+	if err := tx.QueryRow(`SELECT revoked_at FROM members WHERE id = ?`, m.ID).Scan(&revoked); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errf(CodeUnknownMember, "no member %d", m.ID)
+		}
+		return "", err
+	}
+	if revoked.Valid {
+		return "", errf(CodeUnauthorized, "member %s is revoked", m.Username)
+	}
+	if _, err := tx.Exec(`UPDATE members SET ssh_pubkey = ? WHERE id = ?`, key, m.ID); err != nil {
+		return "", err
+	}
+	// The file is written while the row is locked, so a concurrent revoke
+	// cannot slip in between and leave the line behind.
+	if err := s.keys.Set(authkeys.Entry{ShareID: s.ID, MemberID: m.ID, Username: m.Username, Key: key}); err != nil {
+		if errors.Is(err, authkeys.ErrKeyInUse) {
+			return "", errf(CodeKeyInUse, "%v", err)
+		}
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// MemberByID returns a member, revoked or not.
+func (s *Share) MemberByID(id int64) (*Member, error) {
+	m, err := scanMember(s.db.QueryRow(`SELECT `+memberCols+` FROM members WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errf(CodeUnknownMember, "no member %d", id)
+	}
+	return m, err
+}
+
+// CheckUpload fails with CodeUnknownUpload unless uploadID is an open
+// (announced, not yet committed) upload of the member.
+func (s *Share) CheckUpload(memberID int64, uploadID string) error {
+	if !ValidUploadID(uploadID) {
+		return errf(CodeUnknownUpload, "no upload %q", uploadID)
+	}
+	_, err := loadUpload(s.db, uploadID, memberID)
+	return err
 }
 
 const memberCols = `id, username, role, ssh_pubkey, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked`
@@ -235,6 +309,36 @@ func (s *Share) logEvents(evs []Event) error {
 		b.WriteByte('\n')
 	}
 	return s.writeLog(b.Bytes())
+}
+
+// Transfer is one call of rsync-gate, for service.log.
+type Transfer struct {
+	Member    string // username, or "#<id>" when the id is unknown
+	Direction string // "upload", "download" or "" when the command was refused before that was clear
+	Path      string // share-relative: tmp/<upload_id> or storage/<path>
+	Outcome   string // "ok", "denied" or "failed"
+	Detail    string // reason of a denial, or the exit status of rsync
+}
+
+// LogTransfer appends one line for a transfer to service.log. rsync-gate
+// runs in its own process; the file is opened O_APPEND and every line is a
+// single write, so its lines and those of shfd serve do not interleave.
+func (s *Share) LogTransfer(t Transfer) error {
+	line := fmt.Sprintf("%s transfer member=%s dir=%s path=%s outcome=%s",
+		fmtTime(s.now()), t.Member, orDash(t.Direction), strconv.Quote(t.Path), t.Outcome)
+	if t.Detail != "" {
+		line += " detail=" + strconv.Quote(t.Detail)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeLog([]byte(line + "\n"))
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func (s *Share) writeLog(p []byte) error {

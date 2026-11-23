@@ -4,7 +4,8 @@
 //
 // This package holds the interface and Local, which reaches the server's
 // data-root directly on the same machine and serves the tests. rsync over
-// SSH comes as a second implementation.
+// SSH is in the subpackage rsyncssh; an HTTPS transport would be another
+// implementation of the same interface.
 package transport
 
 import (
@@ -18,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/digital-cube/shared-folder/internal/hashx"
+	"github.com/digital-cube/shared-folder/internal/ignore"
 	"github.com/digital-cube/shared-folder/internal/pathx"
 )
 
@@ -113,7 +115,7 @@ func (l Local) Fetch(ctx context.Context, shareID, p, hash, dst string) error {
 		return err
 	}
 	defer in.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".shf-fetch-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ignore.ClientTempPrefix+"*")
 	if err != nil {
 		return err
 	}

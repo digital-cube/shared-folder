@@ -6,8 +6,12 @@
 //	shfd member add <share-id> <username> [--admin]
 //	shfd member revoke <share-id> <username>
 //	shfd member list <share-id>
+//	shfd keys sync
+//	shfd rsync-gate --share <share-id> --member <member-id>   (sshd's forced command)
 //
 // --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command.
+// --authorized-keys (default $SHFD_AUTHORIZED_KEYS) turns on the
+// management of members' SSH keys for serve, member and keys.
 package shfdcli
 
 import (
@@ -30,8 +34,12 @@ import (
 	"github.com/digital-cube/shared-folder/internal/version"
 )
 
-// EnvDataRoot names the environment variable holding the default data-root.
-const EnvDataRoot = "SHFD_DATA_ROOT"
+// Environment variables holding defaults of flags.
+const (
+	EnvDataRoot       = "SHFD_DATA_ROOT"       // --data-root
+	EnvAuthorizedKeys = "SHFD_AUTHORIZED_KEYS" // --authorized-keys
+	EnvBinary         = "SHFD_BINARY"          // --shfd-binary
+)
 
 const usage = `shfd — shared folder server
 
@@ -42,16 +50,28 @@ Usage:
   shfd member add <share-id> <username> [--admin]
   shfd member revoke <share-id> <username>
   shfd member list <share-id>
+  shfd keys sync
+  shfd rsync-gate --share <share-id> --member <member-id>
   shfd version
   shfd help
 
 Every command takes --data-root; it defaults to $SHFD_DATA_ROOT.
 serve speaks plain HTTP unless --tls-cert and --tls-key are given (TLS can
 also come from a reverse proxy).
+
+rsync over SSH (docs/server-ssh.md): serve, member and keys take
+--authorized-keys FILE (default $SHFD_AUTHORIZED_KEYS), the authorized_keys
+of the system user sshd runs shfd as. Members then register their SSH key
+through the API, revoke removes it, and keys sync rewrites shfd's block from
+the databases. Each line runs "<shfd-binary> rsync-gate"; --shfd-binary
+(default $SHFD_BINARY, else this executable) sets the path written there.
+rsync-gate is that forced command: it reads $SSH_ORIGINAL_COMMAND and runs
+only the rsync transfers the member may do.
 `
 
 // Env is what a command runs against; tests replace it.
 type Env struct {
+	Stdin          io.Reader // rsync-gate only; os.Stdin when nil
 	Stdout, Stderr io.Writer
 	Getenv         func(string) string
 	// Ctx ends serve (SIGINT/SIGTERM when nil).
@@ -88,6 +108,10 @@ func Run(args []string, env Env) int {
 		err = shareCmd(args[1:], env)
 	case "member":
 		err = memberCmd(args[1:], env)
+	case "keys":
+		err = keysCmd(args[1:], env)
+	case "rsync-gate":
+		return rsyncGate(args[1:], env)
 	default:
 		err = usageError("unknown command %q", args[0])
 	}
@@ -187,8 +211,14 @@ func memberCmd(args []string, env Env) error {
 	if len(args) == 0 {
 		return usageError("member: want add, revoke or list")
 	}
+	var sf sshFlags
 	open := func(root, id string) (*server.Server, *server.Share, error) {
-		srv, err := server.Open(root, server.Options{SkipRecovery: true})
+		opts, err := sf.options(root, env)
+		if err != nil {
+			return nil, nil, err
+		}
+		opts.SkipRecovery = true
+		srv, err := server.Open(root, opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -202,6 +232,7 @@ func memberCmd(args []string, env Env) error {
 	switch args[0] {
 	case "add":
 		fs := flag.NewFlagSet("member add", flag.ContinueOnError)
+		sf.register(fs, env)
 		admin := fs.Bool("admin", false, "make the member an admin")
 		root, pos, err := flags(fs, args[1:], 2, env)
 		if err != nil {
@@ -220,6 +251,7 @@ func memberCmd(args []string, env Env) error {
 		return nil
 	case "revoke":
 		fs := flag.NewFlagSet("member revoke", flag.ContinueOnError)
+		sf.register(fs, env)
 		root, pos, err := flags(fs, args[1:], 2, env)
 		if err != nil {
 			return err
@@ -236,6 +268,7 @@ func memberCmd(args []string, env Env) error {
 		return nil
 	case "list":
 		fs := flag.NewFlagSet("member list", flag.ContinueOnError)
+		sf.register(fs, env)
 		root, pos, err := flags(fs, args[1:], 1, env)
 		if err != nil {
 			return err
@@ -275,6 +308,8 @@ func serve(args []string, env Env) error {
 	listen := fs.String("listen", ":8443", "address to listen on")
 	cert := fs.String("tls-cert", "", "TLS certificate (PEM)")
 	key := fs.String("tls-key", "", "TLS private key (PEM)")
+	var sf sshFlags
+	sf.register(fs, env)
 	root, _, err := flags(fs, args, 0, env)
 	if err != nil {
 		return err
@@ -282,7 +317,11 @@ func serve(args []string, env Env) error {
 	if (*cert == "") != (*key == "") {
 		return usageError("serve: --tls-cert and --tls-key go together")
 	}
-	srv, err := server.Open(root, server.Options{})
+	opts, err := sf.options(root, env)
+	if err != nil {
+		return err
+	}
+	srv, err := server.Open(root, opts)
 	if err != nil {
 		return err
 	}
@@ -324,7 +363,11 @@ func serve(args []string, env Env) error {
 	if *cert != "" {
 		scheme = "https"
 	}
-	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "version", version.Version)
+	akeys := "-"
+	if opts.AuthorizedKeys != nil {
+		akeys = opts.AuthorizedKeys.Path
+	}
+	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "authorized_keys", akeys, "version", version.Version)
 	if env.Ready != nil {
 		env.Ready(ln.Addr().String())
 	}

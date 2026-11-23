@@ -57,10 +57,14 @@ type env struct {
 	ana   *client
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, tune ...func(*server.Options)) *env {
 	t.Helper()
 	e := &env{t: t, root: t.TempDir(), clock: &clock{t: t0}}
-	srv, err := server.Open(e.root, server.Options{Now: e.clock.Now})
+	opts := server.Options{Now: e.clock.Now}
+	for _, f := range tune {
+		f(&opts)
+	}
+	srv, err := server.Open(e.root, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
