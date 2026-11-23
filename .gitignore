@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+
+# Go
+*.exe
+*.test
+*.out
+coverage.*
+/vendor/
+go.work
+go.work.sum
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,5 @@
+module github.com/digital-cube/shared-folder
+
+go 1.27
+
+require golang.org/x/text v0.44.0
