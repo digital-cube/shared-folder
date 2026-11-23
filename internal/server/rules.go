@@ -40,6 +40,8 @@ const (
 	OpMkdir    = "mkdir"
 	OpRmdir    = "rmdir"
 	OpConflict = "conflict"
+	OpRestore  = "restore"
+	OpPurge    = "purge"
 )
 
 // Result statuses.
@@ -207,6 +209,9 @@ type op struct {
 	head   int64
 	events []Event
 	steps  []fsStep
+	// admin marks an admin operation (restore, purge, verify --repair):
+	// it is not a push of the member, so last_push_at stays.
+	admin bool
 }
 
 // write runs fn as one unit. fn inserts rows through o and queues disk
@@ -215,6 +220,15 @@ type op struct {
 // leaves nothing changed; a crash after it is finished on the next open.
 // Caller holds s.mu.
 func (s *Share) write(m *Member, fn func(o *op) error) ([]Event, int64, error) {
+	return s.writeAs(m, false, fn)
+}
+
+// writeAdmin is write for admin operations (see op.admin).
+func (s *Share) writeAdmin(m *Member, fn func(o *op) error) ([]Event, int64, error) {
+	return s.writeAs(m, true, fn)
+}
+
+func (s *Share) writeAs(m *Member, admin bool, fn func(o *op) error) ([]Event, int64, error) {
 	if err := s.replayJournal(); err != nil {
 		return nil, 0, fmt.Errorf("finishing earlier disk steps: %w", err)
 	}
@@ -222,7 +236,7 @@ func (s *Share) write(m *Member, fn func(o *op) error) ([]Event, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	o := &op{s: s, tx: tx, m: m, now: s.now().UTC()}
+	o := &op{s: s, tx: tx, m: m, now: s.now().UTC(), admin: admin}
 	if err := tx.QueryRow(`SELECT coalesce(max(seq), 0) FROM events`).Scan(&o.head); err != nil {
 		tx.Rollback()
 		return nil, 0, err
@@ -269,7 +283,7 @@ func (o *op) finish() error {
 			return err
 		}
 	}
-	if len(o.events) > 0 {
+	if len(o.events) > 0 && !o.admin {
 		if _, err := o.tx.Exec(`UPDATE members SET last_push_at = ? WHERE id = ?`, fmtTime(o.now), o.m.ID); err != nil {
 			return err
 		}
@@ -368,6 +382,13 @@ func (o *op) conflictPath(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return o.freeDerived(cp)
+}
+
+// freeDerived returns cp, a derived name carrying o.now's timestamp, or
+// the first of cp with "-2", "-3", … after the timestamp that no file or
+// directory uses.
+func (o *op) freeDerived(cp string) (string, error) {
 	ts := pathx.Timestamp(o.now)
 	i := strings.LastIndex(cp, ts) + len(ts)
 	cand := cp

@@ -203,6 +203,35 @@ func TestConflictPath(t *testing.T) {
 	}
 }
 
+func TestRestoredPath(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"slika.png", "slika.restored-20261123T145846Z.png"},
+		{"docs/slika.png", "docs/slika.restored-20261123T145846Z.png"},
+		{"Makefile", "Makefile.restored-20261123T145846Z"},
+		{"arhiva.tar.gz", "arhiva.tar.restored-20261123T145846Z.gz"},
+		{".bashrc", ".bashrc.restored-20261123T145846Z"},
+		{"dir.d/file", "dir.d/file.restored-20261123T145846Z"},
+	}
+	for _, tt := range tests {
+		got, err := RestoredPath(tt.in, ts)
+		if err != nil {
+			t.Errorf("RestoredPath(%q): %v", tt.in, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("RestoredPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+		if _, err := Normalize(got); err != nil {
+			t.Errorf("RestoredPath(%q) = %q is not a valid path: %v", tt.in, got, err)
+		}
+	}
+	if _, err := RestoredPath("", ts); err == nil {
+		t.Error("RestoredPath(\"\") succeeded")
+	}
+}
+
 func TestTrashName(t *testing.T) {
 	tests := []struct {
 		in     string

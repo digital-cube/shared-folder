@@ -31,6 +31,9 @@ const (
 	CodeInvalidKey       Code = "invalid_key"        // not a usable OpenSSH public key
 	CodeKeyInUse         Code = "key_in_use"         // the SSH key already belongs to another member or line
 	CodeSSHNotConfigured Code = "ssh_not_configured" // the server manages no authorized_keys file
+	CodeForbidden        Code = "forbidden"          // an admin operation called by a member without the admin role
+	CodeUnknownTrash     Code = "unknown_trash"      // no such trash entry (or it was purged)
+	CodeTrashDamaged     Code = "trash_damaged"      // the file of a trash entry is missing or has other content; run verify
 )
 
 // Error is an operation refused by the rules. It never leaves the database

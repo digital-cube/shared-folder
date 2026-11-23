@@ -9,6 +9,7 @@
 //	POST /v1/shares/{id}/sync-report
 //	PUT  /v1/shares/{id}/ssh-key
 //	GET  /v1/shares/{id}/ws            (WebSocket, see ws.go)
+//	     /v1/shares/{id}/admin/...     (admin role only, see admin.go)
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
@@ -96,6 +97,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	mux.Handle("POST /v1/shares/{id}/sync-report", a.auth(a.syncReport))
 	mux.Handle("PUT /v1/shares/{id}/ssh-key", a.auth(a.setSSHKey))
 	mux.HandleFunc("GET /v1/shares/{id}/ws", a.ws)
+	registerAdmin(mux, a.admin)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, server.CodeNotFound, "no such endpoint")
 	})
@@ -246,11 +248,13 @@ func status(c server.Code) int {
 	switch c {
 	case server.CodeUnauthorized:
 		return http.StatusUnauthorized
-	case server.CodeNotFound, server.CodeUnknownUpload, server.CodeUnknownShare, server.CodeUnknownMember:
+	case server.CodeForbidden:
+		return http.StatusForbidden
+	case server.CodeNotFound, server.CodeUnknownUpload, server.CodeUnknownShare, server.CodeUnknownMember, server.CodeUnknownTrash:
 		return http.StatusNotFound
 	case server.CodeStaleBase, server.CodeCaseConflict, server.CodeDestExists, server.CodeKindMismatch,
 		server.CodeParentNotDir, server.CodeIsDir, server.CodeDirNotEmpty, server.CodeUploadMissing,
-		server.CodeMemberExists, server.CodeKeyInUse:
+		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged:
 		return http.StatusConflict
 	case server.CodeSSHNotConfigured:
 		return http.StatusNotImplemented

@@ -22,3 +22,17 @@ func lockDataRoot(root string) (func(), error) {
 	}
 	return func() { f.Close() }, nil
 }
+
+// checkPrivateDir makes sure dir is a directory of this user that nobody
+// else may enter, so a socket in it cannot be planted by another user.
+func checkPrivateDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s must be a directory of uid %d with mode 0700", dir, os.Getuid())
+	}
+	return nil
+}

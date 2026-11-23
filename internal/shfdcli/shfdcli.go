@@ -7,11 +7,21 @@
 //	shfd member revoke <share-id> <username>
 //	shfd member list <share-id>
 //	shfd keys sync
+//	shfd trash list <share-id> [--path P] [--by USER] [--reason deleted|replaced] [--since DATE]
+//	shfd trash restore <share-id> <trash-id> [--to PATH]
+//	shfd trash purge <share-id> (--older-than AGE | --id N | --all) [--dry-run] [--yes]
+//	shfd verify <share-id> [--repair] [--json]
+//	shfd stats <share-id> [--json]
 //	shfd rsync-gate --share <share-id> --member <member-id>   (sshd's forced command)
 //
 // --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command.
 // --authorized-keys (default $SHFD_AUTHORIZED_KEYS) turns on the
 // management of members' SSH keys for serve, member and keys.
+//
+// The trash, verify and stats commands (admin.go) talk to a running shfd
+// serve over <data-root>/admin.sock, so they go through its single writer
+// per folder; with no server running they do the same work in-process,
+// holding the data-root lock. See docs/admin.md.
 package shfdcli
 
 import (
@@ -53,6 +63,13 @@ Usage:
   shfd member revoke <share-id> <username>
   shfd member list <share-id>
   shfd keys sync
+  shfd trash list <share-id> [--path PREFIX] [--by USERNAME]
+                  [--reason deleted|replaced] [--since DATE]
+  shfd trash restore <share-id> <trash-id> [--to PATH]
+  shfd trash purge <share-id> (--older-than AGE | --id ID | --all)
+                   [--dry-run] [--yes]
+  shfd verify <share-id> [--repair] [--json]
+  shfd stats <share-id> [--json]
   shfd rsync-gate --share <share-id> --member <member-id>
   shfd version
   shfd help
@@ -71,11 +88,19 @@ serve --ssh-endpoint (default $SHFD_SSH_ENDPOINT) is the address clients
 use for rsync over SSH; "shf join" learns it when it registers its key.
 rsync-gate is that forced command: it reads $SSH_ORIGINAL_COMMAND and runs
 only the rsync transfers the member may do.
+
+Admin commands (docs/admin.md): trash, verify and stats reach a running
+serve through <data-root>/admin.sock, so they are safe while it runs; with
+no server they work directly on the data-root. They act in the name of the
+folder's oldest active admin, or of --as USERNAME (an admin). AGE is 36h,
+30d or 2w; DATE is YYYY-MM-DD or RFC 3339. trash purge asks before it
+deletes unless --yes is given. verify exits with 1 when it finds (or, with
+--repair, leaves) an issue.
 `
 
 // Env is what a command runs against; tests replace it.
 type Env struct {
-	Stdin          io.Reader // rsync-gate only; os.Stdin when nil
+	Stdin          io.Reader // rsync-gate and trash purge's question; os.Stdin when nil
 	Stdout, Stderr io.Writer
 	Getenv         func(string) string
 	// Ctx ends serve (SIGINT/SIGTERM when nil).
@@ -114,6 +139,12 @@ func Run(args []string, env Env) int {
 		err = memberCmd(args[1:], env)
 	case "keys":
 		err = keysCmd(args[1:], env)
+	case "trash":
+		err = trashCmd(args[1:], env)
+	case "verify":
+		err = verifyCmd(args[1:], env)
+	case "stats":
+		err = statsCmd(args[1:], env)
 	case "rsync-gate":
 		return rsyncGate(args[1:], env)
 	default:
@@ -347,6 +378,11 @@ func serve(args []string, env Env) error {
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
+	}
+	if stopAdmin, err := serveAdminSocket(srv, log); err != nil {
+		log.Warn("admin socket not available; shfd trash, verify and stats cannot run while this server does", "err", err)
+	} else {
+		defer stopAdmin()
 	}
 	api := httpapi.New(srv, log)
 	hs := &http.Server{

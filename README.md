@@ -15,20 +15,22 @@ Fajlovi se prenose rsync-om preko SSH-a, sa prinudnom komandom
 Klijent `shf` se pridružuje folderu i sinhronizuje ga ručno (`shf sync`) ili u
 pozadini (`shf daemon`): server javlja nove promene preko WebSocket-a, a
 klijent prati lokalni folder. Zaštita od masovnog brisanja zadržava brisanja
-dok ih korisnik ne potvrdi.
+dok ih korisnik ne potvrdi. Admin na serveru pregleda, vraća i čisti trash,
+proverava `storage/` prema bazi i gleda statistike foldera
+([docs/admin.md](docs/admin.md)).
 
 | Paket | Šta radi | Odeljak specifikacije |
 |---|---|---|
-| `internal/pathx` | normalizacija i provera putanja (NFC, `/`, Windows-bezbedna imena), `FoldKey` za poređenje bez veličine slova, imena konflikt i trash fajlova, provera korisničkog imena | 6 „Imena“, 3 „Trash“ |
+| `internal/pathx` | normalizacija i provera putanja (NFC, `/`, Windows-bezbedna imena), `FoldKey` za poređenje bez veličine slova, imena konflikt, trash i `restored` fajlova, provera korisničkog imena | 6 „Imena“, 3 „Trash“ |
 | `internal/hashx` | SHA-256 celog fajla, strimovano, hex malim slovima | 5 |
 | `internal/ignore` | `.shfignore` sa semantikom `.gitignore`, ugnježdeni fajlovi, ugrađena lista i privremeni fajlovi klijenta | 7 |
-| `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 6 |
-| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu) | 4 |
+| `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash (lista, vraćanje, čišćenje), `verify [--repair]`, statistike, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 4, 6 |
+| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu), admin pozivi (`admin/trash`, `admin/verify`, `admin/stats`, samo uloga `admin`) i lokalni admin socket | 4 |
 | `internal/transport` | interfejs `Transport` i lokalna implementacija (testovi) | 5 |
 | `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada, download u `.shf-tmp-*` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
 | `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
 | `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
-| `internal/shfdcli` | komande `shfd` | 8.5 |
+| `internal/shfdcli` | komande `shfd`; admin komande idu kroz `admin.sock` pokrenutog servera ili, bez njega, kroz isti handler u procesu | 8.5 |
 | `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
 | `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad | 8.3 |
 | `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent | 8.3 |
@@ -46,7 +48,17 @@ shfd member list <share-id>
 shfd share list
 shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
 shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem] [--ssh-endpoint shfd@host:22]
+
+shfd trash list <share-id> [--path P] [--by U] [--reason deleted|replaced] [--since 2026-11-01]
+shfd trash restore <share-id> <trash-id> [--to <putanja>]
+shfd trash purge <share-id> (--older-than 90d | --id N | --all) [--dry-run] [--yes]
+shfd verify <share-id> [--repair] [--json]   # izlazni kod 1 ako nađe neslaganje
+shfd stats <share-id> [--json]
 ```
+
+Admin komande su bezbedne dok `shfd serve` radi: idu kroz njegov lokalni
+socket `<data-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
+primeri: [docs/admin.md](docs/admin.md).
 
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
 reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
@@ -142,7 +154,7 @@ tumači kao brisanje.
 cmd/shfd/        server
 cmd/shf/         klijent
 internal/        zajednički kod
-docs/            specifikacija, postavljanje servera
+docs/            specifikacija, postavljanje servera, admin komande
 ```
 
 ## Build i testovi

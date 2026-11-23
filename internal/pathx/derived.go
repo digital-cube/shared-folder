@@ -56,6 +56,23 @@ func ConflictPath(p, user string, t time.Time) (string, error) {
 	return dir + stem + ".conflict-" + user + "-" + Timestamp(t) + ext, nil
 }
 
+// RestoredPath returns the name a file restored from the trash gets when
+// its path is taken by other content, in the same directory: the file name
+// gets ".restored-{ts}" before its extension, like ConflictPath.
+//
+//	docs/slika.png -> docs/slika.restored-20261123T145846Z.png
+//	Makefile       -> Makefile.restored-20261123T145846Z
+//
+// Collisions (the "-2", "-3" suffix after the timestamp) are the server's job.
+func RestoredPath(p string, t time.Time) (string, error) {
+	dir, name := splitDir(p)
+	if name == "" {
+		return "", ErrNoDerivedName
+	}
+	stem, ext := splitExt(name)
+	return dir + stem + ".restored-" + Timestamp(t) + ext, nil
+}
+
 // TrashName returns the name of p's entry in the (flat) trash directory:
 // the file name of p followed by ".deleted-by-{user}-{ts}" or
 // ".replaced-by-{user}-{ts}".

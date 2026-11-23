@@ -72,6 +72,14 @@ Ime u trash-u: `<originalno ime>.deleted-by-{username}-{timestamp}` ili
 Trash je ravan direktorijum; originalna putanja je u tabeli `trash`, pa se zna
 gde se fajl vraća. Ako dva unosa dobiju isto ime, dodaje se `-2`, `-3`.
 
+Implementacija (TCKTHRC7PQ, [admin.md](admin.md)): vraćanje kopira fajl iz
+trash-a (unos ostaje) i upisuje događaj `restore`; ako je putanja zauzeta
+drugim sadržajem, fajl dobija ime `ime.restored-{ts}.ext`
+(`pathx.RestoredPath`). Čišćenje briše fajl iz `trash/` i upisuje događaj
+`purge` (originalna putanja, hash, veličina, ko); red u tabeli `trash` ostaje
+označen sa `purged_at`, `purged_by`, `purge_seq` (migracija 0004), jer se na
+njega pozivaju stariji događaji.
+
 ## 4. Kontrolni API (HTTPS + JSON)
 
 Autorizacija: `Authorization: Bearer <token člana>`. TLS preko reverse proxy-ja
@@ -90,6 +98,14 @@ ili ugrađen.
 - `GET  /v1/shares/{id}/ws` — WebSocket; server šalje samo `{"head": N}`.
 - Admin: članovi (dodaj, opozovi), trash (lista, vrati, očisti), statistike,
   provera `storage/` prema bazi.
+
+Implementacija (TCKTHRC7PQ): `GET /admin/trash`, `POST /admin/trash/{id}/restore`,
+`POST /admin/trash/purge`, `POST /admin/verify`, `GET /admin/stats` pod
+`/v1/shares/{id}`, samo za ulogu `admin` (ostali dobijaju 403 `forbidden`).
+Članovi se i dalje dodaju i opozivaju samo komandom `shfd member`. `shfd serve`
+iste pozive služi bez tokena na lokalnom unix socket-u `<data-root>/admin.sock`
+(0600), kroz koji idu `shfd` admin komande dok server radi
+([admin.md](admin.md)).
 
 ## 5. Prenos fajlova
 
@@ -268,6 +284,9 @@ pridruženog foldera. Dodato (TCK5FHY9NF): `daemon`, `confirm`,
 
 Admin (na serveru): `shfd serve`, `shfd share create`, `shfd member add|revoke|list`,
 `shfd trash list|restore|purge`, `shfd verify [--repair]`, `shfd stats`.
+
+Postoje (TCKTHRC7PQ): `trash list|restore|purge`, `verify [--repair]`,
+`stats [--json]`, sa opisom i primerima u [admin.md](admin.md).
 
 ## 9. Van prve verzije
 
