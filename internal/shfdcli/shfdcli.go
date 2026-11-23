@@ -39,12 +39,14 @@ const (
 	EnvDataRoot       = "SHFD_DATA_ROOT"       // --data-root
 	EnvAuthorizedKeys = "SHFD_AUTHORIZED_KEYS" // --authorized-keys
 	EnvBinary         = "SHFD_BINARY"          // --shfd-binary
+	EnvSSHEndpoint    = "SHFD_SSH_ENDPOINT"    // serve --ssh-endpoint
 )
 
 const usage = `shfd — shared folder server
 
 Usage:
   shfd serve --data-root DIR [--listen ADDR] [--tls-cert FILE --tls-key FILE]
+             [--ssh-endpoint USER@HOST[:PORT]]
   shfd share create <name> [--admin USERNAME]
   shfd share list
   shfd member add <share-id> <username> [--admin]
@@ -65,6 +67,8 @@ of the system user sshd runs shfd as. Members then register their SSH key
 through the API, revoke removes it, and keys sync rewrites shfd's block from
 the databases. Each line runs "<shfd-binary> rsync-gate"; --shfd-binary
 (default $SHFD_BINARY, else this executable) sets the path written there.
+serve --ssh-endpoint (default $SHFD_SSH_ENDPOINT) is the address clients
+use for rsync over SSH; "shf join" learns it when it registers its key.
 rsync-gate is that forced command: it reads $SSH_ORIGINAL_COMMAND and runs
 only the rsync transfers the member may do.
 `
@@ -308,6 +312,7 @@ func serve(args []string, env Env) error {
 	listen := fs.String("listen", ":8443", "address to listen on")
 	cert := fs.String("tls-cert", "", "TLS certificate (PEM)")
 	key := fs.String("tls-key", "", "TLS private key (PEM)")
+	sshEP := fs.String("ssh-endpoint", env.Getenv(EnvSSHEndpoint), "user@host[:port] of sshd, told to clients that register a key")
 	var sf sshFlags
 	sf.register(fs, env)
 	root, _, err := flags(fs, args, 0, env)
@@ -320,6 +325,9 @@ func serve(args []string, env Env) error {
 	opts, err := sf.options(root, env)
 	if err != nil {
 		return err
+	}
+	if opts.SSH, err = server.ParseSSHEndpoint(*sshEP); err != nil {
+		return usageError("serve: %v", err)
 	}
 	srv, err := server.Open(root, opts)
 	if err != nil {

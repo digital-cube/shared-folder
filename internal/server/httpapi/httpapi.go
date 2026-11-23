@@ -178,6 +178,9 @@ type SSHKeyRequest struct {
 type SSHKeyResponse struct {
 	PublicKey   string `json:"public_key"` // "type base64", without the comment
 	Fingerprint string `json:"fingerprint"`
+	// SSH is where rsync over SSH connects (shfd serve --ssh-endpoint);
+	// empty fields are left to the client's defaults.
+	SSH server.SSHEndpoint `json:"ssh"`
 }
 
 func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
@@ -189,7 +192,7 @@ func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share
 	if err != nil {
 		return nil, err
 	}
-	return SSHKeyResponse{PublicKey: key, Fingerprint: authkeys.Fingerprint(key)}, nil
+	return SSHKeyResponse{PublicKey: key, Fingerprint: authkeys.Fingerprint(key), SSH: a.srv.SSH()}, nil
 }
 
 // status maps an error code to its HTTP status.

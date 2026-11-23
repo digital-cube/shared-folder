@@ -347,6 +347,36 @@ func (t *Transport) Fetch(ctx context.Context, shareID, p, hash, dst string) err
 	return nil
 }
 
+// Probe connects once with the member's key and returns when sshd
+// accepted it. On the first connection that remembers the server's host
+// key in StateDir/known_hosts (shf join does this, so a later transfer
+// never meets an unknown host). The forced command refuses the probe's
+// command, which is expected: only a failure of ssh itself (exit status
+// 255) is an error.
+func (t *Transport) Probe(ctx context.Context) error {
+	if err := t.prepareState(); err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	args := append(t.sshArgs()[1:], "--", t.cfg.Host, "shf-probe")
+	cmd := exec.CommandContext(ctx, t.ssh, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &limitedWriter{w: &stderr, n: 64 << 10}
+	cmd.Env = cleanEnv(os.Environ())
+	setProcessGroup(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if err == nil || (errors.As(err, &ee) && ee.ExitCode() != 255) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("ssh probe: %w", ctx.Err())
+	}
+	return classify("(probe)", err, stderr.String())
+}
+
 func (t *Transport) report(st Stats) {
 	if t.cfg.OnTransfer != nil {
 		t.cfg.OnTransfer(st)

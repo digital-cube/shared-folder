@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,51 @@ type Options struct {
 	// its line there and revoking the member removes it. When nil, SSH
 	// keys cannot be registered.
 	AuthorizedKeys *authkeys.File
+	// SSH is where clients reach sshd for rsync over SSH. It is handed to
+	// a member when it registers its key, so "shf join" needs only the
+	// API URL. Empty fields leave the client to its defaults.
+	SSH SSHEndpoint
+}
+
+// SSHEndpoint is the address and system user of the server's sshd.
+type SSHEndpoint struct {
+	User string `json:"user,omitempty"`
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+}
+
+// ParseSSHEndpoint reads "user@host[:port]" ("[v6addr]:port" for IPv6);
+// user and port are optional.
+func ParseSSHEndpoint(s string) (SSHEndpoint, error) {
+	var e SSHEndpoint
+	if s == "" {
+		return e, nil
+	}
+	if u, rest, ok := strings.Cut(s, "@"); ok {
+		e.User, s = u, rest
+	}
+	host, port := s, ""
+	if strings.HasPrefix(s, "[") {
+		i := strings.Index(s, "]")
+		if i < 0 {
+			return e, fmt.Errorf("ssh endpoint %q: missing ]", s)
+		}
+		host, port = s[1:i], strings.TrimPrefix(s[i+1:], ":")
+	} else if h, p, ok := strings.Cut(s, ":"); ok {
+		host, port = h, p
+	}
+	if host == "" || strings.ContainsAny(host+e.User, " \t/@") {
+		return e, fmt.Errorf("ssh endpoint %q: want user@host[:port]", s)
+	}
+	e.Host = host
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return e, fmt.Errorf("ssh endpoint: invalid port %q", port)
+		}
+		e.Port = n
+	}
+	return e, nil
 }
 
 // Server owns a data-root.
@@ -88,6 +134,9 @@ func Open(root string, opts Options) (*Server, error) {
 
 // Root is the absolute data-root.
 func (s *Server) Root() string { return s.root }
+
+// SSH is the sshd endpoint advertised to clients (Options.SSH).
+func (s *Server) SSH() SSHEndpoint { return s.opts.SSH }
 
 // Close closes the registry and every open folder.
 func (s *Server) Close() error {

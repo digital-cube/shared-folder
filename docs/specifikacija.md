@@ -171,11 +171,23 @@ Ponašanje:
 
 ### 8.1 Lokalno stanje
 
-SQLite van deljenog foldera (`~/.local/state/shf/<share-id>/state.db`):
-poslednji primenjeni seq i manifest — za svaku putanju hash, veličina i mtime
-kakvi su bili posle poslednjeg synca. Poređenjem tri stanja (lokalni disk,
-manifest, dnevnik servera) klijent razlikuje „ja sam dodao“ od „drugi je
+SQLite van deljenog foldera (`$XDG_STATE_HOME/shf/<share-id>/state.db`, tj.
+`~/.local/state/shf/…`; na macOS-u `~/Library/Application Support/shf/…`):
+poslednji primenjeni seq i manifest — za svaku putanju kind, hash, veličina i
+mtime kakvi su bili posle poslednjeg synca. Poređenjem tri stanja (lokalni
+disk, manifest, dnevnik servera) klijent razlikuje „ja sam dodao“ od „drugi je
 obrisao“.
+
+Implementacija (TCKTJMT57D): pored manifesta `state.db` drži i stanje servera
+izgrađeno iz dnevnika (`remote`, do `remote_seq`), probleme iz poslednjeg
+ciklusa i lokalni log ciklusa. Putanja koja je ovde ignorisana vodi se u
+manifestu kao `skipped` (sa serverovom verzijom), pa se kad ignorisanje
+prestane fajl preuzima umesto da se protumači kao lokalno brisanje. Folder
+koji je server obrisao, a lokalno sadrži samo nesinhronizovane (ignorisane)
+fajlove, ostaje na disku kao `local` i ne šalje se nazad. Token
+(`token`), `config.json` i SSH ključ člana stoje pored baze, sa pravima 0600.
+Događaji servera nose `size` i `mtime`, pa preuzet fajl dobija mtime sa
+servera.
 
 ### 8.2 Ciklus sinhronizacije
 
@@ -188,6 +200,16 @@ obrisao“.
 5. Upiši manifest i seq; javi serveru rezultat za `sync_log`.
 
 Preuzimanje ide u privremeni fajl u istom folderu, pa atomski rename.
+
+Implementacija (TCKTJMT57D): ciklus se sastoji od rundi (najviše 5); runda
+preuzme dnevnik, primeni pristigle `.shfignore` fajlove, skenira, napravi plan
+(`client.Plan`, čista funkcija nad tri stanja) i primeni ga, a ciklus se
+završava prvom rundom bez posla. Lokalna izmena u sudaru postaje konflikt
+kopija tako što se lokalni fajl preimenuje u ime koje je server dodelio (bez
+ponovnog preuzimanja), a serverova verzija se preuzima na originalno ime.
+Fajl čiji je mtime u trenutku upisa u manifest mlađi od 2 s upisuje se sa
+mtime 0, pa se sledeći put ponovo hešira (izmena iste veličine u istom
+otkucaju sata se ne gubi).
 
 ### 8.3 Pozadinski rad
 
@@ -211,6 +233,11 @@ folderom samo spaja: ništa se ne briše ni lokalno ni na serveru.
 
 `shf join <url> <share-id> <token> <folder>`, `shf sync` (jedan ciklus),
 `shf daemon`, `shf status`, `shf confirm`, `shf restore-local`, `shf log`.
+
+Postoje (TCKTJMT57D): `join` (uz `--ssh user@host[:port]` kad treba zameniti
+ono što server javlja preko `shfd serve --ssh-endpoint`), `sync`, `status`,
+`log`; folder je podrazumevano tekući direktorijum ili bilo koji ispod
+pridruženog foldera.
 
 Admin (na serveru): `shfd serve`, `shfd share create`, `shfd member add|revoke|list`,
 `shfd trash list|restore|purge`, `shfd verify [--repair]`, `shfd stats`.

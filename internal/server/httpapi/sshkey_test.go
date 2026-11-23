@@ -35,6 +35,7 @@ func TestSSHKey(t *testing.T) {
 	os.WriteFile(akPath, []byte("# kept\n"), 0o600)
 	e := newEnv(t, func(o *server.Options) {
 		o.AuthorizedKeys = &authkeys.File{Path: akPath, Command: []string{"/usr/bin/shfd", "rsync-gate", "--data-root", "/srv"}}
+		o.SSH = server.SSHEndpoint{User: "shfd", Host: "files.example.org", Port: 2222}
 	})
 	bob := e.member("bob")
 	key := sshKey(t, "bob@laptop")
@@ -46,6 +47,7 @@ func TestSSHKey(t *testing.T) {
 	norm, _ := authkeys.ParsePublicKey(key)
 	eq(t, "stored key", res.PublicKey, norm)
 	eq(t, "fingerprint", res.Fingerprint, authkeys.Fingerprint(norm))
+	eq(t, "advertised ssh endpoint", res.SSH, server.SSHEndpoint{User: "shfd", Host: "files.example.org", Port: 2222})
 
 	sh, _ := e.srv.Share(e.share)
 	ms, _ := sh.Members()

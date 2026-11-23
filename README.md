@@ -12,7 +12,8 @@ Postoje zajednički paketi i jezgro servera `shfd`: folderi, članovi sa
 tokenima, dnevnik promena, kontrolni HTTP API, pravila konflikta i trash.
 Fajlovi se prenose rsync-om preko SSH-a, sa prinudnom komandom
 `shfd rsync-gate` po članu ([docs/server-ssh.md](docs/server-ssh.md)).
-Klijent `shf` za sada ispisuje samo verziju i pomoć.
+Klijent `shf` se pridružuje folderu i radi jedan potpun ciklus dvosmerne
+sinhronizacije kad se pokrene (`shf sync`); pozadinski rad dolazi kasnije.
 
 | Paket | Šta radi | Odeljak specifikacije |
 |---|---|---|
@@ -26,6 +27,9 @@ Klijent `shf` za sada ispisuje samo verziju i pomoć.
 | `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
 | `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
 | `internal/shfdcli` | komande `shfd` | 8.5 |
+| `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status` | 7, 8.1, 8.2 |
+| `internal/shfcli` | komande `shf` | 8.5 |
+| `internal/sshdtest` | privremeni `sshd` za integracione testove | — |
 
 ## Server
 
@@ -37,13 +41,28 @@ shfd member revoke <share-id> bob
 shfd member list <share-id>
 shfd share list
 shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
-shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem]
+shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem] [--ssh-endpoint shfd@host:22]
 ```
 
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
 reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
 Za prenos fajlova: sistemski korisnik, `sshd` i `SHFD_AUTHORIZED_KEYS` su
 opisani u [docs/server-ssh.md](docs/server-ssh.md).
+
+## Klijent
+
+```sh
+shf join https://shf.example.org <share-id> <token> ~/Tim   # pridruživanje i prvi sync
+shf sync   [<folder>]    # jedan ciklus; izlazni kod 1 ako nešto nije uspelo
+shf status [<folder>]    # poslednji sync, seq i HEAD, promene koje čekaju, problemi
+shf log    [<folder>]    # poslednji ciklusi i šta je u njima urađeno
+```
+
+`join` u folder koji već ima fajlove samo spaja (ništa se ne briše). Stanje
+foldera je van njega, u `$XDG_STATE_HOME/shf/<share-id>/` (na macOS-u
+`~/Library/Application Support/shf/`); `SHF_STATE_HOME` menja koren. Za
+prenos su potrebni `ssh` i rsync 3.2.4+; adresu sshd-a klijent dobija od
+servera (`shfd serve --ssh-endpoint`) ili iz `--ssh`.
 
 ## Raspored
 
@@ -71,6 +90,10 @@ Integracioni testovi u `internal/transport/rsyncssh` pokreću pravi `sshd` na
 slobodnom portu, sa privremenom konfiguracijom i `authorized_keys`, i kroz njega
 rade upload, download i prekinut upload koji se nastavlja. Preskaču se kad
 `rsync`, `ssh`, `ssh-keygen` ili `sshd` nisu instalirani, i uz `go test -short`.
+
+Testovi klijenta (`internal/client`) pokreću pravi `shfd` u procesu sa dva
+klijenta u privremenim folderima i lokalnim transportom; `TestJoinOverSSH`
+radi `join` i sync preko pravog rsync-a i `sshd`-a (preskače se kao gore).
 
 Test `internal/ignore.TestGitCompat` poredi matcher sa samim `git`-om na
 nasumičnim stablima; preskače se ako `git` nije instaliran ili uz `go test -short`.

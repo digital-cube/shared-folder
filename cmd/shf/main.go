@@ -4,10 +4,9 @@ package main
 import (
 	"os"
 
-	"github.com/digital-cube/shared-folder/internal/cli"
+	"github.com/digital-cube/shared-folder/internal/shfcli"
 )
 
 func main() {
-	p := cli.Program{Name: "shf", Summary: "shared folder client"}
-	os.Exit(p.Run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(shfcli.Main(os.Args[1:]))
 }

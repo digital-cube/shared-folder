@@ -26,6 +26,10 @@ type Event struct {
 	Hash     string    `json:"hash,omitempty"`
 	PrevHash string    `json:"prev_hash,omitempty"`
 	TrashID  *int64    `json:"trash_id,omitempty"`
+	// Size and Mtime (Unix nanoseconds) of the content a put, conflict or
+	// move leaves at Path.
+	Size  int64 `json:"size,omitempty"`
+	Mtime int64 `json:"mtime,omitempty"`
 }
 
 // Event operations.
@@ -161,7 +165,7 @@ func (s *Share) changes(since int64, limit int) ([]Event, int64, bool, error) {
 	if err != nil {
 		return nil, 0, false, err
 	}
-	rows, err := s.db.Query(`SELECT seq, ts, member, op, path, old_path, hash, prev_hash, trash_id
+	rows, err := s.db.Query(`SELECT seq, ts, member, op, path, old_path, hash, prev_hash, trash_id, size, mtime
 		FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?`, since, head, limit+1)
 	if err != nil {
 		return nil, 0, false, err
@@ -172,7 +176,7 @@ func (s *Share) changes(since int64, limit int) ([]Event, int64, bool, error) {
 		var e Event
 		var ts string
 		var tid sql.NullInt64
-		if err := rows.Scan(&e.Seq, &ts, &e.Member, &e.Op, &e.Path, &e.OldPath, &e.Hash, &e.PrevHash, &tid); err != nil {
+		if err := rows.Scan(&e.Seq, &ts, &e.Member, &e.Op, &e.Path, &e.OldPath, &e.Hash, &e.PrevHash, &tid, &e.Size, &e.Mtime); err != nil {
 			return nil, 0, false, err
 		}
 		e.TS, _ = time.Parse(timeLayout, ts)
@@ -301,9 +305,9 @@ func (o *op) event(e Event) (Event, error) {
 	if e.TrashID != nil {
 		tid = *e.TrashID
 	}
-	_, err := o.tx.Exec(`INSERT INTO events (seq, ts, member, op, path, old_path, hash, prev_hash, trash_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.Seq, fmtTime(e.TS), e.Member, e.Op, e.Path, e.OldPath, e.Hash, e.PrevHash, tid)
+	_, err := o.tx.Exec(`INSERT INTO events (seq, ts, member, op, path, old_path, hash, prev_hash, trash_id, size, mtime)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.Seq, fmtTime(e.TS), e.Member, e.Op, e.Path, e.OldPath, e.Hash, e.PrevHash, tid, e.Size, e.Mtime)
 	if err != nil {
 		return e, err
 	}
@@ -533,7 +537,7 @@ func (s *Share) Commit(m *Member, uploadID string) (*Result, error) {
 					return err
 				}
 			}
-			e, err := o.event(Event{Op: OpPut, Path: up.Path, Hash: up.NewHash})
+			e, err := o.event(Event{Op: OpPut, Path: up.Path, Hash: up.NewHash, Size: up.Size, Mtime: up.Mtime})
 			if err != nil {
 				return err
 			}
@@ -550,7 +554,7 @@ func (s *Share) Commit(m *Member, uploadID string) (*Result, error) {
 			if err != nil {
 				return err
 			}
-			e, err := o.event(Event{Op: OpPut, Path: up.Path, Hash: up.NewHash, PrevHash: cur.Hash, TrashID: &tid})
+			e, err := o.event(Event{Op: OpPut, Path: up.Path, Hash: up.NewHash, PrevHash: cur.Hash, TrashID: &tid, Size: up.Size, Mtime: up.Mtime})
 			if err != nil {
 				return err
 			}
@@ -567,7 +571,7 @@ func (s *Share) Commit(m *Member, uploadID string) (*Result, error) {
 			if err != nil {
 				return err
 			}
-			e, err := o.event(Event{Op: OpConflict, Path: cp, OldPath: up.Path, Hash: up.NewHash, PrevHash: cur.Hash})
+			e, err := o.event(Event{Op: OpConflict, Path: cp, OldPath: up.Path, Hash: up.NewHash, PrevHash: cur.Hash, Size: up.Size, Mtime: up.Mtime})
 			if err != nil {
 				return err
 			}
@@ -756,7 +760,7 @@ func (o *op) move(from, to, base string, res *Result) error {
 			return err
 		}
 	}
-	e, err := o.event(Event{Op: OpMove, Path: to, OldPath: from, Hash: src.Hash})
+	e, err := o.event(Event{Op: OpMove, Path: to, OldPath: from, Hash: src.Hash, Size: src.Size, Mtime: src.Mtime})
 	if err != nil {
 		return err
 	}

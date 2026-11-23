@@ -92,6 +92,16 @@ smeju biti upisivi drugima. Posle izmene: `sshd -t && systemctl reload ssh`.
 
 Port 22 (ili onaj koji sshd sluša) mora biti dostupan klijentima.
 
+Klijent pri `shf join` od servera dobija gde da se poveže za rsync: korisnika,
+host i port. To se zadaje pri pokretanju servera:
+
+```sh
+shfd serve … --ssh-endpoint shfd@shf.example.org:22   # ili SHFD_SSH_ENDPOINT
+```
+
+Bez toga klijent uzima host iz URL-a API-ja, port 22 i korisnika `shfd`;
+`shf join … --ssh korisnik@host:port` sve to zamenjuje na strani klijenta.
+
 ## 5. Šta `shfd` upisuje u `authorized_keys`
 
 `shfd` održava samo svoj blok između dva komentara. Redovi iznad i ispod
@@ -114,7 +124,8 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
        -d "{\"public_key\": \"$(cat id_ed25519.pub)\"}"
   ```
   Ključ se upisuje u `members.ssh_pubkey` i u blok. Novi ključ zamenjuje
-  stari. Odgovor sadrži sačuvani ključ i njegov SHA256 otisak.
+  stari. Odgovor sadrži sačuvani ključ, njegov SHA256 otisak i `ssh` (korisnik,
+  host i port iz `--ssh-endpoint`). `shf join` ovo radi sam.
 - **Opoziv**: `shfd member revoke <share-id> <username>` briše red. `rsync-gate`
   odbija opozvanog člana i ako red iz nekog razloga još postoji.
 - **Popravka**: `shfd keys sync` ponovo ispiše ceo blok iz baza svih foldera
@@ -135,8 +146,9 @@ tail /var/lib/shfd/data/<share-id>/service.log
 # 2026-11-23T15:03:40.0Z transfer member=bob dir=- path="" outcome=denied detail="not_rsync: only rsync is allowed on this key; command id"
 ```
 
-Ključ servera klijent pamti pri prvom povezivanju u svom direktorijumu stanja
-(`known_hosts` pored `state.db`), a ne u korisnikovom `~/.ssh/known_hosts`.
+Ključ servera klijent pamti pri prvom povezivanju (to radi već `shf join`) u
+svom direktorijumu stanja (`known_hosts` pored `state.db`), a ne u
+korisnikovom `~/.ssh/known_hosts`.
 Ako se kasnije promeni, prenos se odbija. Otisak ključa koji članovi mogu da
 uporede: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
 
