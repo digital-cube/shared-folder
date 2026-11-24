@@ -534,7 +534,10 @@ func testSettings() map[string]any {
 		"reconnect_max": "1s",
 		"ping":          "5s",
 		"retry_max":     "1s",
-		"mass_delete":   map[string]any{"files": -1, "percent": -1},
+		// a refused key or an unreachable server: 5 s up to 5 min by default
+		"transport_retry":     "200ms",
+		"transport_retry_max": "1s",
+		"mass_delete":         map[string]any{"files": -1, "percent": -1},
 	}
 }
 

@@ -71,6 +71,10 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 	}
 	for _, c := range joined {
 		switch {
+		case c.ShareID == req.ShareID && c.Folder == folder:
+			// Joining again: the token is checked anew and this device's
+			// key registered again (another device of the same member
+			// replaced it); the folder's state is kept.
 		case c.ShareID == req.ShareID:
 			return nil, nil, fmt.Errorf("share %s is already joined at %s", req.ShareID, c.Folder)
 		case within(folder, c.Folder) || within(c.Folder, folder):
@@ -105,6 +109,11 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 	}
 	c, err := Open(cfg, opts)
 	if err != nil {
+		return nil, nil, err
+	}
+	// the key was just registered (and, over SSH, accepted)
+	if err := clearKeyRefused(c.st.db); err != nil {
+		c.Close()
 		return nil, nil, err
 	}
 	res, err := c.Sync(ctx)
@@ -177,6 +186,9 @@ type Status struct {
 	// says some of them wait for shf confirm or shf restore-local.
 	Held    []HeldDelete
 	Blocked bool
+	// KeyRefusedSince is set while the server refuses this device's SSH
+	// key (the last cycles failed with it; KeyRefusedHint says what to do).
+	KeyRefusedSince time.Time
 }
 
 // Status reports the folder's state without changing anything: it asks
@@ -205,6 +217,9 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	if s.Held, err = c.st.HeldDeletes(); err != nil {
+		return nil, err
+	}
+	if s.KeyRefusedSince, err = c.st.KeyRefusedSince(); err != nil {
 		return nil, err
 	}
 	for _, h := range s.Held {

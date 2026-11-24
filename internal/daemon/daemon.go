@@ -15,6 +15,14 @@
 //     Settings.FullSync;
 //   - never runs two cycles at once: a request that comes during a cycle
 //     runs another right after it;
+//   - after a failed cycle waits before the next one, whatever asks for
+//     it: a refused SSH key or an unreachable server (rsync exit 255
+//     included) from Settings.TransportRetry doubling, with jitter, up to
+//     Settings.TransportRetryMax; other failures from 2 s up to
+//     Settings.RetryMax. News from the server never ends that pause, a
+//     local change only for a failure other than a refused key, and not
+//     before the schedule's first pause. A refused key is logged once,
+//     when it starts;
 //   - ignores the changes its own cycles make on disk (downloads), so they
 //     are not sent back.
 //
@@ -60,6 +68,26 @@ type Config struct {
 	Grace time.Duration
 	// OnCycle, when set, is called after every cycle (tests).
 	OnCycle func(shareID, reason string, res *client.Result, err error)
+	// Clock schedules the cycles of the folders; nil is the system clock
+	// (tests set a fake one).
+	Clock Clock
+}
+
+// Clock is the time as the folders' loops see it.
+type Clock interface {
+	Now() time.Time
+	// At returns a channel that receives once the clock reaches t (at
+	// once when it is there already), and a function that releases it.
+	At(t time.Time) (c <-chan time.Time, stop func())
+}
+
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
+
+func (systemClock) At(t time.Time) (<-chan time.Time, func()) {
+	tm := time.NewTimer(max(time.Until(t), 0))
+	return tm.C, func() { tm.Stop() }
 }
 
 // Run serves every joined folder until ctx ends. Folders joined while it
@@ -70,6 +98,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if cfg.Grace <= 0 {
 		cfg.Grace = 60 * time.Second
+	}
+	if cfg.Clock == nil {
+		cfg.Clock = systemClock{}
 	}
 	unlock, err := lockHome(cfg.Home)
 	if err != nil {

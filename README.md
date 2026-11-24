@@ -100,6 +100,15 @@ putanje) imaju prednost. Na macOS-u je `/usr/bin/rsync` Apple-ov `openrsync`
 novom terminalu treba da pokaže 3.2.4 ili noviji. Ako nađe pogrešan rsync,
 `shf` kaže koji je našao (putanju) i šta treba uraditi.
 
+Ako server ne prihvata SSH ključ ovog uređaja (član je opozvan, ili se isti
+član pridružio sa drugog uređaja i taj ključ je zamenio ovaj), `shf status`
+pokazuje `state: key refused`, `shf sync` vraća istu poruku, a pozadinski
+klijent to upisuje u log jednom i ne pokušava češće od pauze iznad. Rešenje
+je `shf join` ponovo, u isti folder, sa sopstvenim tokenom: ključ ovog
+uređaja se ponovo registruje, a stanje foldera ostaje. Svaki uređaj treba
+da ima svog člana (token); jedan token na dva uređaja znači da radi samo
+poslednji koji se pridružio.
+
 ### Pozadinski klijent
 
 ```sh
@@ -150,6 +159,14 @@ tail ~/Library/Logs/shf.log   # bez "rsync/ssh not available"
   ne ispadne brisanje i nov fajl);
 - pri pokretanju i jednom u 24 h radi puno poređenje sa serverom;
 - ciklusi se ne preklapaju; ono što stigne tokom ciklusa pokreće sledeći;
+- posle neuspelog ciklusa čeka pre sledećeg: kad server odbije SSH ključ ili
+  nije dostupan (i rsync izlazni kod 255) 5 s, 10 s, 20 s … do 5 min, sa
+  slučajnim odstupanjem (`transport_retry`, `transport_retry_max`), za
+  ostale greške 2 s … `retry_max`. Novi HEAD sa servera ne skraćuje pauzu;
+  lokalna promena je skraćuje samo kad ključ nije odbijen, i ne ispod prve
+  pauze. Uspešan ciklus vraća pauzu na početak. Svaki pokušaj je prijava na
+  sshd servera, a OpenSSH (`PerSourcePenalties`) kažnjava adresu sa koje
+  prijave stalno padaju, za sve korisnike iza nje;
 - promene koje sam upiše tokom preuzimanja ne šalje nazad.
 
 Intervali i pragovi su u `$SHF_STATE_HOME/settings.json` (podrazumevano
@@ -165,6 +182,8 @@ podrazumevanu vrednost:
   "reconnect_max": "60s",
   "ping": "30s",
   "retry_max": "60s",
+  "transport_retry": "5s",
+  "transport_retry_max": "5m",
   "mass_delete": {"files": 20, "percent": 10},
   "bwlimit": 0
 }

@@ -251,6 +251,10 @@ const (
 	metaRemoteSeq = "remote_seq"
 	// metaHead is the server's HEAD as last seen.
 	metaHead = "head"
+	// metaKeyRefused is when (Unix seconds) the server started refusing
+	// the device's SSH key, as the cycles saw it; 0 or missing while it
+	// accepts it.
+	metaKeyRefused = "key_refused_since"
 )
 
 // keepCycles is how many cycles the local log keeps.
@@ -506,9 +510,32 @@ type Item struct {
 	Op, Path, Detail string
 }
 
+// keyVerdict is what a cycle learnt about the device's SSH key.
+type keyVerdict int
+
+const (
+	keyUnknown  keyVerdict = iota // no transfer was attempted, or it failed otherwise
+	keyRefused                    // the server refused it
+	keyAccepted                   // a transfer went through
+)
+
+// keyState is the verdict of a cycle that ended with err and did (not)
+// transfer a file.
+func keyState(err error, transferred bool) keyVerdict {
+	switch {
+	case Classify(err) == FailKeyRefused:
+		return keyRefused
+	case transferred:
+		return keyAccepted
+	}
+	return keyUnknown
+}
+
 // finishCycle stores the cycle and its problems; when it succeeded it
-// also stores the applied seq.
-func (s *State) finishCycle(c *Cycle, problems []Problem, ok bool) error {
+// also stores the applied seq. A refused key is remembered until a
+// transfer goes through (KeyRefusedSince): a cycle with nothing to
+// transfer says nothing about the key.
+func (s *State) finishCycle(c *Cycle, problems []Problem, ok bool, key keyVerdict) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -548,7 +575,34 @@ func (s *State) finishCycle(c *Cycle, problems []Problem, ok bool) error {
 			return err
 		}
 	}
+	switch key {
+	case keyAccepted:
+		if err := clearKeyRefused(tx); err != nil {
+			return err
+		}
+	case keyRefused:
+		if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING`,
+			metaKeyRefused, strconv.FormatInt(c.FinishedAt.Unix(), 10)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+// KeyRefusedSince is when the cycles started failing because the server
+// refused the device's SSH key; zero while no such failure is
+// outstanding (a cycle succeeded since).
+func (s *State) KeyRefusedSince() (time.Time, error) {
+	v, err := s.metaInt(metaKeyRefused)
+	if err != nil || v == 0 {
+		return time.Time{}, err
+	}
+	return time.Unix(v, 0), nil
+}
+
+func clearKeyRefused(x execer) error {
+	_, err := x.Exec(`DELETE FROM meta WHERE key = ?`, metaKeyRefused)
+	return err
 }
 
 // Problems returns the problems found by the last cycle.

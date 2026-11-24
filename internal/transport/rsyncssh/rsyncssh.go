@@ -692,6 +692,12 @@ func classify(remotePath string, err error, stderr string) error {
 		return wrap(ErrUnreachable, msg)
 	}
 	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 255 {
+		// rsync passes on ssh's own failure (or a probe's ssh exits with
+		// it): the connection did not work out, for a reason not matched
+		// above. Like an unreachable server it may pass; retry later.
+		return wrap(ErrUnreachable, fmt.Sprintf("%s: %s", ee, msg))
+	}
 	if errors.As(err, &ee) {
 		return fmt.Errorf("rsync %s: %s: %s", remotePath, ee, msg)
 	}

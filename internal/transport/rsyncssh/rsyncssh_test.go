@@ -2,6 +2,7 @@ package rsyncssh
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -160,6 +161,25 @@ func TestClassify(t *testing.T) {
 		if err := classify("storage/x", exit, stderr); !errors.Is(err, want) {
 			t.Errorf("%q: %v, want %v", stderr, err, want)
 		}
+	}
+}
+
+// TestClassifyExit255: rsync exits with 255 when ssh failed; an
+// unrecognised message then still counts as an unreachable server (to be
+// retried later), any other unrecognised exit does not.
+func TestClassifyExit255(t *testing.T) {
+	exitWith := func(code int) error {
+		err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+		if err == nil {
+			t.Fatal("want an exit error")
+		}
+		return err
+	}
+	if err := classify("storage/x", exitWith(255), "kex_exchange_identification: read: Connection aborted\n"); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("exit 255: %v, want %v", err, ErrUnreachable)
+	}
+	if err := classify("storage/x", exitWith(23), "rsync: some files could not be transferred\n"); errors.Is(err, ErrUnreachable) {
+		t.Errorf("exit 23: %v, must not be %v", err, ErrUnreachable)
 	}
 }
 

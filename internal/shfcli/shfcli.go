@@ -50,7 +50,10 @@ Usage:
 join connects a local folder (created if missing; existing files are
 merged, nothing is deleted) to a shared folder and runs the first sync.
 The SSH endpoint for file transfer comes from the server; --ssh overrides
-it. sync runs one full two-way cycle and exits non-zero if anything was
+it. Joining the same folder again (with the member's own token) registers
+this device's SSH key again, keeping the folder's state: the remedy when
+status says "key refused". sync runs one full two-way cycle and exits
+non-zero if anything was
 not synchronized. status and log read the local state; <folder> defaults
 to the current directory (or any folder inside a joined one).
 
@@ -353,6 +356,12 @@ func status(ctx context.Context, args []string, env Env) error {
 		}
 	}
 	switch {
+	case !s.KeyRefusedSince.IsZero():
+		fmt.Fprintf(w, "state:      key refused (since %s): nothing is synchronized\n", s.KeyRefusedSince.Local().Format(time.DateTime))
+		fmt.Fprintf(w, "            %s\n", client.KeyRefusedHint)
+		if s.Blocked {
+			fmt.Fprintf(w, "            also blocked: %d deletions held back (too many at once)\n", len(s.Held))
+		}
 	case s.Blocked:
 		fmt.Fprintf(w, "state:      blocked: %d deletions held back (too many at once)\n", len(s.Held))
 		fmt.Fprintln(w, "            shf confirm sends them, shf restore-local brings the files back")

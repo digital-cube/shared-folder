@@ -30,7 +30,11 @@ func TestLoadSettings(t *testing.T) {
 		s.MassDelete.Percent != client.DefaultMassDelete.Percent || time.Duration(s.Poll) != time.Minute {
 		t.Errorf("settings: %+v", s)
 	}
-	for _, bad := range []string{`{"bwlimit": -1}`, `{"poll": "0s"}`, `{"settle": "-1s"}`, `{`} {
+	if d := client.DefaultSettings(); time.Duration(d.TransportRetry) != 5*time.Second || time.Duration(d.TransportRetryMax) != 5*time.Minute {
+		t.Errorf("transport retry defaults: %v, %v", d.TransportRetry, d.TransportRetryMax)
+	}
+	for _, bad := range []string{`{"bwlimit": -1}`, `{"poll": "0s"}`, `{"settle": "-1s"}`, `{`,
+		`{"transport_retry": "0s"}`, `{"transport_retry": "10m", "transport_retry_max": "5m"}`} {
 		write(bad)
 		if _, err := client.LoadSettings(home); err == nil {
 			t.Errorf("%s: no error", bad)

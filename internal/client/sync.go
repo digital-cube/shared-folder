@@ -249,6 +249,7 @@ func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error
 	if cycleErr == nil {
 		r.Pending = 0
 	}
+	cycleErr = explain(cycleErr)
 	r.ToSeq, _ = c.st.metaInt(metaRemoteSeq)
 	r.ToSeq = max(r.ToSeq, r.FromSeq)
 	r.Head, _ = c.st.metaInt(metaHead)
@@ -263,7 +264,7 @@ func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error
 	if err := c.api.report(ctx, rep); err != nil && cycleErr == nil {
 		r.Items = append(r.Items, Item{Op: "warning", Detail: "sync-report not delivered: " + err.Error()})
 	}
-	if err := c.st.finishCycle(&r.Cycle, r.Problems, cycleErr == nil); err != nil {
+	if err := c.st.finishCycle(&r.Cycle, r.Problems, cycleErr == nil, keyState(cycleErr, cs.transferred)); err != nil {
 		return r, errors.Join(cycleErr, err)
 	}
 	return r, cycleErr
@@ -279,6 +280,9 @@ type cycleState struct {
 	rejected map[string]string
 	so       SyncOptions
 	fetched  bool // the first fetch (a full one with so.Full) is done
+	// transferred: a file went over the transport, so the server accepts
+	// the SSH key.
+	transferred bool
 }
 
 func (cs *cycleState) stopped() bool {
@@ -424,6 +428,12 @@ func (cs *cycleState) round(ctx context.Context) (work int, err error) {
 			}
 			hard = append(hard, fmt.Errorf("%s %s: %w", a.Op, a.Path, err))
 			cs.log("error", a.Path, string(a.Op)+": "+err.Error())
+			if transportDown(err) {
+				// Every further step would be one more refused or failing
+				// SSH login at the server (sshd penalises a source address
+				// for those, and all members may share one).
+				return work, errors.Join(hard...)
+			}
 		}
 	}
 	sort.Slice(cs.problems, func(i, j int) bool { return cs.problems[i].Path < cs.problems[j].Path })
@@ -676,6 +686,7 @@ func (cs *cycleState) upload(ctx context.Context, a Action, abs func(string) str
 			}
 			return err
 		}
+		cs.transferred = true
 		if res, err = c.api.commit(ctx, ann.UploadID); err != nil {
 			if code := codeOf(err); code == "hash_mismatch" || code == "size_mismatch" {
 				return fmt.Errorf("%w (changed on disk while sending)", errPending)
@@ -744,6 +755,7 @@ func (cs *cycleState) download(ctx context.Context, p string, local, r Entry, ds
 		}
 		return Entry{}, err
 	}
+	cs.transferred = true
 	if r.Mtime > 0 {
 		t := time.Unix(0, r.Mtime)
 		if err := os.Chtimes(tmp, t, t); err != nil {

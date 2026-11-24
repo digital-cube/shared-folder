@@ -54,6 +54,16 @@ type Settings struct {
 	Ping Duration `json:"ping"`
 	// RetryMax caps the pause before a failed cycle is retried.
 	RetryMax Duration `json:"retry_max"`
+	// TransportRetry is the first pause after a cycle failed because the
+	// server refused the SSH key or could not be reached (rsync exit 255
+	// included); each further failure doubles it, with random jitter, up
+	// to TransportRetryMax. Neither a local change nor news from the
+	// server ends the pause early after a refused key; after an
+	// unreachable server a local change may, but not before
+	// TransportRetry has passed. Every attempt is a login at the server's
+	// sshd, which penalises a source address that keeps failing.
+	TransportRetry    Duration `json:"transport_retry"`
+	TransportRetryMax Duration `json:"transport_retry_max"`
 	// MassDelete are the limits of the mass-delete guard.
 	MassDelete MassDelete `json:"mass_delete"`
 	// BwLimit caps the bandwidth of each transfer in KiB/s (rsync's
@@ -72,6 +82,9 @@ func DefaultSettings() Settings {
 		Ping:         Duration(30 * time.Second),
 		RetryMax:     Duration(60 * time.Second),
 		MassDelete:   DefaultMassDelete,
+
+		TransportRetry:    Duration(5 * time.Second),
+		TransportRetryMax: Duration(5 * time.Minute),
 	}
 }
 
@@ -91,10 +104,14 @@ func LoadSettings(home string) (Settings, error) {
 		return s, fmt.Errorf("%s: %w", file, err)
 	}
 	for name, d := range map[string]Duration{"debounce": s.Debounce, "poll": s.Poll, "full_sync": s.FullSync,
-		"reconnect_max": s.ReconnectMax, "ping": s.Ping, "retry_max": s.RetryMax} {
+		"reconnect_max": s.ReconnectMax, "ping": s.Ping, "retry_max": s.RetryMax,
+		"transport_retry": s.TransportRetry, "transport_retry_max": s.TransportRetryMax} {
 		if d <= 0 {
 			return s, fmt.Errorf("%s: %s must be positive", file, name)
 		}
+	}
+	if s.TransportRetryMax < s.TransportRetry {
+		return s, fmt.Errorf("%s: transport_retry_max must not be below transport_retry", file)
 	}
 	if s.BwLimit < 0 {
 		return s, fmt.Errorf("%s: bwlimit must not be negative", file)

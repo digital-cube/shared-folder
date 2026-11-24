@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sync"
@@ -78,7 +79,7 @@ func (f *folder) isWSUp() bool {
 
 // changed records a local change of p (a slash path below the root).
 func (f *folder) changed(p string) {
-	now := time.Now()
+	now := f.cfg.Clock.Now()
 	f.mu.Lock()
 	if _, ok := f.dirty[p]; !ok {
 		f.dirty[p] = now
@@ -91,7 +92,7 @@ func (f *folder) changed(p string) {
 // onWrite is client.Options.OnWrite: a cycle changed p on disk.
 func (f *folder) onWrite(p string, e client.Entry) {
 	f.mu.Lock()
-	f.selfw[p] = selfWrite{e: e, at: time.Now()}
+	f.selfw[p] = selfWrite{e: e, at: f.cfg.Clock.Now()}
 	f.mu.Unlock()
 }
 
@@ -204,36 +205,48 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 	defer bg.Wait()
 
 	f.log.Info("serving folder")
+	clk := f.cfg.Clock
 	var (
-		nextFull  = time.Now() // a full comparison at start
+		nextFull  = clk.Now() // a full comparison at start
 		retryAt   time.Time
-		failures  int
+		pause     pause // after a failed cycle
 		wasErr    string
 		wasBlock  bool
+		refused   bool // the server refuses the SSH key (as logged)
 		firstFull = true
 	)
-	timer := time.NewTimer(time.Hour)
-	defer timer.Stop()
 	for {
-		now := time.Now()
+		now := clk.Now()
 		reason := ""
 		localDue, localAt := f.localDue(now)
 		seq, _ := c.State().Seq()
 		f.mu.Lock()
 		remoteDue := f.head > seq
 		f.mu.Unlock()
+		held := pause.holds(now)
 		switch {
+		case !retryAt.IsZero() && !now.Before(retryAt):
+			reason = ReasonRetry
+		case held:
+			// after a failure only a local change may end the pause early
+			if localDue && pause.localMayEnd(now) {
+				reason = ReasonLocal
+			}
 		case !now.Before(nextFull):
 			reason = ReasonFull
 			if firstFull {
 				reason = ReasonStart
 			}
-		case !retryAt.IsZero() && !now.Before(retryAt):
-			reason = ReasonRetry
 		case remoteDue:
 			reason = ReasonRemote
 		case localDue:
 			reason = ReasonLocal
+		}
+		if reason == ReasonRetry && !now.Before(nextFull) {
+			reason = ReasonFull // the failed full comparison, again
+			if firstFull {
+				reason = ReasonStart
+			}
 		}
 		if reason != "" {
 			select {
@@ -248,31 +261,55 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 				f.cfg.OnCycle(f.fc.ShareID, reason, res, err)
 			}
 			retryAt = time.Time{}
+			now = clk.Now()
 			switch {
 			case errors.Is(err, client.ErrStopped):
 				return
 			case errors.Is(err, client.ErrBusy):
 				// shf sync, confirm or restore-local holds the folder
-				retryAt = time.Now().Add(time.Second)
+				retryAt = now.Add(time.Second)
 			case err != nil:
-				failures++
-				retryAt = time.Now().Add(backoff(failures, time.Duration(f.set.RetryMax)))
-				if msg := err.Error(); msg != wasErr {
-					f.log.Error("cycle failed; will retry", "reason", reason, "err", err, "retry_in", time.Until(retryAt).Round(time.Second))
-					wasErr = msg
-				}
+				kind := client.Classify(err)
+				retryAt = pause.failed(now, kind, f.set)
 				if full {
 					// keep the full comparison due until one succeeds
 					nextFull = retryAt
 				}
+				retryIn := retryAt.Sub(now).Round(time.Second)
+				switch msg := err.Error(); {
+				case kind == client.FailKeyRefused && refused:
+					// logged when it started; it does not pass by itself
+					f.log.Debug("cycle failed: SSH key still refused", "retry_in", retryIn)
+				case kind == client.FailKeyRefused:
+					refused = true
+					f.log.Error("key refused: "+client.KeyRefusedHint+"; nothing is sent or received until then",
+						"err", err, "retry_in", retryIn)
+				case msg != wasErr:
+					f.log.Error("cycle failed; will retry", "reason", reason, "err", err, "retry_in", retryIn)
+				default:
+					f.log.Debug("cycle failed again", "reason", reason, "retry_in", retryIn)
+				}
+				wasErr = err.Error()
 			default:
-				if wasErr != "" {
+				// A cycle with nothing to transfer succeeds even while the
+				// key is refused; only a transfer clears that (State).
+				since, _ := c.State().KeyRefusedSince()
+				switch {
+				case refused && since.IsZero():
+					refused = false
+					f.log.Info("the server accepts the SSH key again; synchronizing again")
+				case wasErr != "" && !refused:
 					f.log.Info("synchronizing again")
 				}
-				failures, wasErr = 0, ""
+				if refused {
+					pause.until, pause.localFrom = time.Time{}, time.Time{} // keep counting
+				} else {
+					pause = pauseNone
+				}
+				wasErr = ""
 				if full {
 					firstFull = false
-					nextFull = time.Now().Add(time.Duration(f.set.FullSync))
+					nextFull = now.Add(time.Duration(f.set.FullSync))
 				}
 				if !res.RetryAt.IsZero() {
 					retryAt = res.RetryAt.Add(50 * time.Millisecond)
@@ -297,35 +334,108 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 		}
 
 		next := nextFull
-		for _, t := range []time.Time{retryAt, localAt} {
+		if held {
+			next = pause.until
+		}
+		candidates := []time.Time{retryAt}
+		switch {
+		case !held:
+			candidates = append(candidates, localAt)
+		case pause.localFrom.IsZero():
+			// a refused key: local changes wait for the retry
+		case localDue || !localAt.IsZero():
+			// a local change may end this pause, but not before localFrom
+			candidates = append(candidates, latest(localAt, pause.localFrom))
+		}
+		for _, t := range candidates {
 			if !t.IsZero() && t.Before(next) {
 				next = t
 			}
 		}
-		timer.Reset(max(time.Until(next), time.Millisecond))
+		at, release := clk.At(next)
 		select {
 		case <-stop:
+			release()
 			return
 		case <-f.wake:
-		case <-timer.C:
+		case <-at:
 		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
+		release()
 	}
 }
 
-// backoff is the pause before retry n (1, 2, ...): 2 s doubling up to
+func latest(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+// pause is the wait after a failed cycle.
+type pause struct {
+	kind     client.Failure
+	failures int       // failures in a row
+	until    time.Time // no cycle before this, except as localFrom allows
+	// localFrom is when a local change may end the pause early; zero
+	// means it may not (a refused key).
+	localFrom time.Time
+}
+
+var pauseNone pause
+
+// holds says whether the pause is still on at now.
+func (p *pause) holds(now time.Time) bool { return p.failures > 0 && now.Before(p.until) }
+
+// localMayEnd says whether a local change may end the pause at now.
+func (p *pause) localMayEnd(now time.Time) bool {
+	return !p.localFrom.IsZero() && !now.Before(p.localFrom)
+}
+
+// failed records a failure of kind at now and returns when to retry.
+func (p *pause) failed(now time.Time, kind client.Failure, set client.Settings) time.Time {
+	if isTransport(kind) != isTransport(p.kind) {
+		p.failures = 0 // a different trouble starts its own schedule
+	}
+	p.kind = kind
+	p.failures++
+	switch kind {
+	case client.FailKeyRefused, client.FailUnreachable:
+		first := time.Duration(set.TransportRetry)
+		p.until = now.Add(jitter(backoff(p.failures, first, time.Duration(set.TransportRetryMax)), first,
+			time.Duration(set.TransportRetryMax)))
+		p.localFrom = now.Add(first)
+		if kind == client.FailKeyRefused {
+			p.localFrom = time.Time{}
+		}
+	default:
+		first := 2 * time.Second
+		p.until = now.Add(backoff(p.failures, first, max(time.Duration(set.RetryMax), first)))
+		p.localFrom = now.Add(first)
+	}
+	return p.until
+}
+
+func isTransport(k client.Failure) bool {
+	return k == client.FailKeyRefused || k == client.FailUnreachable
+}
+
+// backoff is the pause before retry n (1, 2, ...): first, doubling up to
 // limit.
-func backoff(n int, limit time.Duration) time.Duration {
-	d := 2 * time.Second
+func backoff(n int, first, limit time.Duration) time.Duration {
+	d := first
 	for i := 1; i < n && d < limit; i++ {
 		d *= 2
 	}
 	return min(d, limit)
+}
+
+// jitter moves d by up to a fifth either way, keeping it within [lo, hi],
+// so that clients that failed together do not all retry together.
+func jitter(d, lo, hi time.Duration) time.Duration {
+	if spread := d / 5; spread > 0 {
+		d += rand.N(2*spread+1) - spread
+	}
+	return min(max(d, lo), hi)
 }
 
 // poll asks the server for its HEAD every Settings.Poll while the

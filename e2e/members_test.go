@@ -309,3 +309,54 @@ func TestReactivatedMember(t *testing.T) {
 		t.Errorf("stats --as bob: exit %d\n%s", code, out)
 	}
 }
+
+// TestSecondDeviceReplacesKey: a member joins from a second device with
+// the same token, whose key replaces the first device's at the server.
+// The first device's daemon must not hammer sshd: it backs off, logs the
+// refused key once, shf status and shf sync say what to do, and joining
+// again at the same folder puts it back to work.
+func TestSecondDeviceReplacesKey(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t)
+	ana := c.joined("ana")
+	ana.write("before.txt", "1")
+	c.stored("before.txt", "1")
+
+	tablet := c.clientWithToken("ana", "ana-tablet", ana.token)
+	tablet.join()
+	tablet.revoked = true // its key is replaced in turn below
+
+	ana.write("after.txt", "2")
+	eventually(t, arrive, "ana's status shows the refused key", func() error {
+		out, _ := ana.shf("status")
+		if !strings.Contains(out, "state:      key refused") || !strings.Contains(out, "run shf join again") {
+			return errorf("status:\n%s", out)
+		}
+		return nil
+	})
+	eventually(t, arrive, "ana's daemon retries", func() error {
+		if n := strings.Count(readFile(ana.log), "SSH key still refused"); n < 2 {
+			return errorf("%d retries logged", n)
+		}
+		return nil
+	})
+	if n := strings.Count(readFile(ana.log), `msg="key refused: `); n != 1 {
+		t.Errorf("the refused key was logged %d times, want once", n)
+	}
+	if out, code := ana.shf("sync"); code != 1 || !strings.Contains(out, "run shf join again") {
+		t.Errorf("shf sync with a refused key: exit %d\n%s", code, out)
+	}
+	if fileExists(c.storage("after.txt")) {
+		t.Error("after.txt reached the server with a refused key")
+	}
+
+	// the remedy: join again (here with the same token, which takes the
+	// key back from the tablet)
+	ana.stop()
+	ana.join()
+	ana.start()
+	c.stored("after.txt", "2")
+	if out := ana.mustShf("status"); !strings.Contains(out, "state:      ok") {
+		t.Errorf("status after joining again:\n%s", out)
+	}
+}
