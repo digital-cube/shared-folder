@@ -15,7 +15,7 @@ install`) je u [README.md](../README.md#klijent) i na strani Instalacija u GUI-j
 |---|---|
 | Debian / Ubuntu | `sudo apt install rsync openssh-client` (Debian 11 ima rsync 3.2.3, prestar: Debian 12+ ili Ubuntu 22.04+) |
 | Fedora / RHEL | `sudo dnf install rsync openssh-clients` |
-| macOS | [Homebrew](https://brew.sh), pa `brew install rsync`; `/usr/bin/rsync` je Apple-ov `openrsync` i **ne radi**. Homebrew mora biti u `PATH`-u ispred `/usr/bin`: `eval "$(/opt/homebrew/bin/brew shellenv)"` u `~/.zprofile` (Intel: `/usr/local/bin/brew`). `ssh` je već tu. |
+| macOS | [Homebrew](https://brew.sh), pa `brew install rsync`; `/usr/bin/rsync` je Apple-ov `openrsync` i **ne radi**. Homebrew mora biti u `PATH`-u ispred `/usr/bin`: `eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"` u `~/.zprofile` (ista linija radi na Apple čipu, `/opt/homebrew`, i na Intel-u, `/usr/local`). `ssh` je već tu. |
 | Windows | rsync i ssh iz MSYS2 (`pacman -S rsync openssh`) u `PATH`-u, ili apsolutne putanje u `SHF_RSYNC` i `SHF_SSH` |
 
 ## 1. Gotov paket (Linux x86-64, macOS Intel, macOS Apple Silicon)
@@ -134,7 +134,9 @@ go version                       # ako je starija od 1.27: GOTOOLCHAIN=auto, ili
 
 ```sh
 xcode-select --install           # Command Line Tools: make, git, clang
-# Homebrew: https://brew.sh
+# Homebrew: https://brew.sh; u PATH ispred /usr/bin (Apple čip: /opt/homebrew, Intel: /usr/local)
+echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"' >> ~/.zprofile
+source ~/.zprofile
 brew install go rsync
 go version
 ```

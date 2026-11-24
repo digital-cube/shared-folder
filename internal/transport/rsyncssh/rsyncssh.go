@@ -302,7 +302,8 @@ var goos = runtime.GOOS
 
 // macOSRsyncHint is what a Mac user does about Apple's openrsync.
 const macOSRsyncHint = `install rsync with "brew install rsync" and put Homebrew ahead of /usr/bin in PATH ` +
-	`(eval "$(/opt/homebrew/bin/brew shellenv)" in your shell profile; /usr/local/bin/brew on an Intel Mac), ` +
+	`(add eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)" to ~/.zprofile; ` +
+	`it covers Apple silicon and Intel Macs), ` +
 	`then run "shf service install" again if the background client is installed`
 
 func checkRsyncVersion(bin string) error {

@@ -119,8 +119,8 @@ servera (`shfd serve --ssh-endpoint`) ili iz `--ssh`.
 `shf` traži `rsync` i `ssh` u `PATH`-u; `SHF_RSYNC` i `SHF_SSH` (apsolutne
 putanje) imaju prednost. Na macOS-u je `/usr/bin/rsync` Apple-ov `openrsync`
 (predstavlja se kao 2.6.9) i ne radi: `brew install rsync`, pa Homebrew u
-`PATH` ispred `/usr/bin`, npr. `eval "$(/opt/homebrew/bin/brew shellenv)"` u
-`~/.zprofile` (na Intel Mac-u `/usr/local/bin/brew`). `rsync --version` u
+`PATH` ispred `/usr/bin`, npr. `eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"`
+u `~/.zprofile` (radi i na Apple čipu, `/opt/homebrew`, i na Intel Mac-u, `/usr/local`). `rsync --version` u
 novom terminalu treba da pokaže 3.2.4 ili noviji. Ako nađe pogrešan rsync,
 `shf` kaže koji je našao (putanju) i šta treba uraditi.
 
@@ -176,7 +176,7 @@ Na macOS-u se provera radi ovako:
 
 ```sh
 rsync --version | head -1     # rsync  version 3.x.y (ne openrsync)
-shf service install           # na kraju: rsync: /opt/homebrew/bin/rsync
+shf service install           # na kraju: rsync: /opt/homebrew/bin/rsync (Intel: /usr/local/bin/rsync)
 shf service status            # state: running
 tail ~/Library/Logs/shf.log   # bez "rsync/ssh not available"
 ```

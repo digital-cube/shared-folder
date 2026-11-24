@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useAppMaybe } from "../App";
 import { Folder } from "../icons";
+import { detectOs, type Os } from "../os";
 
 function Code({ children }: { children: string }) {
   const [done, setDone] = useState(false);
@@ -34,7 +35,6 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
   );
 }
 
-type Os = "linux" | "macos" | "windows";
 type How = "pkg" | "src";
 
 // Ready-made packages from `make release` (docs/install.md); there is none for Windows.
@@ -50,8 +50,10 @@ sudo install -d -m 755 /usr/local/bin
 sudo install -m 755 shared-folder-*-darwin-*/shf /usr/local/bin/shf
 sudo xattr -d com.apple.quarantine "$(command -v shf)"   # skida karantin
 xattr -l "$(command -v shf)"     # ne sme da ispiše com.apple.quarantine
+echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"' >> ~/.zprofile
+source ~/.zprofile               # Homebrew ispred /usr/bin; radi i na Apple čipu i na Intel-u
 brew install rsync               # /usr/bin/rsync (openrsync) ne radi
-eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile
+rsync --version | head -1        # rsync  version 3.x.y (ne openrsync)
 shf version`,
 };
 
@@ -65,8 +67,9 @@ cd shared-folder
 make build                       # bin/shf i bin/shfd
 sudo install -m 755 bin/shf /usr/local/bin/shf`,
   macos: `xcode-select --install          # make, git
+echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"' >> ~/.zprofile
+source ~/.zprofile               # Homebrew ispred /usr/bin; radi i na Apple čipu i na Intel-u
 brew install go rsync            # Go 1.27+; /usr/bin/rsync (openrsync) ne radi
-eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile
 git clone https://github.com/digital-cube/shared-folder.git
 cd shared-folder
 make build                       # bin/shf
@@ -82,7 +85,7 @@ go build -trimpath -o shf.exe ./cmd/shf
 
 export function Install({ standalone }: { standalone?: boolean }) {
   const [tab, setTab] = useState<"client" | "server">("client");
-  const [os, setOs] = useState<Os>("linux");
+  const [os, setOs] = useState<Os>(detectOs);
   const [how, setHow] = useState<How>("pkg");
   const showHow: How = os === "windows" ? "src" : how;
   const origin = location.origin;

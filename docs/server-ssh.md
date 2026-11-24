@@ -21,7 +21,8 @@ isporučuje kao `/usr/bin/rsync` (predstavlja se kao 2.6.9), ne radi:
 
 ```sh
 brew install rsync
-eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile; Homebrew ispred /usr/bin
+echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"' >> ~/.zprofile
+source ~/.zprofile                          # Homebrew ispred /usr/bin (Apple čip i Intel)
 rsync --version | head -1                   # rsync  version 3.x.y
 ```
 
