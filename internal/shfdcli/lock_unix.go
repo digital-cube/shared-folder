@@ -9,8 +9,11 @@ import (
 	"syscall"
 )
 
-// lockDataRoot keeps a second shfd serve off the same data-root, so each
-// folder has one writer across processes too.
+// lockDataRoot keeps a second shfd serve off the same databases, so each
+// folder has one writer across processes too. dir is the db-root (the
+// data-root unless --db-root is set): serve.lock lives with the databases,
+// on the local disk, because flock on NFS becomes a POSIX lock held by the
+// NFS server, the kind of lock that hung shfd there.
 func lockDataRoot(root string) (func(), error) {
 	f, err := os.OpenFile(filepath.Join(root, "serve.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -18,7 +21,7 @@ func lockDataRoot(root string) (func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("data-root %s is already served by another shfd: %w", root, err)
+		return nil, fmt.Errorf("%s is already served by another shfd: %w", root, err)
 	}
 	return func() { f.Close() }, nil
 }

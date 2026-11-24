@@ -6,13 +6,19 @@
 // Layout on disk:
 //
 //	<data-root>/
-//	  registry.db            folders: id (UUID), name, created_at
 //	  <share-id>/
 //	    storage/             current state, plain files
 //	    trash/               deleted and replaced versions (flat)
 //	    tmp/                 incoming uploads; same file system as storage/
-//	    service.db           SQLite
 //	    service.log          human-readable event log
+//	<db-root>/               (Options.DBRoot; the data-root by default)
+//	  registry.db            folders: id (UUID), name, created_at
+//	  <share-id>/
+//	    service.db           SQLite (with -wal and -shm next to it)
+//
+// The databases may live apart from the data so that they stay on a local
+// disk while storage/ is on NFS: SQLite's WAL and POSIX locks are not safe
+// on a network file system (docs/server-ssh.md).
 package server
 
 import (
@@ -51,6 +57,9 @@ type Options struct {
 	// a member when it registers its key, so "shf join" needs only the
 	// API URL. Empty fields leave the client to its defaults.
 	SSH SSHEndpoint
+	// DBRoot is where registry.db and <share-id>/service.db live. Empty
+	// means the data-root, the layout shfd always had.
+	DBRoot string
 }
 
 // SSHEndpoint is the address and system user of the server's sshd.
@@ -96,9 +105,10 @@ func ParseSSHEndpoint(s string) (SSHEndpoint, error) {
 
 // Server owns a data-root.
 type Server struct {
-	root string
-	opts Options
-	reg  *sql.DB
+	root   string
+	dbRoot string
+	opts   Options
+	reg    *sql.DB
 
 	mu     sync.Mutex
 	shares map[string]*Share
@@ -113,28 +123,100 @@ type ShareInfo struct {
 
 // Open opens the data-root, creating it and registry.db when missing.
 func Open(root string, opts Options) (*Server, error) {
-	if root == "" {
-		return nil, errors.New("data-root is not set")
-	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	abs, dbAbs, err := Roots(root, opts.DBRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkDBRoot(abs, dbAbs); err != nil {
+		return nil, err
+	}
+	for _, d := range []string{abs, dbAbs} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	reg, err := openDB(filepath.Join(dbAbs, RegistryFile), "registry")
+	if err != nil {
+		return nil, err
+	}
+	return &Server{root: abs, dbRoot: dbAbs, opts: opts, reg: reg, shares: map[string]*Share{}}, nil
+}
+
+// Roots returns the absolute data-root and db-root; an empty dbRoot is
+// the data-root.
+func Roots(root, dbRoot string) (string, string, error) {
+	if root == "" {
+		return "", "", errors.New("data-root is not set")
+	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
-		return nil, err
+	if dbRoot == "" {
+		return abs, abs, nil
 	}
-	reg, err := openDB(filepath.Join(abs, "registry.db"), "registry")
+	dbAbs, err := filepath.Abs(dbRoot)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	return &Server{root: abs, opts: opts, reg: reg, shares: map[string]*Share{}}, nil
+	return abs, dbAbs, nil
+}
+
+// RegistryFile is the name of the registry database in the db-root.
+const RegistryFile = "registry.db"
+
+// MovedMarker is the file, in the data-root, that shfd db move leaves
+// behind: its first line is the db-root the databases were copied to.
+// Opening the data-root with any other db-root is refused, so a server
+// cannot come up on the stale copies the move left in place.
+const MovedMarker = "db-moved"
+
+// MovedTo reads the MovedMarker of a data-root; "" when there is none.
+func MovedTo(absRoot string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(absRoot, MovedMarker))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	line, _, _ := strings.Cut(string(b), "\n")
+	return strings.TrimSpace(line), nil
+}
+
+// checkDBRoot refuses a db-root that would silently start from the wrong
+// databases: one other than where shfd db move put them, or a new, empty
+// db-root next to a data-root that still holds registry.db (the move was
+// not done).
+func checkDBRoot(abs, dbAbs string) error {
+	moved, err := MovedTo(abs)
+	if err != nil {
+		return err
+	}
+	if moved != "" && moved != dbAbs {
+		return fmt.Errorf("the databases of data-root %s were moved to %s (shfd db move); run with --db-root %s (or $SHFD_DB_ROOT)", abs, moved, moved)
+	}
+	if dbAbs == abs || moved == dbAbs {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(dbAbs, RegistryFile)); err == nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(abs, RegistryFile)); err == nil {
+		return fmt.Errorf("db-root %s has no %s but data-root %s has one: move the databases first with shfd db move --to %s (with the server stopped)", dbAbs, RegistryFile, abs, dbAbs)
+	}
+	return nil
 }
 
 // Root is the absolute data-root.
 func (s *Server) Root() string { return s.root }
+
+// DBRoot is the absolute directory of the databases (the data-root unless
+// Options.DBRoot is set). serve.lock and admin.sock live here too.
+func (s *Server) DBRoot() string { return s.dbRoot }
 
 // SSH is the sshd endpoint advertised to clients (Options.SSH).
 func (s *Server) SSH() SSHEndpoint { return s.opts.SSH }
@@ -191,6 +273,9 @@ func (s *Server) CreateShare(name, adminUser string) (id, token string, err erro
 		}
 		s.mu.Unlock()
 		os.RemoveAll(filepath.Join(s.root, id))
+		if s.dbRoot != s.root {
+			os.RemoveAll(filepath.Join(s.dbRoot, id))
+		}
 		return "", "", err
 	}
 	return id, token, nil
@@ -242,7 +327,7 @@ func (s *Server) Share(id string) (*Share, error) {
 	if n == 0 {
 		return nil, errf(CodeUnknownShare, "no folder %q", id)
 	}
-	sh, err := openShare(filepath.Join(s.root, id), id, s.opts)
+	sh, err := openShare(filepath.Join(s.root, id), filepath.Join(s.dbRoot, id), id, s.opts)
 	if err != nil {
 		return nil, err
 	}

@@ -44,7 +44,7 @@ pokreće `rsync-gate` za svakog člana.
 
 ```sh
 useradd --system --create-home --home-dir /var/lib/shfd --shell /bin/sh shfd
-install -d -o shfd -g shfd -m 700 /var/lib/shfd/data /var/lib/shfd/.ssh
+install -d -o shfd -g shfd -m 700 /var/lib/shfd/data /var/lib/shfd/db /var/lib/shfd/.ssh
 install -o shfd -g shfd -m 600 /dev/null /var/lib/shfd/.ssh/authorized_keys
 install -m 755 bin/shfd /usr/local/bin/shfd
 ```
@@ -53,18 +53,58 @@ install -m 755 bin/shfd /usr/local/bin/shfd
   komandu pokreće kao `<ljuska> -c "<komanda>"`. Šta god ljuska ispiše pri
   pokretanju (`.profile`, `.bashrc`) kvari rsync protokol, zato tom korisniku
   ne dodajte takve fajlove.
-- Data-root (`/var/lib/shfd/data`) i `authorized_keys` pripadaju korisniku `shfd`.
+- Data-root (`/var/lib/shfd/data`), db-root (`/var/lib/shfd/db`) i
+  `authorized_keys` pripadaju korisniku `shfd`.
 
 ## 3. Konfiguracija `shfd`
 
 Putanja do `authorized_keys` se zadaje isto kao data-root: zastavicom ili
 promenljivom okruženja. Važi za `serve`, `member …` i `keys sync`.
+`--data-root` i `--db-root` važe za svaku komandu (`serve`, `share`,
+`member`, `keys`, `trash`, `verify`, `stats`, `db`, `rsync-gate`).
 
 | Zastavica | Promenljiva | Značenje |
 |---|---|---|
-| `--data-root` | `SHFD_DATA_ROOT` | podaci |
+| `--data-root` | `SHFD_DATA_ROOT` | podaci: `<share-id>/storage/`, `trash/`, `tmp/`, `service.log` |
+| `--db-root` | `SHFD_DB_ROOT` | SQLite baze: `registry.db`, `<share-id>/service.db` (sa `-wal` i `-shm`), kao i `serve.lock` i `admin.sock`; podrazumevano isto što i data-root |
 | `--authorized-keys` | `SHFD_AUTHORIZED_KEYS` | `authorized_keys` korisnika `shfd`; bez nje se SSH ključevi ne mogu registrovati |
 | `--shfd-binary` | `SHFD_BINARY` | apsolutna putanja do `shfd` koja se upisuje u prinudnu komandu; podrazumevano je to sam izvršni fajl |
+
+### Baze na lokalnom disku
+
+`storage/` može biti na NFS-u (ili drugom mrežnom disku), **baze ne treba**.
+SQLite izričito ne preporučuje WAL i POSIX zaključavanje na mrežnom
+fajl-sistemu: kad NFS klijent prestane da završava I/O, nit koja otpušta
+SQLite lock ostaje u kernelu (`D` stanje, `nfs_iocounter_wait ← do_unlk ←
+fcntl_setlk`), a sa njom i svi zahtevi tog foldera. Zato:
+
+- `SHFD_DB_ROOT` (ili `--db-root`) postavite na direktorijum na lokalnom
+  disku, npr. `/var/lib/shfd/db`. Tamo idu `registry.db` i
+  `<db-root>/<share-id>/service.db`. `storage/`, `tmp/`, `trash/` i
+  `service.log` ostaju u data-root-u.
+- `serve.lock` (jedan `shfd serve` po bazama) i `admin.sock` su takođe u
+  db-root-u: `flock` na NFS-u postaje POSIX lock na NFS serveru, iste vrste
+  kao onaj koji je zaglavio `shfd`, a unix socket nema šta da traži na
+  mrežnom disku. Dva `shfd serve`-a na istim bazama i dalje ne mogu da rade
+  istovremeno.
+- `shfd serve` pri startu proverava fajl-sistem db-root-a (Linux: `statfs`
+  magic za NFS, CIFS/SMB, Ceph, 9p, i FUSE `sshfs`/`rclone`/…; macOS:
+  `f_fstypename` i `MNT_LOCAL`). Ako je mrežni, upisuje `level=WARN` u log
+  sa preporukom za `--db-root`; server ipak radi.
+- Postojeće baze se premeštaju komandom `shfd db move` dok server ne radi:
+  [admin.md, Premeštanje baza](admin.md#premeštanje-baza-shfd-db-move).
+- Kad je db-root odvojen, prinudna komanda u `authorized_keys` nosi i
+  `--db-root` (sshd ne prosleđuje `SHFD_DB_ROOT` `rsync-gate`-u). Posle
+  promene db-root-a pokrenite `shfd keys sync`.
+- Ako db-root nema `registry.db`, a data-root ima, `shfd` odbija da radi (da
+  ne bi krenuo sa praznom listom foldera) i kaže da prvo treba `shfd db
+  move`.
+
+`GET /healthz` pored `registry.db` proverava i pisca svakog otvorenog
+foldera: da li baza odgovara na čitanje i da li se lock pisca oslobodi u roku
+od 2 s. Ako ne, vraća 503 sa `"ok":false` i `"error":"share <id> stuck"`
+(`"share <id> unavailable"` kad baza vrati grešku). Dok radi `shfd verify`,
+koji drži lock dugo, proverava se samo baza.
 
 Primer systemd jedinice `/etc/systemd/system/shfd.service`:
 
@@ -72,6 +112,7 @@ Primer systemd jedinice `/etc/systemd/system/shfd.service`:
 [Service]
 User=shfd
 Environment=SHFD_DATA_ROOT=/var/lib/shfd/data
+Environment=SHFD_DB_ROOT=/var/lib/shfd/db
 Environment=SHFD_AUTHORIZED_KEYS=/var/lib/shfd/.ssh/authorized_keys
 Environment=SHFD_BINARY=/usr/local/bin/shfd
 ExecStart=/usr/local/bin/shfd serve --listen 127.0.0.1:8443
@@ -81,8 +122,11 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+`/var/lib/shfd/data` može biti NFS mount (npr. `/disk2/shared-storage`), a
+`/var/lib/shfd/db` mora biti na lokalnom disku.
+
 Admin komande pokrenite kao isti korisnik i sa istim okruženjem, npr.
-`sudo -u shfd env SHFD_DATA_ROOT=… SHFD_AUTHORIZED_KEYS=… shfd member revoke <share-id> bob`.
+`sudo -u shfd env SHFD_DATA_ROOT=… SHFD_DB_ROOT=… SHFD_AUTHORIZED_KEYS=… shfd member revoke <share-id> bob`.
 
 ## 4. `sshd`
 

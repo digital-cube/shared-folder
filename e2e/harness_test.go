@@ -260,6 +260,7 @@ type cluster struct {
 	t        *testing.T
 	base     string
 	root     string // shfd data-root
+	dbRoot   string // shfd db-root: its own temporary directory (see newCluster)
 	ak       string // authorized_keys of "the shfd user" (us)
 	sshd     *sshdtest.SSHD
 	port     int
@@ -277,6 +278,13 @@ func newCluster(t *testing.T) *cluster {
 	requireTools(t)
 	c := &cluster{t: t, base: t.TempDir()}
 	c.root = filepath.Join(c.base, "data")
+	// The databases live in another temporary directory (--db-root via
+	// $SHFD_DB_ROOT), as recommended for a data-root on NFS. E2E_DB_ROOT=same
+	// runs the old layout, everything in the data-root.
+	c.dbRoot = t.TempDir()
+	if os.Getenv("E2E_DB_ROOT") == "same" {
+		c.dbRoot = c.root
+	}
 	c.ak = filepath.Join(c.base, "ssh", "authorized_keys")
 	c.serveLog = filepath.Join(c.base, "shfd-serve.log")
 	if err := os.MkdirAll(filepath.Dir(c.ak), 0o700); err != nil {
@@ -301,7 +309,7 @@ func newCluster(t *testing.T) *cluster {
 func (c *cluster) shareDir() string   { return filepath.Join(c.root, c.share) }
 func (c *cluster) storageDir() string { return filepath.Join(c.shareDir(), "storage") }
 func (c *cluster) serviceLog() string { return filepath.Join(c.shareDir(), "service.log") }
-func (c *cluster) serviceDB() string  { return filepath.Join(c.shareDir(), "service.db") }
+func (c *cluster) serviceDB() string  { return filepath.Join(c.dbRoot, c.share, "service.db") }
 func (c *cluster) storage(p string) string {
 	return filepath.Join(c.storageDir(), filepath.FromSlash(p))
 }
@@ -312,6 +320,7 @@ func (c *cluster) shfd(args ...string) (string, int) {
 	cmd := exec.Command(shfdBin, args...)
 	cmd.Env = append(os.Environ(),
 		"SHFD_DATA_ROOT="+c.root,
+		"SHFD_DB_ROOT="+c.dbRoot,
 		"SHFD_AUTHORIZED_KEYS="+c.ak,
 		"SHFD_BINARY="+shfdBin)
 	var out bytes.Buffer
@@ -341,7 +350,7 @@ func (c *cluster) mustShfd(args ...string) string {
 func (c *cluster) startServer() {
 	c.t.Helper()
 	c.serve = startProc(c.t, "shfd serve", c.serveLog,
-		[]string{"SHFD_DATA_ROOT=" + c.root, "SHFD_AUTHORIZED_KEYS=" + c.ak, "SHFD_BINARY=" + shfdBin},
+		[]string{"SHFD_DATA_ROOT=" + c.root, "SHFD_DB_ROOT=" + c.dbRoot, "SHFD_AUTHORIZED_KEYS=" + c.ak, "SHFD_BINARY=" + shfdBin},
 		shfdBin, "serve", "--listen", fmt.Sprintf("127.0.0.1:%d", c.port),
 		"--ssh-endpoint", fmt.Sprintf("%s@127.0.0.1:%d", c.sshd.User, c.sshd.Port))
 	hc := &http.Client{Timeout: time.Second}
@@ -399,7 +408,7 @@ func (c *cluster) dumpLogsOnFailure() {
 	for _, cl := range c.clients {
 		fmt.Fprintf(&b, "\n======== client %s (shf daemon)\n%s", cl.name, readFile(cl.log))
 	}
-	if out, err := exec.Command(shfdBin, "verify", c.share, "--data-root", c.root).CombinedOutput(); err != nil || len(out) > 0 {
+	if out, err := exec.Command(shfdBin, "verify", c.share, "--data-root", c.root, "--db-root", c.dbRoot).CombinedOutput(); err != nil || len(out) > 0 {
 		fmt.Fprintf(&b, "\n======== shfd verify\n%s", out)
 	}
 	c.t.Log(b.String())

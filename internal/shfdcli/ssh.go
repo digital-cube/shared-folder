@@ -27,8 +27,10 @@ func (f *sshFlags) register(fs *flag.FlagSet, env Env) {
 }
 
 // options returns server options with the authorized_keys file, if one
-// was given. Its forced command is "<binary> rsync-gate --data-root <abs root>".
-func (f *sshFlags) options(root string, env Env) (server.Options, error) {
+// was given. Its forced command is "<binary> rsync-gate --data-root <abs
+// root>", with "--db-root <abs db-root>" when the databases live apart:
+// sshd does not pass $SHFD_DB_ROOT on.
+func (f *sshFlags) options(root roots, env Env) (server.Options, error) {
 	if f.authorizedKeys == "" {
 		return server.Options{}, nil
 	}
@@ -36,7 +38,7 @@ func (f *sshFlags) options(root string, env Env) (server.Options, error) {
 	if err != nil {
 		return server.Options{}, err
 	}
-	absRoot, err := filepath.Abs(root)
+	absRoot, absDB, err := root.abs()
 	if err != nil {
 		return server.Options{}, err
 	}
@@ -52,10 +54,11 @@ func (f *sshFlags) options(root string, env Env) (server.Options, error) {
 	if !filepath.IsAbs(bin) {
 		return server.Options{}, usageError("--shfd-binary must be an absolute path: sshd runs the forced command with a minimal PATH")
 	}
-	return server.Options{AuthorizedKeys: &authkeys.File{
-		Path:    akPath,
-		Command: []string{bin, "rsync-gate", "--data-root", absRoot},
-	}}, nil
+	cmd := []string{bin, "rsync-gate", "--data-root", absRoot}
+	if absDB != absRoot {
+		cmd = append(cmd, "--db-root", absDB)
+	}
+	return server.Options{AuthorizedKeys: &authkeys.File{Path: akPath, Command: cmd}}, nil
 }
 
 func keysCmd(args []string, env Env) error {
@@ -77,7 +80,7 @@ func keysCmd(args []string, env Env) error {
 		return err
 	}
 	opts.SkipRecovery = true
-	srv, err := server.Open(root, opts)
+	srv, err := root.open(opts)
 	if err != nil {
 		return err
 	}
@@ -115,7 +118,7 @@ func rsyncGate(args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, "shfd rsync-gate: --share <share-id> and --member <member-id> are required")
 		return 2
 	}
-	srv, err := server.Open(root, server.Options{SkipRecovery: true})
+	srv, err := root.open(server.Options{SkipRecovery: true})
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "shfd rsync-gate: %v\n", err)
 		return 1

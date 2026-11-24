@@ -107,6 +107,7 @@ func (s *Share) Verify(m *Member, repair bool) (*VerifyResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.maintenance()() // hashing every file may hold the lock for long
 	if err := s.replayJournal(); err != nil {
 		return nil, fmt.Errorf("finishing earlier disk steps: %w", err)
 	}

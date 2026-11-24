@@ -14,9 +14,12 @@
 //	shfd trash purge <share-id> (--older-than AGE | --id N | --all) [--dry-run] [--yes]
 //	shfd verify <share-id> [--repair] [--json]
 //	shfd stats <share-id> [--json]
+//	shfd db move --to DIR
 //	shfd rsync-gate --share <share-id> --member <member-id>   (sshd's forced command)
 //
-// --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command.
+// --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command,
+// and so is --db-root (default $SHFD_DB_ROOT, else the data-root): where
+// registry.db, every <share-id>/service.db, serve.lock and admin.sock live.
 // --authorized-keys (default $SHFD_AUTHORIZED_KEYS) turns on the
 // management of members' SSH keys for serve, member and keys.
 //
@@ -42,6 +45,7 @@ import (
 	"time"
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
+	"github.com/digital-cube/shared-folder/internal/fsinfo"
 	"github.com/digital-cube/shared-folder/internal/server"
 	"github.com/digital-cube/shared-folder/internal/server/httpapi"
 	"github.com/digital-cube/shared-folder/internal/version"
@@ -50,6 +54,7 @@ import (
 // Environment variables holding defaults of flags.
 const (
 	EnvDataRoot       = "SHFD_DATA_ROOT"       // --data-root
+	EnvDBRoot         = "SHFD_DB_ROOT"         // --db-root
 	EnvAuthorizedKeys = "SHFD_AUTHORIZED_KEYS" // --authorized-keys
 	EnvBinary         = "SHFD_BINARY"          // --shfd-binary
 	EnvSSHEndpoint    = "SHFD_SSH_ENDPOINT"    // serve --ssh-endpoint
@@ -75,11 +80,18 @@ Usage:
                    [--dry-run] [--yes]
   shfd verify <share-id> [--repair] [--json]
   shfd stats <share-id> [--json]
+  shfd db move --to DIR
   shfd rsync-gate --share <share-id> --member <member-id>
   shfd version
   shfd help
 
-Every command takes --data-root; it defaults to $SHFD_DATA_ROOT.
+Every command takes --data-root; it defaults to $SHFD_DATA_ROOT. Every
+command also takes --db-root (default $SHFD_DB_ROOT, else the data-root):
+the directory of registry.db, <share-id>/service.db, serve.lock and
+admin.sock. Keep it on a local disk; storage/ may be on NFS, the SQLite
+databases should not (serve warns when they are). db move copies the
+databases of a stopped server to --to with SQLite's backup API, checks
+each copy and prints what to change in the systemd unit (docs/admin.md).
 serve speaks plain HTTP unless --tls-cert and --tls-key are given (TLS can
 also come from a reverse proxy).
 
@@ -120,6 +132,9 @@ type Env struct {
 	Ctx context.Context
 	// Ready, when set, receives the address serve listens on.
 	Ready func(addr string)
+	// DetectFS tells serve which file system the db-root is on, to warn
+	// about a network one; fsinfo.Detect when nil.
+	DetectFS fsinfo.Detector
 }
 
 // Main runs with the process environment.
@@ -158,6 +173,8 @@ func Run(args []string, env Env) int {
 		err = verifyCmd(args[1:], env)
 	case "stats":
 		err = statsCmd(args[1:], env)
+	case "db":
+		err = dbCmd(args[1:], env)
 	case "rsync-gate":
 		return rsyncGate(args[1:], env)
 	default:
@@ -182,14 +199,32 @@ func (e usageErr) Error() string { return e.msg }
 
 func usageError(format string, a ...any) error { return usageErr{fmt.Sprintf(format, a...)} }
 
+// roots are the --data-root and --db-root of a command.
+type roots struct {
+	data string // folders' storage/, trash/, tmp/ and service.log
+	db   string // registry.db, <share-id>/service.db, serve.lock, admin.sock; "" = data
+}
+
+// abs returns both roots made absolute, the db-root defaulting to the
+// data-root.
+func (r roots) abs() (data, db string, err error) { return server.Roots(r.data, r.db) }
+
+// open opens the server on these roots.
+func (r roots) open(opts server.Options) (*server.Server, error) {
+	opts.DBRoot = r.db
+	return server.Open(r.data, opts)
+}
+
 // flags parses args where flags and positional arguments may be mixed
 // ("member add ID ana --admin") and checks the number of positionals.
-func flags(fs *flag.FlagSet, args []string, nPos int, env Env) (dataRoot string, pos []string, err error) {
+// Every command gets --data-root and --db-root.
+func flags(fs *flag.FlagSet, args []string, nPos int, env Env) (r roots, pos []string, err error) {
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&dataRoot, "data-root", env.Getenv(EnvDataRoot), "data directory")
+	fs.StringVar(&r.data, "data-root", env.Getenv(EnvDataRoot), "data directory")
+	fs.StringVar(&r.db, "db-root", env.Getenv(EnvDBRoot), "directory of the SQLite databases, on a local disk (default: the data-root)")
 	for {
 		if err := fs.Parse(args); err != nil {
-			return "", nil, usageError("%s: %v", fs.Name(), err)
+			return roots{}, nil, usageError("%s: %v", fs.Name(), err)
 		}
 		args = fs.Args()
 		if len(args) == 0 {
@@ -199,12 +234,12 @@ func flags(fs *flag.FlagSet, args []string, nPos int, env Env) (dataRoot string,
 		args = args[1:]
 	}
 	if len(pos) != nPos {
-		return "", nil, usageError("%s: want %d argument(s), got %d", fs.Name(), nPos, len(pos))
+		return roots{}, nil, usageError("%s: want %d argument(s), got %d", fs.Name(), nPos, len(pos))
 	}
-	if dataRoot == "" {
-		return "", nil, usageError("%s: --data-root or $%s is required", fs.Name(), EnvDataRoot)
+	if r.data == "" {
+		return roots{}, nil, usageError("%s: --data-root or $%s is required", fs.Name(), EnvDataRoot)
 	}
-	return dataRoot, pos, nil
+	return r, pos, nil
 }
 
 func shareCmd(args []string, env Env) error {
@@ -219,7 +254,7 @@ func shareCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
-		srv, err := server.Open(root, server.Options{})
+		srv, err := root.open(server.Options{})
 		if err != nil {
 			return err
 		}
@@ -236,7 +271,7 @@ func shareCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
-		srv, err := server.Open(root, server.Options{})
+		srv, err := root.open(server.Options{})
 		if err != nil {
 			return err
 		}
@@ -260,13 +295,13 @@ func memberCmd(args []string, env Env) error {
 		return usageError("member: want add, revoke, set-role, reset-token or list")
 	}
 	var sf sshFlags
-	open := func(root, id string) (*server.Server, *server.Share, error) {
+	open := func(root roots, id string) (*server.Server, *server.Share, error) {
 		opts, err := sf.options(root, env)
 		if err != nil {
 			return nil, nil, err
 		}
 		opts.SkipRecovery = true
-		srv, err := server.Open(root, opts)
+		srv, err := root.open(opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -435,21 +470,22 @@ func serve(args []string, env Env) error {
 	if opts.SSH, err = server.ParseSSHEndpoint(*sshEP); err != nil {
 		return usageError("serve: %v", err)
 	}
-	srv, err := server.Open(root, opts)
+	srv, err := root.open(opts)
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
-	unlock, err := lockDataRoot(srv.Root())
+	unlock, err := lockDataRoot(srv.DBRoot())
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
+	warnNetworkDB(srv, env, log)
 	if err := srv.OpenAll(); err != nil {
 		return err
 	}
 
-	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
@@ -488,7 +524,7 @@ func serve(args []string, env Env) error {
 	if opts.AuthorizedKeys != nil {
 		akeys = opts.AuthorizedKeys.Path
 	}
-	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "authorized_keys", akeys, "version", version.Version)
+	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "version", version.Version)
 	if env.Ready != nil {
 		env.Ready(ln.Addr().String())
 	}
@@ -504,4 +540,27 @@ func serve(args []string, env Env) error {
 	}
 	log.Info("shfd stopped")
 	return nil
+}
+
+// warnNetworkDB logs a warning when the databases are on a network file
+// system (NFS, CIFS/SMB, sshfs, ...). SQLite does not recommend WAL or
+// POSIX locks there, and an NFS client that stops finishing I/O leaves the
+// folder's writer hanging in the kernel, holding every request of that
+// folder. serve keeps running; the fix is --db-root on a local disk.
+func warnNetworkDB(srv *server.Server, env Env, log *slog.Logger) {
+	detect := env.DetectFS
+	if detect == nil {
+		detect = fsinfo.Detect
+	}
+	fi, err := detect(srv.DBRoot())
+	if err != nil {
+		log.Debug("file system of the db-root not detected", "db_root", srv.DBRoot(), "err", err)
+		return
+	}
+	if !fi.Network {
+		return
+	}
+	hint := "put the databases on a local disk: stop shfd, run shfd db move --to /var/lib/shfd/db, then start it with --db-root /var/lib/shfd/db (or SHFD_DB_ROOT); storage/ may stay where it is"
+	log.Warn("the SQLite databases are on a network file system; SQLite's WAL and locks are not safe there and a stalled mount hangs the folder's writer",
+		"db_root", srv.DBRoot(), "fs", fi.Type, "hint", hint)
 }

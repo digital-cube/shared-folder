@@ -102,3 +102,40 @@ func TestServerCrash(t *testing.T) {
 	})
 	c.converged(long)
 }
+
+// The databases are in the db-root, apart from the data (newCluster gives
+// shfd its own temporary --db-root), and the whole stack works that way:
+// the sync, rsync over SSH through rsync-gate (whose forced command carries
+// --db-root), the admin socket and the health check.
+func TestSeparateDBRoot(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t)
+	if c.dbRoot == c.root {
+		t.Skip("E2E_DB_ROOT=same: the databases are in the data-root")
+	}
+	ana, bob := c.joined("ana"), c.joined("bob")
+	ana.write("a/b.txt", "over ssh")
+	bob.has("a/b.txt", "over ssh")
+
+	for _, p := range []string{"registry.db", c.share + "/service.db", "serve.lock", "admin.sock"} {
+		if _, err := os.Stat(filepath.Join(c.dbRoot, p)); err != nil {
+			t.Errorf("db-root: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(c.root, p)); err == nil {
+			t.Errorf("%s is in the data-root", p)
+		}
+	}
+	for _, p := range []string{"storage/a/b.txt", "service.log"} {
+		if _, err := os.Stat(filepath.Join(c.shareDir(), p)); err != nil {
+			t.Errorf("data-root: %v", err)
+		}
+	}
+	ak, _ := os.ReadFile(c.ak)
+	if !regexp.MustCompile(`rsync-gate --data-root \S+ --db-root ` + regexp.QuoteMeta(c.dbRoot) + ` `).Match(ak) {
+		t.Errorf("forced commands without --db-root:\n%s", ak)
+	}
+	if out := c.mustShfd("stats", c.share); !regexp.MustCompile(`(?m)^storage:\s+1 file`).MatchString(out) {
+		t.Errorf("shfd stats:\n%s", out)
+	}
+	c.converged(arrive)
+}

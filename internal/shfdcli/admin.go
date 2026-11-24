@@ -26,16 +26,18 @@ import (
 	"github.com/digital-cube/shared-folder/internal/server/httpapi"
 )
 
-// AdminSocket is the file name, inside the data-root, of the unix socket on
-// which shfd serve answers the admin routes for the shfd commands.
+// AdminSocket is the file name, inside the db-root (the data-root unless
+// --db-root is set), of the unix socket on which shfd serve answers the
+// admin routes for the shfd commands. It lives next to serve.lock and the
+// databases, on the local disk, not on a data-root that may be NFS.
 const AdminSocket = "admin.sock"
 
 // maxSocketPath keeps socket paths under the limit of sockaddr_un (104
 // bytes on macOS, 108 on Linux).
 const maxSocketPath = 100
 
-// adminSocketPath is <data-root>/admin.sock, or, when that path is too
-// long for a unix socket, <tmp>/shfd-<uid>/<hash of data-root>.sock in a
+// adminSocketPath is <db-root>/admin.sock, or, when that path is too
+// long for a unix socket, <tmp>/shfd-<uid>/<hash of db-root>.sock in a
 // directory only this user may enter. With create the directory is made.
 func adminSocketPath(absRoot string, create bool) (string, error) {
 	p := filepath.Join(absRoot, AdminSocket)
@@ -58,19 +60,19 @@ func adminSocketPath(absRoot string, create bool) (string, error) {
 // adminConn reaches the admin routes of a data-root: through the socket of
 // a running shfd serve, so the command goes through that server's single
 // writer per folder; or, when no server runs, in this process while it
-// holds the data-root's lock, so none can start meanwhile.
+// holds serve.lock in the db-root, so none can start meanwhile.
 type adminConn struct {
 	hc    *http.Client
 	as    string
 	close func()
 }
 
-func dialAdmin(root, as string) (*adminConn, error) {
-	abs, err := filepath.Abs(root)
+func dialAdmin(root roots, as string) (*adminConn, error) {
+	abs, dbAbs, err := root.abs()
 	if err != nil {
 		return nil, err
 	}
-	sock, err := adminSocketPath(abs, false)
+	sock, err := adminSocketPath(dbAbs, false)
 	if err != nil {
 		return nil, err
 	}
@@ -85,11 +87,14 @@ func dialAdmin(root, as string) (*adminConn, error) {
 	if _, err := os.Stat(abs); err != nil {
 		return nil, fmt.Errorf("data-root %s: %w", abs, err)
 	}
-	unlock, err := lockDataRoot(abs)
+	if _, err := os.Stat(dbAbs); err != nil {
+		return nil, fmt.Errorf("db-root %s: %w", dbAbs, err)
+	}
+	unlock, err := lockDataRoot(dbAbs)
 	if err != nil {
 		return nil, fmt.Errorf("%w, but its admin socket %s does not answer; is it an older shfd? Restart it, or stop it and run the command again", err, sock)
 	}
-	srv, err := server.Open(abs, server.Options{})
+	srv, err := server.Open(abs, server.Options{DBRoot: dbAbs})
 	if err != nil {
 		unlock()
 		return nil, err
@@ -175,11 +180,11 @@ func (r *recorder) Header() http.Header         { return r.header }
 func (r *recorder) Write(p []byte) (int, error) { return r.body.Write(p) }
 func (r *recorder) WriteHeader(code int)        { r.code = code }
 
-// serveAdminSocket answers the admin routes on <data-root>/admin.sock
-// until the returned stop is called. The caller holds the data-root lock,
-// so a socket file left there is stale and is replaced.
+// serveAdminSocket answers the admin routes on <db-root>/admin.sock
+// until the returned stop is called. The caller holds serve.lock, so a
+// socket file left there is stale and is replaced.
 func serveAdminSocket(srv *server.Server, log *slog.Logger) (func(), error) {
-	sock, err := adminSocketPath(srv.Root(), true)
+	sock, err := adminSocketPath(srv.DBRoot(), true)
 	if err != nil {
 		return nil, err
 	}

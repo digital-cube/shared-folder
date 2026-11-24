@@ -27,7 +27,7 @@ func TestKeysRevokeAndGate(t *testing.T) {
 	// Register bob's key the way the API does.
 	var sf sshFlags
 	sf.authorizedKeys, sf.binary = ak, "/opt/shfd/bin/shfd"
-	opts, err := sf.options(root, Env{})
+	opts, err := sf.options(roots{data: root}, Env{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,17 +27,18 @@ const (
 	StorageDir = "storage"
 	TrashDir   = "trash"
 	TmpDir     = "tmp"
-	dbFile     = "service.db"
+	DBFile     = "service.db"
 	logFile    = "service.log"
 )
 
 // Share is one open folder. All operations that change it run one at a
 // time under mu: the single writer of the folder.
 type Share struct {
-	ID  string
-	dir string
-	db  *sql.DB
-	now func() time.Time
+	ID    string
+	dir   string // <data-root>/<share-id>
+	dbDir string // <db-root>/<share-id>; dir unless the db-root is separate
+	db    *sql.DB
+	now   func() time.Time
 
 	mu  sync.Mutex // the writer lock; also guards log
 	log *os.File
@@ -46,18 +47,20 @@ type Share struct {
 
 	watch watchers // subscribers to the HEAD (the WebSocket)
 
+	probes probes // liveness checks of the health check (probe.go)
+
 	// crashAfterCommit, when set, is called after the database commit and
 	// before the disk steps run. Tests use it to simulate a crash there.
 	crashAfterCommit func() error
 }
 
-func openShare(dir, id string, opts Options) (*Share, error) {
-	for _, d := range []string{"", StorageDir, TrashDir, TmpDir} {
-		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+func openShare(dir, dbDir, id string, opts Options) (*Share, error) {
+	for _, d := range []string{dir, filepath.Join(dir, StorageDir), filepath.Join(dir, TrashDir), filepath.Join(dir, TmpDir), dbDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
 		}
 	}
-	db, err := openDB(filepath.Join(dir, dbFile), "service")
+	db, err := openDB(filepath.Join(dbDir, DBFile), "service")
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +69,7 @@ func openShare(dir, id string, opts Options) (*Share, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Share{ID: id, dir: dir, db: db, now: opts.Now, log: lf, keys: opts.AuthorizedKeys}
+	s := &Share{ID: id, dir: dir, dbDir: dbDir, db: db, now: opts.Now, log: lf, keys: opts.AuthorizedKeys}
 	if opts.SkipRecovery {
 		return s, nil
 	}
@@ -89,6 +92,9 @@ func (s *Share) close() error {
 
 // Dir is the share directory (<data-root>/<share-id>).
 func (s *Share) Dir() string { return s.dir }
+
+// DBPath is the folder's database (<db-root>/<share-id>/service.db).
+func (s *Share) DBPath() string { return filepath.Join(s.dbDir, DBFile) }
 
 // abs maps a share-relative slash path ("storage/a/b.txt") to the disk.
 func (s *Share) abs(rel string) string { return filepath.Join(s.dir, filepath.FromSlash(rel)) }

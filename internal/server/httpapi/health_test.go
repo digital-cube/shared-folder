@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/digital-cube/shared-folder/internal/server"
 	"github.com/digital-cube/shared-folder/internal/server/httpapi"
@@ -128,5 +129,54 @@ func TestUnknownPathStillNotFound(t *testing.T) {
 		if eb.Error.Code != server.CodeNotFound {
 			t.Errorf("GET %s: code %q", p, eb.Error.Code)
 		}
+	}
+}
+
+// A folder whose writer hangs (a lock held, as by a goroutine stuck in
+// the kernel under SQLite) makes the health check fail, naming the folder
+// and nothing else; once it lets go the check passes again.
+func TestHealthShareWriterStuck(t *testing.T) {
+	e := newEnv(t)
+	sh, err := e.srv.Share(e.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := sh.HoldWriter()
+	start := time.Now()
+	resp, b := e.raw("GET", "/healthz")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /healthz: %d %s", resp.StatusCode, b)
+	}
+	if d := time.Since(start); d > httpapi.HealthTimeout+time.Second {
+		t.Errorf("health check took %v", d)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"service": "shfd", "version": version.Version, "ok": false, "error": "share " + e.share + " stuck"}
+	if len(m) != len(want) {
+		t.Errorf("body %s, want only %v", b, want)
+	}
+	for k, v := range want {
+		if m[k] != v {
+			t.Errorf("%s = %v, want %v", k, m[k], v)
+		}
+	}
+	release()
+	if resp, b := e.raw("GET", "/healthz"); resp.StatusCode != http.StatusOK {
+		t.Errorf("after release: %d %s", resp.StatusCode, b)
+	}
+}
+
+// The health check works the same with the databases in their own db-root.
+func TestHealthSeparateDBRoot(t *testing.T) {
+	db := t.TempDir()
+	e := newEnv(t, func(o *server.Options) { o.DBRoot = db })
+	if resp, b := e.raw("GET", "/healthz"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz: %d %s", resp.StatusCode, b)
+	}
+	if e.srv.DBRoot() != db {
+		t.Errorf("DBRoot %s", e.srv.DBRoot())
 	}
 }

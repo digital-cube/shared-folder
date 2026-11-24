@@ -44,6 +44,7 @@ preko SSH-a.
 
 ```sh
 export SHFD_DATA_ROOT=/var/lib/shfd        # ili --data-root uz svaku komandu
+export SHFD_DB_ROOT=/var/lib/shfd/db       # ili --db-root; baze na lokalnom disku (podrazumevano: data-root)
 shfd share create tim [--admin ana]        # ispisuje share-id i token prvog admina
 shfd member add <share-id> bob [--admin]   # ispisuje token člana (samo tada); opozvanog bob-a vraća
 shfd member revoke <share-id> bob
@@ -59,7 +60,17 @@ shfd trash restore <share-id> <trash-id> [--to <putanja>]
 shfd trash purge <share-id> (--older-than 90d | --id N | --all) [--dry-run] [--yes]
 shfd verify <share-id> [--repair] [--json]   # izlazni kod 1 ako nađe neslaganje
 shfd stats <share-id> [--json]
+shfd db move --to /var/lib/shfd/db           # baze na novo mesto, dok server ne radi
 ```
+
+**Baze na lokalnom disku.** `storage/` (i `tmp/`, `trash/`, `service.log`)
+može biti na NFS-u, ali SQLite baze (`registry.db`, `<share-id>/service.db`)
+neka budu na lokalnom disku: `--db-root` / `SHFD_DB_ROOT`. SQLite ne
+preporučuje WAL i POSIX lock-ove na mrežnom fajl-sistemu, a zaglavljen NFS
+zaustavlja pisca foldera. `shfd serve` upozorava (`level=WARN`) kad su baze
+na mrežnom disku; postojeće baze premešta `shfd db move`
+([docs/server-ssh.md](docs/server-ssh.md#baze-na-lokalnom-disku),
+[docs/admin.md](docs/admin.md#premeštanje-baza-shfd-db-move)).
 
 Username ostaje zauzet i kad je član opozvan: opozvanog člana vraća
 `shfd member add` sa istim imenom (isti id i istorija, nov token, uloga prema
@@ -67,14 +78,14 @@ Username ostaje zauzet i kad je član opozvan: opozvanog člana vraća
 join`). Za ime aktivnog člana `member add` vraća `member_exists`.
 
 Admin komande su bezbedne dok `shfd serve` radi: idu kroz njegov lokalni
-socket `<data-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
+socket `<db-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
 primeri: [docs/admin.md](docs/admin.md).
 
 Web GUI (prijava admin tokenom, članovi i tokeni, logovi uživo, fajlovi i
 trash, uputstvo za instalaciju) je poseban servis **shfd-gui** na
 `https://<host>/gui`: [docs/gui.md](docs/gui.md), build `make gui`.
 
-`GET /healthz` (i `GET /`) bez tokena vraća `{"service":"shfd","version":…,"ok":true}`, a 503 kad registry baza ne odgovara.
+`GET /healthz` (i `GET /`) bez tokena vraća `{"service":"shfd","version":…,"ok":true}`, a 503 kad registry baza ne odgovara ili kad pisac nekog otvorenog foldera ne odgovori u roku od 2 s (`"error":"share <id> stuck"`).
 
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
 reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.

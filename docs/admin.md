@@ -15,6 +15,7 @@ Svaka operacija postoji na dva mesta, sa istim ponašanjem:
 
 ```sh
 export SHFD_DATA_ROOT=/var/lib/shfd/data    # ili --data-root uz svaku komandu
+export SHFD_DB_ROOT=/var/lib/shfd/db        # ili --db-root; baze na lokalnom disku
 ```
 
 ## Kako komanda stiže do foldera
@@ -24,13 +25,14 @@ odeljak 6). Admin komande idu kroz tog istog pisca, pa su bezbedne dok
 servis radi:
 
 - Dok radi `shfd serve`, on sluša na lokalnom unix socket-u
-  `<data-root>/admin.sock` (prava 0600) i komanda šalje zahtev tamo. Ako je
-  putanja predugačka za unix socket (preko ~100 znakova), socket je u
-  `$TMPDIR/shfd-<uid>/<hash data-root-a>.sock`, u direktorijumu sa pravima
+  `<db-root>/admin.sock` (prava 0600; db-root je data-root ako `--db-root`
+  nije zadat) i komanda šalje zahtev tamo. Ako je putanja predugačka za unix
+  socket (preko ~100 znakova), socket je u
+  `$TMPDIR/shfd-<uid>/<hash db-root-a>.sock`, u direktorijumu sa pravima
   0700.
-- Kad server ne radi, komanda uzima isti lock na data-root-u koji drži
-  `shfd serve` (pa server ne može da se pokrene u međuvremenu) i radi isto u
-  svom procesu.
+- Kad server ne radi, komanda uzima isti lock (`<db-root>/serve.lock`) koji
+  drži `shfd serve` (pa server ne može da se pokrene u međuvremenu) i radi
+  isto u svom procesu.
 - Ako server radi, a socket ne odgovara (npr. stariji `shfd`), komanda
   odbija da radi i kaže zašto.
 
@@ -340,6 +342,56 @@ bob       member  active  2026-11-23T18:19:55Z  2026-11-23T18:01:28Z  8         
   ]
 }
 ```
+
+## Premeštanje baza: `shfd db move`
+
+Baze (`registry.db` i `service.db` svakog foldera) treba da budu na lokalnom
+disku, i kad je `storage/` na NFS-u ([server-ssh.md, Baze na lokalnom
+disku](server-ssh.md#baze-na-lokalnom-disku)). Postojeće baze se premeštaju
+ovako, **dok server ne radi**:
+
+```sh
+systemctl stop shfd
+sudo -u shfd env SHFD_DATA_ROOT=/disk2/shared-storage \
+    shfd db move --to /var/lib/shfd/db
+```
+
+`db move`:
+
+1. uzima `serve.lock` trenutnog db-root-a (i novog); ako `shfd serve` radi,
+   odbija sa „stop shfd serve before moving its databases“;
+2. kopira `registry.db` i `<share-id>/service.db` svakog foldera iz registra
+   u `<to>/registry.db` i `<to>/<share-id>/service.db` preko **SQLite backup
+   API-ja**, ne `cp`-om, pa je i ono što je još u WAL-u (`-wal`) deo kopije;
+3. na svakoj kopiji proverava `PRAGMA integrity_check` (mora biti `ok`) i da
+   je verzija šeme (`user_version`) ista kao kod originala;
+4. ako u `<to>` već postoji neka od tih baza, ne kopira ništa;
+5. **stare baze ostavlja** gde su; obrišite ih (`*.db`, `*.db-wal`,
+   `*.db-shm`) tek kad server radi kako treba na novim;
+6. u data-root upisuje fajl `db-moved` sa novim db-root-om. Svaka `shfd`
+   komanda pokrenuta nad tim data-root-om sa drugim db-root-om (npr. bez
+   `SHFD_DB_ROOT`) odbija da radi, umesto da tiho koristi stare kopije;
+7. ispisuje šta treba promeniti.
+
+Posle toga, pre pokretanja servera:
+
+```ini
+# /etc/systemd/system/shfd.service, [Service]
+Environment=SHFD_DB_ROOT=/var/lib/shfd/db
+```
+
+```sh
+systemctl daemon-reload
+# sa rsync-om preko SSH-a: prinudne komande u authorized_keys dobijaju --db-root
+sudo -u shfd env SHFD_DATA_ROOT=/disk2/shared-storage SHFD_DB_ROOT=/var/lib/shfd/db \
+    SHFD_AUTHORIZED_KEYS=/var/lib/shfd/.ssh/authorized_keys shfd keys sync
+systemctl start shfd
+curl -s http://127.0.0.1:8443/healthz
+```
+
+Ponovno premeštanje (npr. na drugi lokalni disk) ide isto, sa trenutnim
+`--db-root`. Vraćanje u data-root (`--to <data-root>`) briše `db-moved`, ali
+tek pošto se tamošnje stare kopije uklone.
 
 ## Admin API
 

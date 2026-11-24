@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
@@ -122,7 +123,8 @@ type api struct {
 	cancel            context.CancelFunc
 }
 
-// HealthTimeout bounds the registry check of GET /healthz.
+// HealthTimeout bounds the checks of GET /healthz: the registry, and the
+// writer of every open folder.
 const HealthTimeout = 2 * time.Second
 
 // Health is the body of GET /healthz (and GET /). It says on purpose
@@ -136,7 +138,10 @@ type Health struct {
 }
 
 // health answers without a token: 200 when registry.db responds within
-// HealthTimeout, 503 otherwise. Only GET and HEAD are allowed.
+// HealthTimeout and so does the writer of every open folder (its database
+// answers a read and its writer lock comes free, server.Share.Probe), 503
+// otherwise, with "registry unavailable", "share <id> stuck" or "share
+// <id> unavailable". Only GET and HEAD are allowed.
 func (a *api) health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -153,7 +158,41 @@ func (a *api) health(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, body)
 		return
 	}
+	if msg := a.probeShares(ctx); msg != "" {
+		body.OK, body.Error = false, msg
+		writeJSON(w, http.StatusServiceUnavailable, body)
+		return
+	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// probeShares checks the writer of every open folder at once, within the
+// deadline of ctx, and describes the first (by id) that failed; "" when
+// all answered.
+func (a *api) probeShares(ctx context.Context) string {
+	shares := a.srv.OpenShares()
+	errs := make([]error, len(shares))
+	var wg sync.WaitGroup
+	for i, sh := range shares {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = sh.Probe(ctx)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, server.ErrStuck) {
+			a.log.Warn("health check: folder writer stuck (its database or writer lock did not answer)", "share", shares[i].ID, "timeout", HealthTimeout)
+			return "share " + shares[i].ID + " stuck"
+		}
+		a.log.Warn("health check: folder unavailable", "share", shares[i].ID, "err", err)
+		return "share " + shares[i].ID + " unavailable"
+	}
+	return ""
 }
 
 // Whoami is the body of GET /v1/whoami.
