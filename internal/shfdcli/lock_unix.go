@@ -15,13 +15,19 @@ import (
 // on the local disk, because flock on NFS becomes a POSIX lock held by the
 // NFS server, the kind of lock that hung shfd there.
 func lockDataRoot(root string) (func(), error) {
-	f, err := os.OpenFile(filepath.Join(root, "serve.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	return lockFile(filepath.Join(root, "serve.lock"), root+" is already served by another shfd")
+}
+
+// lockFile takes an exclusive flock on path, created when missing, or
+// fails with busy when another process holds it.
+func lockFile(path, busy string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("%s is already served by another shfd: %w", root, err)
+		return nil, fmt.Errorf("%s: %w", busy, err)
 	}
 	return func() { f.Close() }, nil
 }

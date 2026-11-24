@@ -15,6 +15,7 @@
 //	shfd verify <share-id> [--repair] [--json]
 //	shfd stats <share-id> [--json]
 //	shfd db move --to DIR
+//	shfd thumbs [--workers N] [--pdftoppm PATH] [--once] [--retry-failed]   (thumbs.go)
 //	shfd rsync-gate --share <share-id> --member <member-id>   (sshd's forced command)
 //
 // --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command,
@@ -84,6 +85,9 @@ Usage:
   shfd verify <share-id> [--repair] [--json]
   shfd stats <share-id> [--json]
   shfd db move --to DIR
+  shfd thumbs [--workers N] [--pdftoppm PATH] [--once] [--retry-failed]
+              [--max-image-mib N] [--max-megapixels N] [--max-pdf-mib N]
+              [--pdf-timeout D]
   shfd rsync-gate --share <share-id> --member <member-id>
   shfd version
   shfd help
@@ -128,6 +132,15 @@ folder's oldest active admin, or of --as USERNAME (an admin). AGE is 36h,
 30d or 2w; DATE is YYYY-MM-DD or RFC 3339. trash purge asks before it
 deletes unless --yes is given. verify exits with 1 when it finds (or, with
 --repair, leaves) an issue.
+
+Thumbnails (docs/admin.md): shfd thumbs is a long-running service of its
+own (systemd unit shfd-thumbs.service) that makes the thumbnails of
+images and PDFs into <data-root>/<share-id>/thumbnails/. It needs a running
+shfd serve, from which it takes its jobs over admin.sock; it opens no
+database. PDFs need pdftoppm (apt install poppler-utils; --pdftoppm or
+$SHFD_PDFTOPPM). A file that cannot be done gets a .fail marker and is
+not tried again until --retry-failed. --once does what waits and exits
+(exit 1 when serve does not answer).
 `
 
 // Env is what a command runs against; tests replace it.
@@ -182,6 +195,8 @@ func Run(args []string, env Env) int {
 		err = statsCmd(args[1:], env)
 	case "db":
 		err = dbCmd(args[1:], env)
+	case "thumbs":
+		err = thumbsCmd(args[1:], env)
 	case "rsync-gate":
 		return rsyncGate(args[1:], env)
 	default:

@@ -68,6 +68,10 @@ func setup(t *testing.T) *fixture {
 	os.Symlink(f.dir, filepath.Join(st, "dir-link"))
 	os.Symlink("docs", filepath.Join(st, "inner-link")) // stays inside: allowed
 	os.MkdirAll(filepath.Join(f.dir, "tmp", f.bobUp+"x"), 0o700)
+	// A thumbnail, made by shfd thumbs; never for rsync.
+	os.MkdirAll(filepath.Join(f.dir, "thumbnails", "ab"), 0o700)
+	os.WriteFile(filepath.Join(f.dir, "thumbnails", "ab", strings.Repeat("ab", 32)+".m.jpg"), []byte("jpeg"), 0o600)
+	os.Symlink("../thumbnails", filepath.Join(st, "thumbs-link"))
 	f.storageAbsDocs = filepath.Join(st, "docs", "a.txt")
 	return f
 }
@@ -129,6 +133,14 @@ func TestAuthorizeTable(t *testing.T) {
 		{"download symlink to a file outside", f.ana, down("storage/db-link"), CodePath, ""},
 		{"download through a symlinked directory", f.ana, down("storage/dir-link/secret"), CodePath, ""},
 		{"download from tmp", f.ana, down("tmp/" + f.anaUp), CodePath, ""},
+
+		// thumbnails/ is shfd's own: no rsync reads or writes it
+		{"download a thumbnail", f.ana, down("thumbnails/ab/" + strings.Repeat("ab", 32) + ".m.jpg"), CodePath, ""},
+		{"download the thumbnails directory", f.ana, down("thumbnails/"), CodePath, ""},
+		{"download a thumbnail through dot-dot", f.ana, down("storage/../thumbnails/ab/" + strings.Repeat("ab", 32) + ".m.jpg"), CodePath, ""},
+		{"download a thumbnail through a symlink", f.ana, down("storage/thumbs-link/ab/" + strings.Repeat("ab", 32) + ".m.jpg"), CodePath, ""},
+		{"upload into thumbnails", f.ana, "rsync --server " + caps + " --partial . thumbnails/ab/x.jpg", CodePath, ""},
+		{"upload to thumbnails through tmp", f.ana, "rsync --server " + caps + " . tmp/../thumbnails/" + f.anaUp, CodePath, ""},
 		{"download absolute", f.ana, down("/etc/passwd"), CodePath, ""},
 		{"download storage itself", f.ana, down("storage/"), CodePath, ""},
 		{"download a directory", f.ana, down("storage/docs"), CodePath, ""},

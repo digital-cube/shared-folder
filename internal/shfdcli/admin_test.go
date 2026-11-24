@@ -204,6 +204,13 @@ func TestAdminCommandsWithoutServer(t *testing.T) {
 // startServe runs shfd serve on root until the test ends.
 func startServe(t *testing.T, root string) (stop func()) {
 	t.Helper()
+	_, stop = startServeAt(t, root)
+	return stop
+}
+
+// startServeAt is startServe that also returns the address of the API.
+func startServeAt(t *testing.T, root string) (addr string, stop func()) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan string, 1)
 	done := make(chan int, 1)
@@ -216,7 +223,7 @@ func startServe(t *testing.T, root string) (stop func()) {
 		})
 	}()
 	select {
-	case <-ready:
+	case addr = <-ready:
 	case code := <-done:
 		t.Fatalf("serve exited %d: %s", code, stderr.String())
 	case <-time.After(10 * time.Second):
@@ -242,7 +249,7 @@ func startServe(t *testing.T, root string) (stop func()) {
 		}
 	}
 	t.Cleanup(stop)
-	return stop
+	return addr, stop
 }
 
 // While shfd serve runs, the commands go through its admin socket: the

@@ -20,6 +20,7 @@ import (
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/pathx"
+	"github.com/digital-cube/shared-folder/internal/thumbs"
 )
 
 // Directory and file names inside a share directory.
@@ -49,13 +50,16 @@ type Share struct {
 
 	probes probes // liveness checks of the health check (probe.go)
 
+	thumbs   thumbIndex    // ready and failed thumbnails (thumbs.go)
+	thumbSvc *thumbService // the server's view of shfd thumbs; nil outside a Server
+
 	// crashAfterCommit, when set, is called after the database commit and
 	// before the disk steps run. Tests use it to simulate a crash there.
 	crashAfterCommit func() error
 }
 
 func openShare(dir, dbDir, id string, opts Options) (*Share, error) {
-	for _, d := range []string{dir, filepath.Join(dir, StorageDir), filepath.Join(dir, TrashDir), filepath.Join(dir, TmpDir), dbDir} {
+	for _, d := range []string{dir, filepath.Join(dir, StorageDir), filepath.Join(dir, TrashDir), filepath.Join(dir, TmpDir), filepath.Join(dir, thumbs.Dir), dbDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
 		}

@@ -157,6 +157,11 @@ type FileEntry struct {
 	Hash      string     `json:"hash"`
 	Seq       int64      `json:"seq"`
 	UpdatedBy string     `json:"updated_by"`
+	// Thumb is the state of the file's thumbnail: "ready", "pending" (a
+	// thumbnail service that makes this kind runs and it has none yet),
+	// "failed", or "" (a directory, a type without thumbnails, an empty
+	// file, or no service running). GET /admin/thumbs/{hash} sends it.
+	Thumb string `json:"thumb"`
 }
 
 // DirListing is the body of GET /admin/files.
@@ -218,6 +223,9 @@ func (s *Share) ListDir(dir string) (*DirListing, error) {
 		out.Entries = append(out.Entries, e)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.setThumbStates(out.Entries); err != nil {
 		return nil, err
 	}
 	sort.Slice(out.Entries, func(i, j int) bool {

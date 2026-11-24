@@ -31,7 +31,9 @@ import (
 // answer to add and reset-token; it is never logged.
 //
 // The same routes are served without a token on shfd's local admin socket
-// (NewLocal), which is how the shfd commands reach a running server.
+// (NewLocal), which is how the shfd commands reach a running server. The
+// socket also has the routes of shfd thumbs (thumbs.go), which the public
+// API does not.
 
 // HeaderAs names, on the local admin socket, the admin in whose name the
 // operation runs; without it the folder's oldest active admin is used.
@@ -149,6 +151,7 @@ func NewLocal(srv *server.Server, log *slog.Logger) http.Handler {
 	a := &api{srv: srv, log: log}
 	mux := http.NewServeMux()
 	registerAdmin(mux, a.local)
+	registerThumbsLocal(mux, a)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, server.CodeNotFound, "no such endpoint")
 	})

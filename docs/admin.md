@@ -1,4 +1,4 @@
-# Admin komande `shfd`: članovi, trash, verify, stats
+# Admin komande `shfd`: članovi, trash, verify, stats, thumbnails
 
 Alati za admina servera: članovi foldera (uloga, novi token, vraćanje
 opozvanog), rad sa trash-om, provera da se `storage/` slaže sa bazom i
@@ -413,6 +413,7 @@ samo za člana sa ulogom `admin`. Greške su
 | `POST /v1/shares/{id}/admin/members/{username}/reset-token` | — | `{member, token}` |
 | `GET /v1/shares/{id}/admin/log` | `?after=<bajt-offset>&limit=<n>` | `{offset, next_offset, size, lines}` |
 | `GET /v1/shares/{id}/admin/files` | `?dir=<putanja>` (prazno = koren) | `{dir, entries}` |
+| `GET /v1/shares/{id}/admin/thumbs/{hash}` | `?size=s\|m\|l` (podrazumevano `m`) | `image/jpeg` ([Thumbnails](#thumbnails)) |
 
 Uz njih postoji i `GET /v1/whoami`, koji **ne traži** ulogu admin: za
 `Authorization: Bearer shf_…` vraća `{share_id, share_name, username, role}`.
@@ -444,8 +445,9 @@ vraća poslednjih `limit` redova (podrazumevano 200, najviše 5000); sa
 u fajlu i služi kao njegov id.
 
 **Fajlovi.** `admin/files` vraća jedan nivo iz tabele `files` (disk se ne
-čita): `{path, name, kind, size, mtime, hash, seq, updated_by}`, prvo
-folderi, pa po imenu. Nepostojeći folder je `not_found` (404), fajl umesto
+čita): `{path, name, kind, size, mtime, hash, seq, updated_by, thumb}`, prvo
+folderi, pa po imenu. `thumb` je stanje sličice ([Thumbnails](#thumbnails)):
+`ready`, `pending`, `failed` ili `""`. Nepostojeći folder je `not_found` (404), fajl umesto
 foldera `kind_mismatch` (409).
 
 ```sh
@@ -470,3 +472,101 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"older_than":"90d","dry_run
 
 Isti pozivi, bez tokena, idu kroz `admin.sock`; zaglavlje `X-Shfd-As`
 bira admina (to koristi `--as`).
+
+## Thumbnails
+
+Sličice slika i PDF-ova za GUI (specifikacija, odeljak 3 „Thumbnails“).
+Pravi ih `shfd thumbs`, dugotrajan servis koji radi samo to, u posebnom
+procesu (jedinica `shfd-thumbs.service`, [server-ssh.md](server-ssh.md#7-sličice-shfd-thumbs)).
+
+```sh
+shfd thumbs [--workers N] [--pdftoppm PATH] [--once] [--retry-failed]
+            [--max-image-mib 64] [--max-megapixels 64] [--max-pdf-mib 256]
+            [--pdf-timeout 30s]
+```
+
+- Treba mu pokrenut `shfd serve` na istom `--db-root`-u: poslove dobija
+  preko `admin.sock`, a **SQLite ne otvara**. Fajlove čita iz `storage/`,
+  piše samo u `<data-root>/<share-id>/thumbnails/`. Kad server ne radi,
+  čeka i pokušava ponovo na 2 s (u logu jedan red kad server nestane i
+  jedan kad se vrati). Drugi `shfd thumbs` na istom db-root-u odbija da
+  radi (`<db-root>/thumbs.lock`).
+- `--workers N` (podrazumevano 1): koliko sličica pravi odjednom.
+- `--pdftoppm PATH` (ili `$SHFD_PDFTOPPM`, inače `pdftoppm` iz `PATH`-a):
+  za PDF-ove (`apt install poppler-utils`). Bez njega servis jednom upiše
+  WARN i ne uzima PDF poslove; slike rade normalno.
+- `--once`: obradi sve što čeka, očisti i izađi; za prvo popunjavanje i
+  testove. Bez servera izlazi sa kodom 1.
+- `--retry-failed`: pre rada obriše sve `.fail` markere, pa se ti fajlovi
+  pokušaju ponovo (npr. posle `--max-…` sa većom granicom ili posle
+  instalacije `pdftoppm`-a).
+- Granice su po fajlu: slika (veličina fajla i širina × visina iz
+  zaglavlja, pre dekodiranja), PDF (veličina fajla) i rok za `pdftoppm`
+  (posle njega se ubija cela grupa procesa).
+
+Log ide kroz `slog`, kao kod `serve`: po poslu red sa folderom, hash-om,
+vrstom, trajanjem i ishodom (`ready`, `failed` sa razlogom, `skipped`).
+Putanje i sadržaj fajlova ne idu u log iznad nivoa Debug.
+
+```
+level=INFO msg=thumbnail share=45b2… hash=e0bc… kind=image took=41ms outcome=ready
+level=INFO msg=thumbnail share=45b2… hash=9f1a… kind=pdf took=30.002s outcome=failed reason="pdftoppm timed out after 30s"
+level=INFO msg="thumbnail cleanup" removed=3 took=12ms
+```
+
+**Markeri.** `thumbnails/<hh>/<hash>.fail` je tekst sa razlogom („image of
+9000x9000 pixels is over the limit of 64000000“, „not a readable image: …“,
+„decoder panic: …“, „pdftoppm timed out after 30s“, „crashed while
+generating“). Hash sa `.fail` se ne pokušava ponovo sam od sebe; GUI za
+njega prikazuje ikonicu tipa. `<hash>.work` stoji dok se sličica pravi;
+ako ga servis zatekne pri startu (pao je baš na tom fajlu, npr. OOM), on
+postaje `.fail` sa „crashed while generating“. Ručno: `rm` `.fail` fajla
+ili `--retry-failed` za sve.
+
+**Čišćenje.** Pri startu i jednom dnevno servis za svaki hash iz
+`thumbnails/` pita server (u paketima do 1000) da li ga još drži neki fajl
+ili nepurgovan unos u trash-u; ostale briše (`.jpg` i `.fail`). Posle
+`shfd trash purge` sličice tih fajlova nestaju pri sledećem čišćenju.
+
+**Stanje u `admin/files`** (polje `thumb`):
+
+| `thumb` | Značenje |
+|---|---|
+| `ready` | sličica postoji |
+| `pending` | kandidat je, sličice još nema, a servis koji pravi tu vrstu (slika ili PDF) tražio je poslove u poslednjih 60 s |
+| `failed` | postoji `.fail` |
+| `""` | folder, tip bez sličice, prazan fajl, ili servis ne radi |
+
+**Slika:** `GET /v1/shares/{id}/admin/thumbs/{hash}?size=s|m|l`
+(podrazumevano `m`), samo za admina foldera, vraća `200 image/jpeg` sa
+`Cache-Control: private, max-age=31536000, immutable`,
+`ETag: "<hash>.<size>"` (`304` na `If-None-Match`) i
+`X-Content-Type-Options: nosniff`. `404 not_found` kad sličice nema;
+`400 invalid_request` za hash koji nije `^[0-9a-f]{64}$` ili nepoznatu
+veličinu (proverava se pre bilo kakvog pristupa disku). Čita se samo iz
+`thumbnails/` tog foldera, pa admin drugog foldera ne može da dobije tuđu
+sličicu. Poziv ne osvežava `last_seen_at` (folder slika traži stotine).
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -o thumb.jpg \
+  "https://shf.example.com/v1/shares/$SHARE/admin/thumbs/$HASH?size=l"
+```
+
+**Rute samo na `admin.sock`** (za `shfd thumbs`; na javnom API-ju `404`):
+
+| Poziv | Telo / parametri | Odgovor |
+|---|---|---|
+| `GET /v1/thumbs/jobs` | `?limit=50&kinds=image,pdf[&rescan=1]` | `{"jobs":[{share_id, hash, path, size, kind}], "pending": N}` |
+| `POST /v1/thumbs/done` | `{"share_id", "results":[{hash, ok, error, skipped}]}` | `{"status":"ok"}` |
+| `POST /v1/shares/{id}/admin/thumbs/unreferenced` | `{"hashes":[…]}` (najviše 1000) | `{"hashes":[…]}`: oni koje ništa ne drži |
+
+`jobs` vraća fajlove (veličina > 0, podržana ekstenzija, vrsta iz `kinds`)
+čiji hash nema ni gotovu sličicu ni `.fail`, jedan posao po hash-u,
+**najnoviji prvo** (po `seq`), naizmenično iz svih foldera; `pending` je
+ukupan broj takvih hash-eva. Server pamti kad je servis poslednji put pitao
+i za koje vrste (od toga zavisi `pending` u `admin/files`). `rescan=1`
+(servis ga šalje pri startu) natera server da ponovo pročita `thumbnails/`.
+`done` sa `skipped: true` znači da fajl nije bio ono što posao kaže
+(promenjen, premešten ili obrisan u međuvremenu); taj hash se ne nudi
+ponovo 5 minuta. Ako servis padne posle upisa sličice a pre `done`, posao
+dođe ponovo, a servis vidi da sličica postoji i samo javi `done`.

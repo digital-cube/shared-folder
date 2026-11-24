@@ -27,11 +27,12 @@ preko SSH-a.
 | `internal/hashx` | SHA-256 celog fajla, strimovano, hex malim slovima | 5 |
 | `internal/ignore` | `.shfignore` sa semantikom `.gitignore`, ugnježdeni fajlovi, ugrađena lista i privremeni fajlovi klijenta | 7 |
 | `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash (lista, vraćanje, čišćenje), `verify [--repair]`, statistike, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 4, 6 |
-| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu), admin pozivi (`admin/trash`, `admin/verify`, `admin/stats`, samo uloga `admin`) i lokalni admin socket | 4 |
+| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu), admin pozivi (`admin/trash`, `admin/verify`, `admin/stats`, `admin/files` sa stanjem sličice, `admin/thumbs/{hash}`, samo uloga `admin`) i lokalni admin socket (uz rute za `shfd thumbs`: `thumbs/jobs`, `thumbs/done`, `thumbs/unreferenced`) | 4 |
 | `internal/transport` | interfejs `Transport` i lokalna implementacija (testovi) | 5 |
 | `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada i downloada (i posle ponovnog pokretanja klijenta), download u `.shf-tmp-part-<hash>` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
 | `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
 | `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
+| `internal/thumbs` | sličice slika i PDF-ova: dekodiranje u čistom Go-u (EXIF orijentacija), `pdftoppm` sa rokom, veličine `s`/`m`/`l` (96/256/512 px, JPEG), skladište `thumbnails/` po hash-u sadržaja, markeri `.fail` i `.work` | 3 „Thumbnails“ |
 | `internal/shfdcli` | komande `shfd`; admin komande idu kroz `admin.sock` pokrenutog servera ili, bez njega, kroz isti handler u procesu | 8.5 |
 | `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
 | `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad | 8.3 |
@@ -62,7 +63,18 @@ shfd trash purge <share-id> (--older-than 90d | --id N | --all) [--dry-run] [--y
 shfd verify <share-id> [--repair] [--json]   # izlazni kod 1 ako nađe neslaganje
 shfd stats <share-id> [--json]
 shfd db move --to /var/lib/shfd/db           # baze na novo mesto, dok server ne radi
+shfd thumbs [--workers N] [--once] [--retry-failed]   # sličice (servis; treba mu shfd serve)
 ```
+
+**Sličice.** `shfd thumbs` je poseban dugotrajan servis
+(`shfd-thumbs.service`) koji pravi sličice slika (`jpg`, `png`, `gif`,
+`webp`, `bmp`, `tiff`) i prve strane PDF-a (`pdftoppm` iz `poppler-utils`)
+u tri veličine, u `<data-root>/<share-id>/thumbnails/`, po hash-u sadržaja.
+SQLite ne otvara: poslove dobija od `shfd serve` preko `admin.sock`. GUI ih
+dobija kroz `GET /v1/shares/{id}/admin/thumbs/{hash}?size=s|m|l`, a stanje
+kroz polje `thumb` u `admin/files`
+([docs/admin.md](docs/admin.md#thumbnails),
+[docs/server-ssh.md](docs/server-ssh.md#7-sličice-shfd-thumbs)).
 
 **Baze na lokalnom disku.** `storage/` (i `tmp/`, `trash/`, `service.log`)
 može biti na NFS-u, ali SQLite baze (`registry.db`, `<share-id>/service.db`)

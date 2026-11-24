@@ -15,6 +15,7 @@
 //	GET  /v1/downloads                 (no token; packages, see downloads.go)
 //	GET  /downloads/{name}             (no token)
 //	     /v1/shares/{id}/admin/...     (admin role only, see admin.go)
+//	GET  /v1/shares/{id}/admin/thumbs/{hash}  (admin role only; image/jpeg, see thumbs.go)
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
@@ -107,6 +108,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	mux.HandleFunc("GET /v1/whoami", a.whoami)
 	registerAdmin(mux, a.admin)
 	registerDownloads(mux, a)
+	registerThumbs(mux, a)
 	// Without a method in the pattern: the catch-all "/" below matches
 	// every method, so the mux would answer 404 instead of 405.
 	mux.HandleFunc("/healthz", a.health)

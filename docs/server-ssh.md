@@ -9,10 +9,12 @@ komandom `shfd rsync-gate`, koja propušta samo dva prenosa: upis u
 
 ## 1. Paketi
 
-Na serveru: `openssh-server` i `rsync`.
+Na serveru: `openssh-server` i `rsync`, a za sličice PDF-ova
+`poppler-utils` (`pdftoppm`; bez njega `shfd thumbs` pravi samo sličice
+slika, [odeljak 7](#7-sličice-shfd-thumbs)).
 
 ```sh
-apt install openssh-server rsync          # Debian/Ubuntu
+apt install openssh-server rsync poppler-utils   # Debian/Ubuntu
 ```
 
 Na klijentu: `ssh` i **rsync 3.2.4 ili noviji**. Starije verzije drugačije
@@ -62,11 +64,11 @@ install -m 755 bin/shfd /usr/local/bin/shfd
 Putanja do `authorized_keys` se zadaje isto kao data-root: zastavicom ili
 promenljivom okruženja. Važi za `serve`, `member …` i `keys sync`.
 `--data-root` i `--db-root` važe za svaku komandu (`serve`, `share`,
-`member`, `keys`, `trash`, `verify`, `stats`, `db`, `rsync-gate`).
+`member`, `keys`, `trash`, `verify`, `stats`, `db`, `thumbs`, `rsync-gate`).
 
 | Zastavica | Promenljiva | Značenje |
 |---|---|---|
-| `--data-root` | `SHFD_DATA_ROOT` | podaci: `<share-id>/storage/`, `trash/`, `tmp/`, `service.log` |
+| `--data-root` | `SHFD_DATA_ROOT` | podaci: `<share-id>/storage/`, `trash/`, `tmp/`, `thumbnails/`, `service.log` |
 | `--db-root` | `SHFD_DB_ROOT` | SQLite baze: `registry.db`, `<share-id>/service.db` (sa `-wal` i `-shm`), kao i `serve.lock` i `admin.sock`; podrazumevano isto što i data-root |
 | `--authorized-keys` | `SHFD_AUTHORIZED_KEYS` | `authorized_keys` korisnika `shfd`; bez nje se SSH ključevi ne mogu registrovati |
 | `--shfd-binary` | `SHFD_BINARY` | apsolutna putanja do `shfd` koja se upisuje u prinudnu komandu; podrazumevano je to sam izvršni fajl |
@@ -254,6 +256,9 @@ dovoljan, jer klijent prenosi fajl po fajl.
 | upload | `rsync --server <opcije> . tmp/<upload_id>` | `upload_id` je otvoren upload istog člana; `--partial` za nastavljanje |
 | download | `rsync --server --sender <opcije> . storage/<putanja>` | običan fajl unutar `storage/` posle razrešavanja `..` i symlinkova |
 
+Ništa drugo: ni `thumbnails/`, ni `trash/`, ni baze (ni preko `..` ili
+symlinka iz `storage/`).
+
 Dozvoljene opcije: kratke `v q t z c I W`, rsync-ov sopstveni niz mogućnosti
 iza `-e` (`-e.LsfxCIvu`), `--partial` (samo upload), `--inplace` (samo
 download), `--stats`, `--timeout=N`, `--bwlimit=N`, `--compress-level=N`.
@@ -262,3 +267,55 @@ Sve ostalo se odbija, posebno brisanje, `--remove-source-files`,
 `--files-from` i `-s` (koji bi argumente sakrio od provere). Komanda se deli
 na reči bez ljuske, a rsync se pokreće direktno, sa apsolutnim putanjama koje
 je izračunao `rsync-gate`.
+
+## 7. Sličice: `shfd thumbs`
+
+Sličice slika i PDF-ova za GUI pravi poseban, dugotrajan proces istog
+binarnog fajla ([admin.md](admin.md#thumbnails)). Radi pod istim korisnikom
+i sa istim okruženjem kao `shfd.service`, a treba mu pokrenut `shfd serve`:
+poslove dobija preko `<db-root>/admin.sock`, SQLite ne otvara, čita
+`storage/` i piše samo u `<share-id>/thumbnails/`. Za PDF-ove treba
+`pdftoppm` (`apt install poppler-utils`); bez njega servis to jednom upiše
+kao WARN i pravi samo sličice slika.
+
+`/etc/systemd/system/shfd-thumbs.service`:
+
+```ini
+[Unit]
+Description=shfd thumbnails
+After=shfd.service
+
+[Service]
+User=shfd
+Environment=SHFD_DATA_ROOT=/var/lib/shfd/data
+Environment=SHFD_DB_ROOT=/var/lib/shfd/db
+# Environment=SHFD_PDFTOPPM=/usr/bin/pdftoppm   # ako nije u PATH-u
+ExecStart=/usr/local/bin/shfd thumbs --workers 1
+Restart=on-failure
+Nice=10
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+systemctl daemon-reload
+systemctl enable --now shfd-thumbs
+journalctl -u shfd-thumbs -f
+# level=INFO msg="shfd thumbs starting" … kinds=image,pdf pdftoppm=/usr/bin/pdftoppm
+# level=INFO msg="connected to shfd serve" pending=…
+# level=INFO msg=thumbnail share=… hash=… kind=image took=41ms outcome=ready
+```
+
+- `Nice=10` i `MemoryMax=1G`: dekodiranje velike slike (do 64 megapiksela)
+  troši CPU i stotine MiB; ako ga kernel ubije, systemd ga podiže ponovo, a
+  fajl na kome je pao dobija `.fail` („crashed while generating“) i ne
+  pokušava se ponovo. `shfd serve` to ne oseti.
+- Prvo popunjavanje velikog foldera može i ručno, pre jedinice:
+  `sudo -u shfd env SHFD_DATA_ROOT=… SHFD_DB_ROOT=… shfd thumbs --once --workers 2`.
+- Ako `shfd serve` ne radi, servis čeka i pokušava ponovo na 2 s (jedan red
+  u logu kad server nestane i jedan kad se vrati).
+- Proveru da radi daje i GUI (sličice se pojavljuju), a bez njega:
+  `ls /var/lib/shfd/data/<share-id>/thumbnails/*/ | head` i
+  `curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "https://<host>/v1/shares/<share-id>/admin/files?dir=" | grep -o '"thumb":"[a-z]*"' | sort | uniq -c`.

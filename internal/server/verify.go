@@ -100,7 +100,8 @@ type diskEntry struct {
 // reason read from its name when possible), a missing one is purged and a
 // mismatched row takes the hash and size on disk. Names a client could not
 // receive (invalid or clashing in letter case), symlinks and other special
-// files are reported and left alone.
+// files are reported and left alone. thumbnails/ is neither storage nor
+// trash: shfd thumbs derives it from them and verify does not look at it.
 func (s *Share) Verify(m *Member, repair bool) (*VerifyResult, error) {
 	if err := RequireAdmin(m); err != nil {
 		return nil, err

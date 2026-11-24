@@ -43,6 +43,7 @@ nestaje bez odluke admina.
     storage/                  trenutno stanje foldera, obični fajlovi
     trash/                    obrisane i pregažene verzije
     tmp/                      dolazni uploadi (isti fajl sistem kao storage, zbog atomskog rename-a)
+    thumbnails/               sličice slika i PDF-ova (shfd thumbs), po hash-u sadržaja
     service.db                SQLite
     service.log               čitljiv ispis događaja
 ```
@@ -81,6 +82,56 @@ drugim sadržajem, fajl dobija ime `ime.restored-{ts}.ext`
 `purge` (originalna putanja, hash, veličina, ko); red u tabeli `trash` ostaje
 označen sa `purged_at`, `purged_by`, `purge_seq` (migracija 0004), jer se na
 njega pozivaju stariji događaji.
+
+### Thumbnails
+
+Sličice za GUI (TCKU55DNMU, [admin.md](admin.md#thumbnails)). Pravi ih
+poseban proces istog binarnog fajla, `shfd thumbs` (systemd
+`shfd-thumbs.service`), da dekodiranje tuđih fajlova (CPU, memorija, pad
+dekodera) ne dira `shfd serve`, kroz koji ide sync. On **ne otvara SQLite**:
+poslove dobija od živog `shfd serve` preko `admin.sock`, fajlove čita iz
+`storage/`, a piše samo u `thumbnails/`.
+
+```
+thumbnails/<prva 2 znaka hash-a>/<hash>.l.jpg    512 px
+                                 <hash>.m.jpg    256 px
+                                 <hash>.s.jpg     96 px
+                                 <hash>.fail     razlog neuspeha (tekst)
+                                 <hash>.work     u izradi
+```
+
+- **Ključ je hash sadržaja** (`files.hash`), ne putanja: preimenovanje,
+  premeštanje, kopija i vraćanje iz trash-a ne traže novu sličicu, nov
+  sadržaj ima nov hash, a URL sličice se nikad ne menja (browser je kešira
+  trajno). Direktorijum ostaje u data-root-u (ne u db-root-u) i pravi se pri
+  otvaranju foldera, kao `storage/` (0700).
+- **Veličine** (duža stranica, proporcije se čuvaju, manja slika se ne
+  uvećava): `s` 96, `m` 256, `l` 512 px. JPEG, kvalitet 82, providnost na
+  beloj pozadini. Upisuju se redom `l`, `m`, `s`, svaka atomski (privremeni
+  fajl u istom direktorijumu pa `rename`); sličica je **gotova** kad postoji
+  `<hash>.s.jpg`.
+- **Šta dobija sličicu**, po ekstenziji imena (bez obzira na velika i mala
+  slova): `jpg`, `jpeg`, `png`, `gif` (prvi kadar), `webp`, `bmp`, `tif`,
+  `tiff` i `pdf` (prva strana). Fajl veličine 0 ne. Slike se dekodiraju u
+  čistom Go-u (`image/*`, `golang.org/x/image`), uz EXIF orijentaciju JPEG-a;
+  PDF ide kroz `pdftoppm` (poppler-utils), sa rokom od 30 s posle kog se
+  ubija cela grupa procesa.
+- **Granice:** slika do 64 MiB i 64 megapiksela (iz zaglavlja, pre
+  dekodiranja), PDF do 256 MiB. Preko granice, oštećen fajl, panika
+  dekodera ili istekao rok daju `<hash>.fail`; takav hash se ne pokušava
+  ponovo dok ga admin ne pusti (`shfd thumbs --retry-failed`).
+- Pre posla se upiše `<hash>.work`; ako proces padne na tom fajlu, pri
+  sledećem startu `.work` postaje `.fail` („crashed while generating“).
+- Dok čita izvor, servis računa SHA-256; ako se ne poklapa sa hash-om posla
+  (fajl se u međuvremenu promenio), posao se preskače bez traga.
+- `shfd serve` po folderu drži u memoriji skup gotovih i skup neuspelih
+  hash-eva (jedan prolaz kroz `thumbnails/` pri prvoj upotrebi, posle samo
+  izveštaji servisa), pa listanje foldera ne radi `stat` po sličici.
+- Sličica koju više ne drži ni `files` ni nepurgovan red u `trash` briše se
+  pri startu servisa i jednom dnevno. Sličice u trash-u se ne prikazuju, ali
+  ostaju dok se unos ne očisti, pa vraćanje iz trash-a ne traži novu.
+- `shfd verify` ne gleda `thumbnails/`; `rsync-gate` ne pušta ni čitanje ni
+  upis u njega. Klijent `shf` sličice ne sinhronizuje.
 
 ## 4. Kontrolni API (HTTPS + JSON)
 

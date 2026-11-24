@@ -10,6 +10,7 @@
 //	    storage/             current state, plain files
 //	    trash/               deleted and replaced versions (flat)
 //	    tmp/                 incoming uploads; same file system as storage/
+//	    thumbnails/          made by shfd thumbs, keyed by content hash (internal/thumbs)
 //	    service.log          human-readable event log
 //	<db-root>/               (Options.DBRoot; the data-root by default)
 //	  registry.db            folders: id (UUID), name, created_at
@@ -112,6 +113,8 @@ type Server struct {
 
 	mu     sync.Mutex
 	shares map[string]*Share
+
+	thumbSvc thumbService // when shfd thumbs last asked for jobs (thumbs.go)
 }
 
 // ShareInfo is one row of registry.db.
@@ -331,6 +334,7 @@ func (s *Server) Share(id string) (*Share, error) {
 	if err != nil {
 		return nil, err
 	}
+	sh.thumbSvc = &s.thumbSvc
 	s.shares[id] = sh
 	return sh, nil
 }
