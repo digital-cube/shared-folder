@@ -58,6 +58,8 @@ export interface User {
   id: number;
   username: string;
   display_name: string;
+  /** Where a forgotten password's link goes; "" without one. */
+  email?: string;
   must_change: boolean;
   created_at: string;
   disabled_at?: string | null;
@@ -227,6 +229,21 @@ export interface Health {
   error?: string;
 }
 
+const xff = (v?: string): Record<string, string> | undefined => (v ? { "x-forwarded-for": v } : undefined);
+
+/**
+ * X-Forwarded-For for shfd as a proxy writes it: what reached the GUI and
+ * then the address the GUI saw (nginx, or the browser itself). shfd reads
+ * it from the right and skips only the proxies it trusts, so a browser
+ * that writes the header itself cannot pick its address.
+ */
+export function forwardedFor(req: { headers: Record<string, string | string[] | undefined>; socket: { remoteAddress?: string } }): string {
+  const h = req.headers["x-forwarded-for"];
+  const prior = (Array.isArray(h) ? h.join(", ") : (h ?? "")).trim();
+  const peer = req.socket.remoteAddress ?? "";
+  return [prior, peer].filter(Boolean).join(", ");
+}
+
 /** A refusal of shfd: its HTTP status and error code. */
 export class ShfdError extends Error {
   constructor(
@@ -248,8 +265,8 @@ export class ShfdClient {
     private readonly timeoutMs = 10_000,
   ) {}
 
-  private async call<T>(method: string, path: string, token: string | undefined, body?: unknown): Promise<T> {
-    const headers: Record<string, string> = { accept: "application/json" };
+  private async call<T>(method: string, path: string, token: string | undefined, body?: unknown, extra?: Record<string, string>): Promise<T> {
+    const headers: Record<string, string> = { accept: "application/json", ...extra };
     if (token) headers.authorization = `Bearer ${token}`;
     if (body !== undefined) headers["content-type"] = "application/json";
     let res: Response;
@@ -287,8 +304,24 @@ export class ShfdClient {
   }
 
   // ---- accounts (the device token of a password sign-in) ----
-  login(username: string, password: string, deviceName: string): Promise<LoginResult> {
-    return this.call("POST", "/v1/auth/login", undefined, { username, password, device_name: deviceName, kind: "gui" });
+  /**
+   * The calls made without a token pass the browser's address on as a
+   * proxy does (forwardedFor), so shfd's attempt limit counts the client,
+   * not the GUI.
+   */
+  login(username: string, password: string, deviceName: string, forwardedFor?: string): Promise<LoginResult> {
+    return this.call("POST", "/v1/auth/login", undefined, { username, password, device_name: deviceName, kind: "gui" }, xff(forwardedFor));
+  }
+  /** A forgotten password: shfd answers 202 whether the account exists or not. */
+  forgot(login: string, lang: string, forwardedFor?: string): Promise<{ status: string; message: string }> {
+    return this.call("POST", "/v1/auth/forgot", undefined, { login, lang }, xff(forwardedFor));
+  }
+  /** A new password with the token of a reset link. */
+  reset(token: string, newPassword: string, lang: string, forwardedFor?: string): Promise<{ username: string; signed_out: number }> {
+    return this.call("POST", "/v1/auth/reset", undefined, { token, new_password: newPassword, lang }, xff(forwardedFor));
+  }
+  setEmail(token: string, email: string, currentPassword: string, forwardedFor?: string): Promise<{ status: string; user: User }> {
+    return this.call("PUT", "/v1/me/email", token, { email, current_password: currentPassword }, xff(forwardedFor));
   }
   logout(token: string): Promise<unknown> {
     return this.call("POST", "/v1/auth/logout", token, {});
@@ -296,8 +329,8 @@ export class ShfdClient {
   me(token: string): Promise<MeResponse> {
     return this.call("GET", "/v1/me", token);
   }
-  changePassword(token: string, oldPw: string, newPw: string): Promise<{ status: string; user: User }> {
-    return this.call("POST", "/v1/me/password", token, { old: oldPw, new: newPw });
+  changePassword(token: string, oldPw: string, newPw: string, forwardedFor?: string): Promise<{ status: string; user: User }> {
+    return this.call("POST", "/v1/me/password", token, { old: oldPw, new: newPw }, xff(forwardedFor));
   }
   revokeMyDevice(token: string, id: number): Promise<unknown> {
     return this.call("DELETE", `/v1/me/devices/${id}`, token);
@@ -437,6 +470,12 @@ const ERROR_MESSAGES: Record<string, [sr: string, en: string]> = {
   user_disabled: ["Taj nalog je ugašen.", "That account is disabled."],
   unknown_device: ["Taj uređaj ne postoji ili je već opozvan.", "That device does not exist or is already revoked."],
   wrong_password: ["Stara lozinka nije tačna.", "The old password is wrong."],
+  invalid_reset_token: [
+    "Link za novu lozinku nije ispravan: već je iskorišćen, istekao je ili je stigao noviji.",
+    "The link for a new password is not valid: it was used, it expired, or a newer one was sent.",
+  ],
+  invalid_email: ["To nije ispravna email adresa.", "That is not a valid email address."],
+  email_taken: ["Tu email adresu već ima drugi nalog.", "Another account already has that email address."],
   invalid_credentials: ["Pogrešno korisničko ime ili lozinka.", "Wrong username or password."],
   unknown_trash: ["Taj unos više nije u trash-u.", "That entry is no longer in the trash."],
   trash_damaged: [

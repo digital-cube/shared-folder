@@ -1,6 +1,7 @@
 export {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   Check,
   ChevronDown,
   Copy,
@@ -12,6 +13,7 @@ export {
   FolderOpen,
   Info,
   LogOut,
+  Mail,
   Moon,
   Pause,
   Pencil,

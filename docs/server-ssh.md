@@ -122,6 +122,10 @@ Environment=SHFD_BINARY=/usr/local/bin/shfd
 Environment=SHFD_DOWNLOADS=/var/lib/shfd/downloads
 # proxy-ji čiji se X-Forwarded-For veruje (prijava lozinkom); vidi niže
 #Environment=SHFD_TRUSTED_PROXIES=127.0.0.1
+# mejl za zaboravljenu lozinku (Brevo), docs/deploy.md#mejl-brevo; može i bez
+#Environment=SHFD_BREVO_KEY_FILE=/etc/shfd/brevo.key
+#Environment=SHFD_PUBLIC_URL=https://shf.example.org
+#Environment=SHFD_GUI_BASE=/gui
 ExecStart=/usr/local/bin/shfd serve --listen 127.0.0.1:8443
 Restart=on-failure
 

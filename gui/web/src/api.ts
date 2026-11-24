@@ -46,7 +46,7 @@ export interface PasswordRules {
 }
 
 export interface Account {
-  user: { username: string; display_name: string; must_change: boolean; created_at: string; last_login_at?: string | null };
+  user: { username: string; display_name: string; email?: string; must_change: boolean; created_at: string; last_login_at?: string | null };
   folders: Folder[];
   devices: Device[];
   password_rules?: PasswordRules;
@@ -113,6 +113,13 @@ export const getAccount = () => api<Account>("GET", "/api/me");
 export const chooseFolder = (shareId: string) => api<Me>("POST", "/api/folder", { share_id: shareId });
 export const changePassword = (oldPw: string, newPw: string) => api<Me>("POST", "/api/me/password", { old: oldPw, new: newPw });
 export const revokeDevice = (id: number) => api<{ ok: boolean; signed_out: boolean }>("DELETE", `/api/me/devices/${id}`);
+/** A forgotten password: the answer is the same whether the account exists or not. */
+export const forgotPassword = (login: string, f?: typeof fetch) => api<{ ok: boolean; message: string }>("POST", "/api/auth/forgot", { login }, f);
+/** A new password with the token of the mailed link. */
+export const resetPassword = (token: string, newPassword: string, f?: typeof fetch) =>
+  api<{ ok: boolean; username: string }>("POST", "/api/auth/reset", { token, new_password: newPassword }, f);
+export const setMyEmail = (email: string, currentPassword: string, f?: typeof fetch) =>
+  api<{ ok: boolean; email: string }>("PUT", "/api/me/email", { email, current_password: currentPassword }, f);
 
 export async function logout(): Promise<void> {
   await api("POST", "/api/logout");

@@ -53,6 +53,7 @@ import (
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/fsinfo"
+	"github.com/digital-cube/shared-folder/internal/mail"
 	"github.com/digital-cube/shared-folder/internal/server"
 	"github.com/digital-cube/shared-folder/internal/server/httpapi"
 	"github.com/digital-cube/shared-folder/internal/version"
@@ -75,11 +76,16 @@ Usage:
   shfd serve --data-root DIR [--listen ADDR] [--tls-cert FILE --tls-key FILE]
              [--ssh-endpoint USER@HOST[:PORT]] [--downloads DIR]
              [--trusted-proxy ADDR[,ADDR|CIDR...]]
+             [--brevo-key-file FILE] [--mail-from ADDR] [--public-url URL]
+             [--gui-base PATH]
   shfd share create <name> [--admin USERNAME]
   shfd share list
-  shfd user add <username> [--display-name NAME]
+  shfd user add <username> [--display-name NAME] [--email ADDR]
+  shfd user set-email <username> <addr|->
+  shfd user reset-link <username> [--public-url URL] [--gui-base PATH]
   shfd user passwd|disable|enable|show <username>
   shfd user list
+  shfd mail test <addr> [--brevo-key-file FILE] [--mail-from ADDR]
   shfd member add <share-id> <username> [--admin] [--user]
   shfd member link <share-id> <member> <account>
   shfd member revoke <share-id> <username>
@@ -142,6 +148,18 @@ printed); member link links an existing member to an account, and the
 member's token keeps working. serve --trusted-proxy (default
 $SHFD_TRUSTED_PROXIES, else 127.0.0.1) lists the proxies whose
 X-Forwarded-For gives the client address the sign-in limit counts.
+
+Forgotten password (docs/admin.md): an account with an email address
+(user add --email, user set-email; "-" removes it) asks for a link with
+POST /v1/auth/forgot and sets a new password with POST /v1/auth/reset.
+serve sends the mails through Brevo when --brevo-key-file (default
+$SHFD_BREVO_KEY_FILE) names the file with the API key; the key is never
+taken from a flag or a variable's value. --mail-from (default
+$SHFD_MAIL_FROM, else "shared-storage <noreply@digitalcube.rs>") is the
+sender. The link is --public-url (default $SHFD_PUBLIC_URL) and
+--gui-base (default $SHFD_GUI_BASE, else /gui); without the key or the URL
+mail is off ("mail: disabled" in the log and in /healthz). user reset-link
+prints a link without sending a mail; mail test sends a test mail.
 
 Members (docs/admin.md): member add prints the member's token, which is
 shown only then. A username stays taken by a revoked member; member add
@@ -213,6 +231,8 @@ func Run(args []string, env Env) int {
 		err = memberCmd(args[1:], env)
 	case "user":
 		err = userCmd(args[1:], env)
+	case "mail":
+		err = mailCmd(args[1:], env)
 	case "keys":
 		err = keysCmd(args[1:], env)
 	case "trash":
@@ -611,6 +631,8 @@ func serve(args []string, env Env) error {
 	trusted := fs.String("trusted-proxy", cmp.Or(env.Getenv(EnvTrustedProxies), httpapi.DefaultTrustedProxies), "comma-separated addresses or CIDRs of proxies whose X-Forwarded-For is believed")
 	var sf sshFlags
 	sf.register(fs, env)
+	var mf mailFlags
+	mf.register(fs, env)
 	root, _, err := flags(fs, args, 0, env)
 	if err != nil {
 		return err
@@ -637,6 +659,18 @@ func serve(args []string, env Env) error {
 			return usageError("serve: --downloads %s is not a directory", *downloads)
 		}
 	}
+	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
+	if opts.ResetURL, err = mf.resetURL(); err != nil {
+		return usageError("serve: --public-url: %v", err)
+	}
+	brevo, warn, err := mf.sender(env)
+	if err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	if brevo != nil {
+		opts.Mail = brevo
+	}
+	opts.Log = log
 	srv, err := root.open(opts)
 	if err != nil {
 		return err
@@ -647,7 +681,7 @@ func serve(args []string, env Env) error {
 		return err
 	}
 	defer unlock()
-	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
+	logMail(log, brevo, opts.ResetURL, warn)
 	warnNetworkDB(srv, env, log)
 	if err := srv.OpenAll(); err != nil {
 		return err
@@ -691,7 +725,7 @@ func serve(args []string, env Env) error {
 	if opts.AuthorizedKeys != nil {
 		akeys = opts.AuthorizedKeys.Path
 	}
-	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "downloads", cmp.Or(*downloads, "-"), "trusted_proxies", *trusted, "version", version.Version)
+	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "downloads", cmp.Or(*downloads, "-"), "trusted_proxies", *trusted, "mail", httpapi.MailStatus(srv), "version", version.Version)
 	if env.Ready != nil {
 		env.Ready(ln.Addr().String())
 	}
@@ -707,6 +741,22 @@ func serve(args []string, env Env) error {
 	}
 	log.Info("shfd stopped")
 	return nil
+}
+
+// logMail says whether forgotten-password mails go out ("mail: enabled" or
+// "mail: disabled" and why). It names the sender, never the key.
+func logMail(log *slog.Logger, brevo *mail.Brevo, resetURL, warn string) {
+	if warn != "" {
+		log.Warn("mail: " + warn)
+	}
+	switch {
+	case brevo == nil:
+		log.Info("mail: disabled (no --brevo-key-file / $" + EnvBrevoKeyFile + "); a forgotten password gets no mail")
+	case resetURL == "":
+		log.Warn("mail: disabled (no --public-url / $" + EnvPublicURL + " for the link); a forgotten password gets no mail")
+	default:
+		log.Info("mail: enabled", "provider", "brevo", "from", brevo.From().String(), "reset_page", resetURL)
+	}
 }
 
 // warnNetworkDB logs a warning when the databases are on a network file

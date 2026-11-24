@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { changePassword, revokeDevice, type Device, type PasswordRules } from "../api";
+import { changePassword, revokeDevice, setMyEmail, type Device, type PasswordRules } from "../api";
 import { useAccount, useSession } from "../App";
 import { Confirm } from "../dialogs";
 import { ago, stamp } from "../format";
@@ -106,6 +106,79 @@ function PasswordForm({ forced, onDone }: { forced?: boolean; onDone?: () => voi
   );
 }
 
+/** The account's email address, where a forgotten password's link goes; changed with the password. */
+function EmailForm({ current }: { current: string }) {
+  const tr = useTr();
+  const { me } = useSession();
+  const qc = useQueryClient();
+  const [email, setEmail] = useState<string | null>(null);
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const value = email ?? current;
+  const changed = value.trim().toLowerCase() !== current;
+
+  return (
+    <form
+      className="pw-form"
+      data-testid="email-form"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError(null);
+        setDone(null);
+        const r = await setMyEmail(value.trim(), pw);
+        setBusy(false);
+        if (!r.ok) return setError(r.error);
+        setPw("");
+        setEmail(null);
+        setDone(r.data.email ? tr(`Email je sada ${r.data.email}.`, `The email is now ${r.data.email}.`) : tr("Email je uklonjen.", "The email was removed."));
+        void qc.invalidateQueries({ queryKey: ["account"] });
+      }}
+    >
+      <input type="text" name="username" autoComplete="username" value={me.username} readOnly hidden />
+      <div className="field">
+        <label htmlFor="email-addr">{tr("Email adresa", "Email address")}</label>
+        <input
+          id="email-addr"
+          className="input"
+          type="email"
+          autoComplete="email"
+          placeholder={tr("nema", "none")}
+          value={value}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <span className="hint">
+          {tr(
+            "Na nju stiže link kad zaboraviš lozinku. Prazno polje uklanja adresu.",
+            "The link for a forgotten password goes there. An empty field removes the address.",
+          )}
+        </span>
+      </div>
+      {changed ? (
+        <div className="field">
+          <label htmlFor="email-pw">{tr("Tvoja lozinka", "Your password")}</label>
+          <input id="email-pw" className="input" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        </div>
+      ) : null}
+      {error ? (
+        <div className="err-text" role="alert">
+          {error}
+        </div>
+      ) : null}
+      {done ? (
+        <div className="banner ok" role="status">
+          {done}
+        </div>
+      ) : null}
+      <button className="btn primary" disabled={busy || !changed || !pw}>
+        {busy ? tr("Čuvam…", "Saving…") : tr("Sačuvaj email", "Save the email")}
+      </button>
+    </form>
+  );
+}
+
 /** The screen of an account with a temporary password: nothing else until it is changed. */
 export function ChangePassword({ forced }: { forced?: boolean }) {
   const tr = useTr();
@@ -189,10 +262,16 @@ export function Account() {
         </div>
       ) : null}
       <div className="account-grid">
-        <section className="card">
-          <h4>{tr("Promena lozinke", "Change the password")}</h4>
-          <PasswordForm />
-        </section>
+        <div className="account-col">
+          <section className="card">
+            <h4>{tr("Email", "Email")}</h4>
+            <EmailForm current={user?.email ?? ""} />
+          </section>
+          <section className="card">
+            <h4>{tr("Promena lozinke", "Change the password")}</h4>
+            <PasswordForm />
+          </section>
+        </div>
         <section className="card">
           <h4>{tr("Moji uređaji", "My devices")}</h4>
           <p className="muted small">

@@ -11,7 +11,9 @@ import (
 
 // userCmd manages accounts (docs/admin.md, "Nalozi"):
 //
-//	shfd user add <username> [--display-name NAME]
+//	shfd user add <username> [--display-name NAME] [--email ADDR]
+//	shfd user set-email <username> <addr|->
+//	shfd user reset-link <username> [--public-url URL] [--gui-base PATH]
 //	shfd user passwd <username>
 //	shfd user disable|enable <username> [--authorized-keys FILE]
 //	shfd user list
@@ -22,7 +24,7 @@ import (
 // a disable takes effect at once.
 func userCmd(args []string, env Env) error {
 	if len(args) == 0 {
-		return usageError("user: want add, passwd, disable, enable, list or show")
+		return usageError("user: want add, set-email, reset-link, passwd, disable, enable, list or show")
 	}
 	open := func(root roots) (*server.Server, error) {
 		return root.open(server.Options{SkipRecovery: true})
@@ -31,6 +33,7 @@ func userCmd(args []string, env Env) error {
 	case "add":
 		fs := flag.NewFlagSet("user add", flag.ContinueOnError)
 		display := fs.String("display-name", "", "the name shown next to the username")
+		email := fs.String("email", "", "the address a forgotten password's link goes to")
 		root, pos, err := flags(fs, args[1:], 1, env)
 		if err != nil {
 			return err
@@ -40,11 +43,59 @@ func userCmd(args []string, env Env) error {
 			return err
 		}
 		defer srv.Close()
-		u, temp, err := srv.AddUser(pos[0], *display)
+		u, temp, err := srv.AddUserWithEmail(pos[0], *display, *email)
 		if err != nil {
 			return err
 		}
 		printTempPassword(env, u.Username, temp)
+		return nil
+	case "set-email":
+		fs := flag.NewFlagSet("user set-email", flag.ContinueOnError)
+		root, pos, err := flags(fs, args[1:], 2, env)
+		if err != nil {
+			return err
+		}
+		srv, err := open(root)
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		addr := pos[1]
+		if addr == "-" {
+			addr = ""
+		}
+		u, err := srv.SetEmail(pos[0], addr)
+		if err != nil {
+			return err
+		}
+		if u.Email == "" {
+			fmt.Fprintf(env.Stdout, "%s has no email address now; a forgotten password can only be reset with shfd user passwd or reset-link\n", u.Username)
+		} else {
+			fmt.Fprintf(env.Stdout, "email of %s: %s\n", u.Username, u.Email)
+		}
+		return nil
+	case "reset-link":
+		fs := flag.NewFlagSet("user reset-link", flag.ContinueOnError)
+		var mf mailFlags
+		mf.registerLink(fs, env)
+		root, pos, err := flags(fs, args[1:], 1, env)
+		if err != nil {
+			return err
+		}
+		resetURL, err := mf.resetURL()
+		if err != nil {
+			return usageError("user reset-link: %v", err)
+		}
+		srv, err := open(root)
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		token, exp, err := srv.IssueResetToken(pos[0])
+		if err != nil {
+			return err
+		}
+		printResetLink(env, pos[0], resetURL, mf.guiBase, token, exp)
 		return nil
 	case "passwd":
 		fs := flag.NewFlagSet("user passwd", flag.ContinueOnError)
@@ -113,13 +164,13 @@ func userCmd(args []string, env Env) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "USERNAME\tDISPLAY NAME\tSTATUS\tLAST LOGIN\tDEVICES")
+		fmt.Fprintln(tw, "USERNAME\tDISPLAY NAME\tEMAIL\tSTATUS\tLAST LOGIN\tDEVICES")
 		for _, u := range us {
 			devs, err := srv.Devices(u.ID, false)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", u.Username, orDash(u.DisplayName), userStatus(&u), when(u.LastLoginAt), len(devs))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", u.Username, orDash(u.DisplayName), orDash(u.Email), userStatus(&u), when(u.LastLoginAt), len(devs))
 		}
 		return tw.Flush()
 	case "show":
@@ -145,8 +196,8 @@ func userCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(env.Stdout, "username:     %s\ndisplay name: %s\nstatus:       %s\ncreated:      %s\nlast login:   %s\n",
-			u.Username, orDash(u.DisplayName), userStatus(u), u.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), when(u.LastLoginAt))
+		fmt.Fprintf(env.Stdout, "username:     %s\ndisplay name: %s\nemail:        %s\nstatus:       %s\ncreated:      %s\nlast login:   %s\n",
+			u.Username, orDash(u.DisplayName), orDash(u.Email), userStatus(u), u.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), when(u.LastLoginAt))
 		fmt.Fprintf(env.Stdout, "\nFolders:\n")
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SHARE ID\tNAME\tMEMBER\tROLE")

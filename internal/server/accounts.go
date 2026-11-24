@@ -66,6 +66,11 @@ const (
 	outcomeUnknownUser = "unknown_user"
 	outcomeLocked      = "locked"
 	outcomeDisabled    = "disabled"
+
+	// A forgotten password (reset.go).
+	outcomeResetRequested = "reset_requested" // POST /v1/auth/forgot let through (a link is mailed when the account exists)
+	outcomeResetDone      = "reset_done"      // a new password set with a reset link
+	outcomeBadToken       = "bad_token"       // a reset with an unknown, used or expired token: a failure, like a wrong password
 )
 
 // maxPasswordBytes bounds what a sign-in hashes: MaxLen characters of up
@@ -81,9 +86,12 @@ const logTime = "2006-01-02T15:04:05.000000000Z07:00"
 
 // User is an account, without its password hash.
 type User struct {
-	ID          int64      `json:"id"`
-	Username    string     `json:"username"`
-	DisplayName string     `json:"display_name"`
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	// Email is where a forgotten password's link goes; "" when the
+	// account has none.
+	Email       string     `json:"email"`
 	MustChange  bool       `json:"must_change"`
 	CreatedAt   time.Time  `json:"created_at"`
 	DisabledAt  *time.Time `json:"disabled_at,omitempty"`
@@ -131,12 +139,12 @@ type UserFolder struct {
 	LastChangeAt *time.Time `json:"last_change_at,omitempty"`
 }
 
-const userCols = `id, username, display_name, must_change, created_at, disabled_at, last_login_at`
+const userCols = `id, username, display_name, coalesce(email, ''), must_change, created_at, disabled_at, last_login_at`
 
 func scanUser(sc interface{ Scan(...any) error }, extra ...any) (*User, error) {
 	var u User
 	var created, disabled, login sql.NullString
-	if err := sc.Scan(append([]any{&u.ID, &u.Username, &u.DisplayName, &u.MustChange, &created, &disabled, &login}, extra...)...); err != nil {
+	if err := sc.Scan(append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.MustChange, &created, &disabled, &login}, extra...)...); err != nil {
 		return nil, err
 	}
 	if t := parseTime(created); t != nil {
@@ -197,6 +205,12 @@ func (s *Server) dummyHash() string {
 // it is shown only this once, and the account must change it at its first
 // sign-in (must_change).
 func (s *Server) AddUser(username, displayName string) (*User, string, error) {
+	return s.AddUserWithEmail(username, displayName, "")
+}
+
+// AddUserWithEmail is AddUser with the account's email address ("" for
+// none).
+func (s *Server) AddUserWithEmail(username, displayName, email string) (*User, string, error) {
 	if err := pathx.ValidateUsername(username); err != nil {
 		return nil, "", errf(CodeInvalidRequest, "%v", err)
 	}
@@ -204,14 +218,26 @@ func (s *Server) AddUser(username, displayName string) (*User, string, error) {
 	if utf8.RuneCountInString(displayName) > 128 {
 		return nil, "", errf(CodeInvalidRequest, "the display name may have at most 128 characters")
 	}
+	email, err := NormalizeEmail(email)
+	if err != nil {
+		return nil, "", err
+	}
+	if email != "" {
+		if err := s.emailFree(email, 0); err != nil {
+			return nil, "", err
+		}
+	}
 	temp := password.Generate()
 	h, err := s.hashPassword(context.Background(), temp)
 	if err != nil {
 		return nil, "", err
 	}
-	_, err = s.reg.Exec(`INSERT INTO users (username, display_name, pw_hash, must_change, created_at) VALUES (?, ?, ?, 1, ?)`,
-		username, displayName, h, fmtTime(s.opts.Now()))
+	_, err = s.reg.Exec(`INSERT INTO users (username, display_name, email, pw_hash, must_change, created_at) VALUES (?, ?, ?, ?, 1, ?)`,
+		username, displayName, nullIfEmpty(email), h, fmtTime(s.opts.Now()))
 	if err != nil {
+		if strings.Contains(err.Error(), "users.email") {
+			return nil, "", errEmailTaken
+		}
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return nil, "", errf(CodeUserExists, "account %q already exists", username)
 		}
@@ -550,11 +576,11 @@ func (s *Server) lockedKey(col, val string, now time.Time) (time.Duration, error
 		if err := rows.Scan(&at, &outcome); err != nil {
 			return 0, err
 		}
-		if outcome == outcomeOK {
-			break
+		if outcome == outcomeOK || outcome == outcomeResetDone {
+			break // a sign-in, or a new password through a reset link
 		}
-		if outcome == outcomeLocked {
-			continue // a refused attempt checked nothing and does not lengthen the wait
+		if outcome == outcomeLocked || outcome == outcomeResetRequested {
+			continue // a refused attempt checked nothing, and asking for a link is no failure
 		}
 		if n == 0 {
 			last, _ = time.Parse(time.RFC3339Nano, at)
@@ -594,7 +620,7 @@ func (s *Server) AuthenticateDevice(token string) (*Session, error) {
 	var devID int64
 	var kind string
 	var created, seen, expires, revoked sql.NullString
-	u, err := scanUser(s.reg.QueryRow(`SELECT u.id, u.username, u.display_name, u.must_change, u.created_at, u.disabled_at, u.last_login_at,
+	u, err := scanUser(s.reg.QueryRow(`SELECT u.id, u.username, u.display_name, coalesce(u.email, ''), u.must_change, u.created_at, u.disabled_at, u.last_login_at,
 		d.id, d.kind, d.created_at, d.last_seen_at, d.expires_at, d.revoked_at
 		FROM devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?`, HashToken(token)),
 		&devID, &kind, &created, &seen, &expires, &revoked)
@@ -706,6 +732,25 @@ func (s *Server) ChangePassword(ctx context.Context, sess *Session, oldPw, newPw
 	if newPw == oldPw {
 		return errf(CodeInvalidPassword, "the new password must differ from the old one")
 	}
+	if err := s.checkCurrentPassword(ctx, u, oldPw, ip, "the old password is wrong"); err != nil {
+		return err
+	}
+	h, err := s.hashPassword(ctx, newPw)
+	if err != nil {
+		return err
+	}
+	_, err = s.reg.Exec(`UPDATE users SET pw_hash = ?, must_change = 0 WHERE id = ?`, h, u.ID)
+	if err == nil {
+		u.MustChange = false
+	}
+	return err
+}
+
+// checkCurrentPassword checks the password of a signed-in account before
+// a change of its password or email: under the attempt limit (429), and a
+// wrong one fails with CodeWrongPassword (wrongMsg) and counts like a failed
+// sign-in.
+func (s *Server) checkCurrentPassword(ctx context.Context, u *User, pw, ip, wrongMsg string) error {
 	now := s.opts.Now()
 	if wait, err := s.lockedFor(u.Username, ip, now); err != nil {
 		return err
@@ -722,9 +767,9 @@ func (s *Server) ChangePassword(ctx context.Context, sess *Session, oldPw, newPw
 		return err
 	}
 	ok := false
-	if len(oldPw) <= maxPasswordBytes {
+	if len(pw) <= maxPasswordBytes {
 		var err error
-		ok, _, err = s.checkPassword(ctx, oldPw, phc)
+		ok, _, err = s.checkPassword(ctx, pw, phc)
 		if err != nil && !errors.Is(err, password.ErrMalformed) {
 			return err
 		}
@@ -733,17 +778,9 @@ func (s *Server) ChangePassword(ctx context.Context, sess *Session, oldPw, newPw
 		if err := s.logAttempt(now, u.Username, ip, outcomeBadPassword); err != nil {
 			return err
 		}
-		return errf(CodeWrongPassword, "the old password is wrong")
+		return errf(CodeWrongPassword, "%s", wrongMsg)
 	}
-	h, err := s.hashPassword(ctx, newPw)
-	if err != nil {
-		return err
-	}
-	_, err = s.reg.Exec(`UPDATE users SET pw_hash = ?, must_change = 0 WHERE id = ?`, h, u.ID)
-	if err == nil {
-		u.MustChange = false
-	}
-	return err
+	return nil
 }
 
 // ---- accounts as members -------------------------------------------------

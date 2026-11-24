@@ -550,6 +550,36 @@ nalozima u shfd-u (`docs/admin.md`, [Nalozi](admin.md#nalozi)).
   shfd-u, ne samo u GUI-ju.
 - Registracije nema. Naloge pravi admin servera (`shfd user add`).
 
+### Zaboravljena lozinka
+
+Urađeno u TCKP7URK2X. Server strana je u
+[admin.md](admin.md#zaboravljena-lozinka).
+
+- Na Login stranici, ispod lozinke, je link **„Zaboravljena lozinka?“**
+  (`#forgot`). Forma traži **korisničko ime ili email** i posle slanja
+  prikazuje uvek istu, neutralnu potvrdu („Ako nalog postoji i ima email
+  adresu, na nju je poslat link… Link važi 30 minuta.“). GUI zove
+  `POST <base>/api/auth/forgot {login}`, a on `POST /v1/auth/forgot {login,
+  lang}`, gde je `lang` jezik GUI-ja (pa je i mejl na tom jeziku).
+- Link iz mejla vodi na **`#reset?token=…`**: nova lozinka dva puta
+  (najmanje 12 znakova; ostala pravila proverava shfd). Stranica radi i bez
+  prijave i sa njom. Posle uspeha token se briše iz adrese i istorije
+  browsera, sesija se odjavljuje (shfd ionako gasi sve gui sesije naloga) i
+  otvara se prijava sa porukom „Lozinka naloga X je promenjena…“ i već
+  upisanim korisničkim imenom. Iskorišćen, istekao ili zamenjen link daje
+  „Link za novu lozinku nije ispravan…“ sa linkom „Zatraži novi link“.
+- Link sastavlja **shfd** iz svog `SHFD_PUBLIC_URL` i `SHFD_GUI_BASE`, nikad
+  iz `Host` zaglavlja. GUI proxy samo prosleđuje rute.
+- **Adresa klijenta**: za `auth/login`, `auth/forgot`, `auth/reset`,
+  `me/password` i `me/email` shfd-gui šalje shfd-u `X-Forwarded-For` kao
+  proxy: ono što je stiglo od nginx-a, pa adresu koju je sam video. shfd ga
+  čita zdesna i preskače samo pouzdane proxy-je (`SHFD_TRUSTED_PROXIES`,
+  podrazumevano `127.0.0.1`), pa ograničenja broje pravog klijenta, a
+  browser ne može da podmetne svoju adresu. (Do sada je shfd za sve
+  prijave iz GUI-ja video `127.0.0.1`.)
+- Previše zahteva sa jedne adrese: „Previše zahteva sa ove adrese. Pokušaj
+  ponovo za N min.“
+
 #### Prijava tokenom (skrivena)
 
 Ispod forme stoji link „Prijava tokenom“: stari način, gde se admin foldera
@@ -619,6 +649,11 @@ Kad svi članovi pređu na naloge (spec §8, korak 5), postavi
 
 ### Moj nalog
 
+- **Email**: adresa na koju stiže link za zaboravljenu lozinku. Promena (ili
+  brisanje, prazno polje) traži trenutnu lozinku
+  (`PUT <base>/api/me/email` → `PUT /v1/me/email`). Greške: „Lozinka nije
+  tačna.“, „To nije ispravna email adresa.“, „Tu email adresu već ima drugi
+  nalog.“
 - **Promena lozinke**: stara i nova lozinka i ponovljena nova, uz pravila
   sa servera.
 - **Moji uređaji**: klijenti (`shf login`) i GUI sesije naloga, sa imenom,
@@ -650,6 +685,9 @@ u `server/src/csrf.ts`, a testovi su u `server/test/accounts.test.ts`.
 | `GET /api/me` | `/v1/me` (folderi, uređaji, pravila lozinke) i `session` |
 | `POST /api/folder` | `{share_id}` → izbor foldera |
 | `POST /api/me/password` | `{old, new}` |
+| `POST /api/auth/forgot` | `{login}` → `202 {ok, message}`, uvek isto (bez sesije) |
+| `POST /api/auth/reset` | `{token, new_password}` → `{ok, username}` (bez sesije) |
+| `PUT /api/me/email` | `{email, current_password}` → `{ok, email}` |
 | `DELETE /api/me/devices/:id` | opoziv svog uređaja; `{signed_out}` kad je to ova sesija |
 
 Nove jsudc akcije: `shfd.member_add_account`, `shfd.users_search`,

@@ -8,7 +8,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { langOf, tr, type Lang } from "./lang.js";
 import { COOKIE, readCookie, sessionCookie, type Session, type SessionStore } from "./sessions.js";
-import { errorMessage, ShfdError, type ShfdClient } from "./shfd.js";
+import { errorMessage, forwardedFor, ShfdError, type ShfdClient } from "./shfd.js";
 
 export const LOGIN_INVALID = "Token nije ispravan ili je opozvan.";
 export const LOGIN_NOT_ADMIN = "Samo admin foldera može da se prijavi tokenom.";
@@ -21,6 +21,22 @@ export const LOGIN_BAD_PASSWORD_EN = "Wrong username or password.";
 const loginInvalid = (lang: Lang) => tr(lang, LOGIN_INVALID, LOGIN_INVALID_EN);
 const loginNotAdmin = (lang: Lang) => tr(lang, LOGIN_NOT_ADMIN, LOGIN_NOT_ADMIN_EN);
 const badPassword = (lang: Lang) => tr(lang, LOGIN_BAD_PASSWORD, LOGIN_BAD_PASSWORD_EN);
+
+/** The answer to every accepted "Zaboravljena lozinka": the same whether the account exists or not. */
+export function forgotSent(lang: Lang): string {
+  return tr(
+    lang,
+    "Ako nalog postoji i ima email adresu, na nju je poslat link za novu lozinku. Link važi 30 minuta. Ako mejl ne stigne, proveri spam ili se javi adminu servera.",
+    "If the account exists and has an email address, a link for a new password was sent to it. The link is valid for 30 minutes. If no mail arrives, check the spam folder or ask the server's admin.",
+  );
+}
+
+/** Too many "Zaboravljena lozinka" requests from one address. */
+export function tooManyRequests(lang: Lang, seconds?: number): string {
+  if (!seconds) return tr(lang, "Previše zahteva. Pokušaj ponovo kasnije.", "Too many requests. Try again later.");
+  const m = Math.max(1, Math.ceil(seconds / 60));
+  return tr(lang, `Previše zahteva sa ove adrese. Pokušaj ponovo za ${m} min.`, `Too many requests from this address. Try again in ${m} min.`);
+}
 
 /** "Previše neuspelih pokušaja…": the pause after several failures. */
 export function tooMany(lang: Lang, seconds?: number): string {
@@ -141,7 +157,7 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
     if (!username || !password) return reply.code(400).send({ error: badPassword(lang), code: "invalid_credentials" });
     let r;
     try {
-      r = await shfd.login(username, password, browserName(req.headers["user-agent"]));
+      r = await shfd.login(username, password, browserName(req.headers["user-agent"]), forwardedFor(req));
     } catch (err) {
       if (err instanceof ShfdError && (err.code === "invalid_credentials" || err.status === 401)) {
         return reply.code(401).send({ error: badPassword(lang), code: "invalid_credentials" });
@@ -158,6 +174,48 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
     reply.header("set-cookie", sessionCookie(s.id, cookieOpts));
     reply.header("cache-control", "no-store");
     return publicSession(s);
+  });
+
+  // ---- a forgotten password ------------------------------------------------
+  // Both without a session. shfd sends the mail, builds the link from its
+  // own SHFD_PUBLIC_URL (never from this request's Host) and answers alike
+  // whether the account exists or not; the GUI passes that on.
+
+  app.post(`${base}/api/auth/forgot`, async (req, reply) => {
+    const lang = langOf(req);
+    const b = (req.body ?? {}) as { login?: unknown };
+    const login = typeof b.login === "string" ? b.login.trim() : "";
+    if (!login) return reply.code(400).send({ error: tr(lang, "Upiši korisničko ime ili email.", "Enter your username or email."), code: "invalid_request" });
+    reply.header("cache-control", "no-store");
+    try {
+      await shfd.forgot(login, lang, forwardedFor(req));
+    } catch (err) {
+      if (err instanceof ShfdError && err.code === "too_many_attempts") {
+        if (err.retryAfter) reply.header("retry-after", String(err.retryAfter));
+        return reply.code(429).send({ error: tooManyRequests(lang, err.retryAfter), code: err.code, retry_after: err.retryAfter ?? null });
+      }
+      return refuse(req, reply, undefined, err);
+    }
+    return reply.code(202).send({ ok: true, message: forgotSent(lang) });
+  });
+
+  app.post(`${base}/api/auth/reset`, async (req, reply) => {
+    const lang = langOf(req);
+    const b = (req.body ?? {}) as { token?: unknown; new_password?: unknown };
+    const token = typeof b.token === "string" ? b.token.trim() : "";
+    const pw = typeof b.new_password === "string" ? b.new_password : "";
+    if (!token) return reply.code(400).send({ error: errorMessage("invalid_reset_token", undefined, lang), code: "invalid_reset_token" });
+    if (!pw) return reply.code(400).send({ error: tr(lang, "Upiši novu lozinku.", "Enter the new password."), code: "invalid_request" });
+    reply.header("cache-control", "no-store");
+    try {
+      const r = await shfd.reset(token, pw, lang, forwardedFor(req));
+      return { ok: true, username: r.username };
+    } catch (err) {
+      if (err instanceof ShfdError && err.code === "invalid_password") {
+        return reply.code(400).send({ error: passwordRuleMessage(err.message, lang), code: err.code });
+      }
+      return refuse(req, reply, undefined, err);
+    }
   });
 
   // ---- member-token sign-in (hidden; SHFD_GUI_TOKEN_LOGIN=0 turns it off) ---
@@ -264,7 +322,7 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
     const newPw = typeof b.new === "string" ? b.new : "";
     if (!oldPw || !newPw) return reply.code(400).send({ error: tr(lang, "Upiši staru i novu lozinku.", "Enter the old and the new password."), code: "invalid_request" });
     try {
-      await shfd.changePassword(s.token, oldPw, newPw);
+      await shfd.changePassword(s.token, oldPw, newPw, forwardedFor(req));
     } catch (err) {
       if (err instanceof ShfdError && err.code === "invalid_password") {
         return reply.code(400).send({ error: passwordRuleMessage(err.message, lang), code: err.code });
@@ -273,6 +331,25 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
     }
     s.mustChange = false;
     return publicSession(s);
+  });
+
+  app.put(`${base}/api/me/email`, async (req, reply) => {
+    const lang = langOf(req);
+    const s = accountOf(req, reply);
+    if (!s) return reply;
+    const b = (req.body ?? {}) as { email?: unknown; current_password?: unknown };
+    const email = typeof b.email === "string" ? b.email.trim() : "";
+    const pw = typeof b.current_password === "string" ? b.current_password : "";
+    if (!pw) return reply.code(400).send({ error: tr(lang, "Upiši svoju lozinku.", "Enter your password."), code: "invalid_request" });
+    try {
+      const r = await shfd.setEmail(s.token, email, pw, forwardedFor(req));
+      return { ok: true, email: r.user.email ?? "" };
+    } catch (err) {
+      if (err instanceof ShfdError && err.code === "wrong_password") {
+        return reply.code(403).send({ error: tr(lang, "Lozinka nije tačna.", "The password is wrong."), code: err.code });
+      }
+      return refuse(req, reply, s, err);
+    }
   });
 
   app.delete(`${base}/api/me/devices/:id`, async (req, reply) => {

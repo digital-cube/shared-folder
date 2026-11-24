@@ -13,6 +13,8 @@ import { messages } from "./messages";
 import { ChangePassword } from "./pages/Account";
 import { Install } from "./pages/Install";
 import { Login } from "./pages/Login";
+import { ForgotPassword, ResetPassword } from "./pages/Reset";
+import { authPage, resetDoneNote, resetToken } from "./reset";
 import { AccountShell, Shell } from "./Shell";
 
 export type { Page } from "./access";
@@ -30,6 +32,17 @@ export function usePage(): [Page, (p: Page) => void] {
     return () => window.removeEventListener("hashchange", on);
   }, []);
   return [page, (p) => (location.hash = `#${p}`)];
+}
+
+/** location.hash, followed. */
+function useHash(): string {
+  const [hash, setHash] = useState(() => location.hash);
+  useEffect(() => {
+    const on = () => setHash(location.hash);
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  return hash;
 }
 
 /** The signed-in session, for every page: shown with or without a folder. */
@@ -88,7 +101,10 @@ export function App() {
 function Root() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [page] = usePage();
+  const hash = useHash();
   const [expired, setExpired] = useState(false);
+  // After a reset: the note and the username for the sign-in form.
+  const [resetDone, setResetDone] = useState<string | null>(null);
   // A fresh sign-in opens the only (or the remembered) folder by itself.
   const fresh = useRef(false);
 
@@ -115,14 +131,38 @@ function Root() {
     });
   }, [qc]);
 
+  // The mailed link works with or without a session: a reset signs out
+  // every GUI session of its account, so this one ends too.
+  if (authPage(hash) === "reset") {
+    return (
+      <ResetPassword
+        token={resetToken(hash)}
+        onDone={(username) => {
+          // Set before the sign-in form mounts: it takes the username once.
+          setResetDone(username);
+          setExpired(false);
+          setMe(null);
+          qc.clear();
+          void logout();
+          // The token leaves the address bar and the history.
+          history.replaceState(null, "", location.pathname + location.search);
+          window.dispatchEvent(new HashChangeEvent("hashchange"));
+        }}
+      />
+    );
+  }
   if (me === undefined) return null;
   if (me === null) {
     if (page === "install") return <Install standalone />;
+    if (authPage(hash) === "forgot") return <ForgotPassword />;
     return (
       <Login
         expired={expired}
+        notice={resetDone ? resetDoneNote(resetDone) : null}
+        initialUsername={resetDone ?? ""}
         onIn={(m) => {
           setExpired(false);
+          setResetDone(null);
           qc.clear();
           fresh.current = true;
           setMe(m);

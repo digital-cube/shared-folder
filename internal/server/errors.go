@@ -49,6 +49,9 @@ const (
 	CodeUserDisabled           Code = "user_disabled"            // the account is disabled (shfd user enable)
 	CodeUnknownDevice          Code = "unknown_device"           // no such device of this account
 	CodeDeviceRevoked          Code = "device_revoked"           // the device's credentials for the folder were revoked: sign in again
+	CodeInvalidEmail           Code = "invalid_email"            // not a bare email address
+	CodeEmailTaken             Code = "email_taken"              // the email address belongs to another account
+	CodeInvalidResetToken      Code = "invalid_reset_token"      // a reset link that is unknown, used, expired or replaced by a newer one
 )
 
 // Error is an operation refused by the rules. It never leaves the database

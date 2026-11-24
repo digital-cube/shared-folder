@@ -9,11 +9,22 @@ import { Prefs } from "../Prefs";
  * (a folder admin's member token, as before accounts) is a link under the
  * form while the server allows it (SHFD_GUI_TOKEN_LOGIN).
  */
-export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boolean }) {
+export function Login({
+  onIn,
+  expired,
+  notice,
+  initialUsername = "",
+}: {
+  onIn: (m: Me) => void;
+  expired: boolean;
+  /** A note above the form ("the password was changed"). */
+  notice?: string | null;
+  initialUsername?: string;
+}) {
   const tr = useTr();
   const [mode, setMode] = useState<"password" | "token">("password");
   const [tokenLogin, setTokenLogin] = useState(false);
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState(initialUsername);
   const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
   // The error of the last attempt, as the server said it; the expired note follows the language.
@@ -81,7 +92,7 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
                 spellCheck={false}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                autoFocus
+                autoFocus={!initialUsername}
               />
             </div>
             <div className="field">
@@ -94,9 +105,13 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoFocus={!!initialUsername}
               />
               <span className="hint">
-                {tr("Nalog i privremenu lozinku daje admin servera.", "The server's admin gives you the account and a temporary password.")}
+                {tr("Nalog i privremenu lozinku daje admin servera.", "The server's admin gives you the account and a temporary password.")}{" "}
+                <a href="#forgot" data-testid="forgot-link">
+                  {tr("Zaboravljena lozinka?", "Forgot your password?")}
+                </a>
               </span>
             </div>
           </>
@@ -112,6 +127,11 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
             </div>
           </>
         )}
+        {notice && !error ? (
+          <div className="banner ok" role="status" data-testid="login-notice">
+            {notice}
+          </div>
+        ) : null}
         {shown ? (
           <div className="err-text" role="alert">
             {shown}

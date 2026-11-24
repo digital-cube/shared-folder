@@ -28,15 +28,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
+	"github.com/digital-cube/shared-folder/internal/mail"
 	"github.com/digital-cube/shared-folder/internal/password"
 	"github.com/digital-cube/shared-folder/internal/pathx"
 )
@@ -65,6 +68,16 @@ type Options struct {
 	// PasswordParams are the Argon2id parameters of account passwords;
 	// nil is password.Default. Tests make them cheap.
 	PasswordParams *password.Params
+	// Mail sends the mails of a forgotten password (reset.go); nil sends
+	// none.
+	Mail mail.Sender
+	// ResetURL is the GUI's address that a reset link starts with
+	// (ResetPageURL: "https://host/gui/"); "" turns the mails of a
+	// forgotten password off, as a nil Mail does.
+	ResetURL string
+	// Log gets what happens in the background (a mail that failed);
+	// slog.Default when nil.
+	Log *slog.Logger
 }
 
 // SSHEndpoint is the address and system user of the server's sshd.
@@ -123,6 +136,10 @@ type Server struct {
 	pwSem     chan struct{} // at most two password checks at a time (accounts.go)
 	dummyOnce sync.Once
 	dummy     string // the hash an unknown account's sign-in is checked against
+
+	mailWG      sync.WaitGroup // mails being sent (reset.go)
+	mailPending atomic.Int32
+	mailSem     chan struct{} // at most two at a time
 }
 
 // ShareInfo is one row of registry.db.
@@ -153,7 +170,7 @@ func Open(root string, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{root: abs, dbRoot: dbAbs, opts: opts, reg: reg, shares: map[string]*Share{}, pwSem: make(chan struct{}, 2)}, nil
+	return &Server{root: abs, dbRoot: dbAbs, opts: opts, reg: reg, shares: map[string]*Share{}, pwSem: make(chan struct{}, 2), mailSem: make(chan struct{}, 2)}, nil
 }
 
 // Roots returns the absolute data-root and db-root; an empty dbRoot is
@@ -241,6 +258,7 @@ func (s *Server) Ping(ctx context.Context) error {
 
 // Close closes the registry and every open folder.
 func (s *Server) Close() error {
+	s.WaitMail() // a mail being sent still writes registry.db
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var errs []error

@@ -620,7 +620,7 @@ func TestMigrateTestServerSchema(t *testing.T) {
 	var rv, sv int
 	srv.reg.QueryRow(`PRAGMA user_version`).Scan(&rv)
 	sh.db.QueryRow(`PRAGMA user_version`).Scan(&sv)
-	if rm, _ := migrations("registry"); rv != len(rm) || rv != 2 {
+	if rm, _ := migrations("registry"); rv != len(rm) || rv != 3 {
 		t.Errorf("registry version %d", rv)
 	}
 	if sm, _ := migrations("service"); sv != len(sm) || sv != 6 {

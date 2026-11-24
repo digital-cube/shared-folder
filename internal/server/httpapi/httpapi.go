@@ -149,13 +149,24 @@ type api struct {
 const HealthTimeout = 2 * time.Second
 
 // Health is the body of GET /healthz (and GET /). It says on purpose
-// nothing beyond the version: no folders, members, data-root or SSH
+// nothing beyond the version and whether mail is on: no folders, members, data-root or SSH
 // endpoint, and no detail of a failure.
 type Health struct {
 	Service string `json:"service"` // always "shfd"
 	Version string `json:"version"` // internal/version.Version
 	OK      bool   `json:"ok"`
 	Error   string `json:"error,omitempty"`
+	// Mail is "enabled" when forgotten-password mails go out, "disabled"
+	// otherwise (no Brevo key or no public URL; docs/admin.md).
+	Mail string `json:"mail"`
+}
+
+// MailStatus is "enabled" or "disabled", as /healthz and shfd serve say it.
+func MailStatus(srv *server.Server) string {
+	if srv.MailEnabled() {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 // health answers without a token: 200 when registry.db responds within
@@ -170,7 +181,7 @@ func (a *api) health(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	body := Health{Service: "shfd", Version: version.Version, OK: true}
+	body := Health{Service: "shfd", Version: version.Version, OK: true, Mail: MailStatus(a.srv)}
 	ctx, cancel := context.WithTimeout(r.Context(), HealthTimeout)
 	defer cancel()
 	if err := a.srv.Ping(ctx); err != nil {
@@ -415,7 +426,7 @@ func status(c server.Code) int {
 	case server.CodeStaleBase, server.CodeCaseConflict, server.CodeDestExists, server.CodeKindMismatch,
 		server.CodeParentNotDir, server.CodeIsDir, server.CodeDirNotEmpty, server.CodeUploadMissing,
 		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged, server.CodeLastAdmin,
-		server.CodeFileChanged, server.CodeUserExists, server.CodeUserDisabled:
+		server.CodeFileChanged, server.CodeUserExists, server.CodeUserDisabled, server.CodeEmailTaken:
 		return http.StatusConflict
 	case server.CodeSSHNotConfigured:
 		return http.StatusNotImplemented

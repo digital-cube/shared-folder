@@ -139,6 +139,47 @@ Na kraju ide izveštaj: šta je bilo, šta je sada i šta je restartovano.
 - nema zaključavanje: dva istovremena postavljanja na isti server nisu
   podržana.
 
+## Mejl (Brevo)
+
+Za zaboravljenu lozinku shfd šalje mejlove preko Brevo-a
+([admin.md](admin.md#zaboravljena-lozinka)). Skripta ključ ne dira; jednom,
+ručno, na serveru:
+
+1. Fajl sa ključem, čitljiv samo root-u i grupi `shfd`:
+
+   ```sh
+   sudo install -d -o root -g shfd -m 0750 /etc/shfd
+   sudo install -o root -g shfd -m 0640 /dev/null /etc/shfd/brevo.key
+   sudoedit /etc/shfd/brevo.key        # jedan red: xkeysib-…
+   ```
+
+   Ključ ne ide u jedinicu (`Environment=`), u argumente, u repo ni u
+   `deploy/targets/*.env`.
+
+2. U `/etc/systemd/system/shfd.service`, `[Service]`:
+
+   ```ini
+   Environment=SHFD_BREVO_KEY_FILE=/etc/shfd/brevo.key
+   Environment=SHFD_PUBLIC_URL=https://shared-storage.igor.digitalcube.work
+   # GUI je pod /gui (podrazumevano); "/" kad je na korenu hosta
+   Environment=SHFD_GUI_BASE=/gui
+   # podrazumevano: shared-storage <noreply@digitalcube.rs>
+   #Environment=SHFD_MAIL_FROM=shared-storage <noreply@digitalcube.rs>
+   ```
+
+3. `sudo systemctl daemon-reload && sudo systemctl restart shfd`, pa
+   provera:
+
+   ```sh
+   journalctl -u shfd -n 20 | grep 'mail:'      # mail: enabled
+   curl -s 127.0.0.1:8443/healthz                # "mail":"enabled"
+   sudo -u shfd env SHFD_BREVO_KEY_FILE=/etc/shfd/brevo.key shfd mail test <vaša adresa>
+   ```
+
+Bez ključa ili bez `SHFD_PUBLIC_URL` shfd radi kao i pre, samo log i
+`/healthz` kažu `mail: disabled`. Migracija baze (`0003`: `users.email`,
+`password_resets`) ide sama pri prvom startu nove verzije.
+
 ## Povratak (automatski)
 
 Ako posle izmene na serveru bilo šta ne uspe (instalacija, zamena, restart,

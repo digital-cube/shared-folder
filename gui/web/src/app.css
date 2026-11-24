@@ -156,6 +156,7 @@ table.plain td > .badge:first-child { margin-left: 0; }
 .account-grid { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 16px; align-items: start; }
 .account-grid .card { padding: 18px; }
 .account-grid h4 { margin: 0 0 12px; font-size: 15px; }
+.account-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (max-width: 1000px) { .account-grid { grid-template-columns: 1fr; } }
 .pw-form .btn.primary:not(.block) { margin-top: 4px; }
 .modal.wide { width: min(760px, calc(100vw - 48px)); }

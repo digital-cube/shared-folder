@@ -191,8 +191,10 @@ svoj **device token**. Prijava tokenom člana ostaje kao do sada (stari
 klijenti i GUI rade isto).
 
 ```sh
-shfd user add <username> [--display-name "Ime Prezime"]   # ispisuje privremenu lozinku (samo tada)
-shfd user passwd <username>      # nova privremena lozinka (zaboravljena lozinka)
+shfd user add <username> [--display-name "Ime Prezime"] [--email adresa]   # ispisuje privremenu lozinku (samo tada)
+shfd user set-email <username> <adresa|->   # email naloga; "-" ga briše
+shfd user reset-link <username>  # link za novu lozinku, bez mejla (kad mejl ne radi)
+shfd user passwd <username>      # nova privremena lozinka
 shfd user disable <username>     # odmah odjavljuje sve uređaje i sesije naloga
 shfd user enable <username>      # uređaji ostaju odjavljeni; prijavljuje se ponovo
 shfd user list
@@ -326,21 +328,25 @@ Za rsync preko SSH-a svaki uređaj treba **svoj** ključ, pa uređaj naloga
 | `POST /v1/auth/logout` | device | — | `{status}` |
 | `GET /v1/me` | device | — | `{user, folders: [{share_id, name, role, member, last_change_at?}], devices: [{id, name, kind, created_at, last_seen_at, expires_at?, current?}], password_rules: {min_len, max_len, not_username, differ_from_old}}` |
 | `POST /v1/me/password` | device | `{"old","new"}` | `{status, user}` |
+| `PUT /v1/me/email` | device | `{"email","current_password"}` (prazan `email` briše adresu) | `{status, user}` |
+| `POST /v1/auth/forgot` | — | `{"login","lang"}` (username ili email; `lang` `sr`\|`en`) | `202 {status, message}`, uvek isto |
+| `POST /v1/auth/reset` | — | `{"token","new_password","lang"}` | `{username, signed_out}` |
 | `DELETE /v1/me/devices/{id}` | device | — | `{status}` |
 | `GET /v1/users` | device admina foldera, ili token člana-admina | `?q=` (početak username-a ili deo imena) | `[{username, display_name}]`, najviše 20 |
 | `POST /v1/shares/{id}/devices` | device | — | `{token, member, role, device_id, ssh: {user, host, port}}` (folder-token uređaja) |
 | `DELETE /v1/shares/{id}/admin/members/{član}/devices/{device_id}` | admin foldera | — | `{member}` |
 | `POST /v1/shares/{id}/admin/members` | admin foldera | `{"user": "bob", "admin": false}` | `{member, reactivated?}` (bez tokena) |
 
-`user` je `{id, username, display_name, must_change, created_at,
-disabled_at?, last_login_at?}`; heš lozinke i tokeni se ne vraćaju nigde
+`user` je `{id, username, display_name, email, must_change, created_at,
+disabled_at?, last_login_at?}` (`email` je `""` kad ga nalog nema); heš lozinke i tokeni se ne vraćaju nigde
 osim novog tokena u odgovoru na prijavu. Greške: `invalid_credentials`
 (401), `too_many_attempts` (429), `password_change_required` (403),
 `wrong_password` (403, pogrešna stara lozinka; broji se kao neuspeh),
 `invalid_password` (400, nova lozinka krši pravila), `unknown_user` i
 `unknown_device` (404), `user_disabled` i `member_exists` (409),
 `device_revoked` (403, ponovno izdavanje tokena uređaju opozvanom u
-folderu).
+folderu), `invalid_email` (400), `email_taken` (409),
+`invalid_reset_token` (400, link je iskorišćen, istekao ili zamenjen novijim).
 
 ```sh
 TOKEN=$(curl -s -d '{"username":"bob","password":"…","device_name":"laptop","kind":"client"}' \
@@ -348,6 +354,97 @@ TOKEN=$(curl -s -d '{"username":"bob","password":"…","device_name":"laptop","k
 curl -s -H "Authorization: Bearer $TOKEN" https://shf.example.com/v1/me
 curl -s -H "Authorization: Bearer $TOKEN" -d '{"old":"…","new":"…"}' https://shf.example.com/v1/me/password
 curl -s -H "Authorization: Bearer $TOKEN" "https://shf.example.com/v1/shares/$SHARE/admin/files"
+```
+
+### Zaboravljena lozinka
+
+Nalog sa email adresom sam bira novu lozinku: na Login stranici GUI-ja je
+„Zaboravljena lozinka?“, a shfd šalje mejl sa linkom preko **Brevo**
+transakcionog API-ja (`POST https://api.brevo.com/v3/smtp/email`, header
+`api-key`).
+
+**Email naloga.** `users.email` je opcion, čuva se malim slovima i jedinstven
+je među nalozima koji ga imaju. Postavlja ga admin (`user add --email`,
+`user set-email <username> <adresa>`, `-` briše) ili sam korisnik u „Moj
+nalog“ (`PUT /v1/me/email`, uz trenutnu lozinku; pogrešna lozinka se broji
+kao neuspela prijava). Adresa se ne potvrđuje linkom (van obima). `user
+list` i `user show` je prikazuju.
+
+**Tok.**
+
+1. `POST /v1/auth/forgot {login, lang}`: `login` je username ili email.
+   Odgovor je **uvek `202`** sa istim telom, bez obzira da li nalog postoji,
+   ima li email ili je ugašen. Pre odgovora server za svaki zahtev radi isti
+   posao (jedan upit za nalog, jedno brojanje, jedan red u `auth_log`), a
+   token i mejl pravi tek posle odgovora, u pozadini. Ni vreme odgovora zato
+   ne otkriva nalog.
+2. Mejl (HTML i tekst, srpski ili engleski po `lang`, podrazumevano srpski)
+   kaže kome je namenjen, daje link
+   `SHFD_PUBLIC_URL` + `SHFD_GUI_BASE` + `/#reset?token=…`, rok (30 minuta) i
+   „ako niste vi tražili, ignorišite“. Link se **nikad** ne pravi iz `Host`
+   zaglavlja zahteva.
+3. `POST /v1/auth/reset {token, new_password, lang}`: token je 32 nasumična
+   bajta (base64url), u tabeli `password_resets` je samo njegov SHA-256. Važi
+   **30 minuta**, **jednom**, i samo najnoviji: nov zahtev poništava ranije
+   neiskorišćene tokene naloga. Lozinka ima ista pravila kao svaka
+   (`password.Validate`: 12–256 znakova, ne username); odbijena lozinka ne
+   troši token.
+4. Uspeh: nov Argon2id heš, `must_change` se briše, **sve gui sesije**
+   naloga se odjavljuju (klijentski uređaji, `shf`, ostaju), ostali tokeni
+   naloga se poništavaju, a na email stiže mejl „lozinka je promenjena“ (sa
+   vremenom i adresom). Uspešan reset briše i brojanje neuspelih prijava tog
+   naloga.
+
+**Ograničenja** (iz `auth_log`, kao kod prijave; preživljavaju restart):
+
+| Šta | Granica | Odgovor |
+|---|---|---|
+| zahtevi po nalogu | 3 na sat (username i email se broje zajedno) | i dalje `202`, ali mejl ne ide; red u `auth_log` je `locked` |
+| zahtevi sa jedne adrese | 10 na sat, za bilo koji login | `429 too_many_attempts` sa `Retry-After` (ne zavisi od naloga) |
+| pogrešan token | broji se kao neuspela prijava te adrese (posle 5: 1 s, 2 s, … do 15 min) | `400 invalid_reset_token`, pa `429` |
+
+Ispravan token radi i kad je adresa zaključana zbog neuspelih prijava, da
+bi korisnik koji se zaključao mogao da postavi novu lozinku. Novi ishodi u
+`auth_log`: `reset_requested` (zahtev propušten), `reset_done` (lozinka
+postavljena), `bad_token`; zahtev za link se ne broji kao neuspela prijava.
+Adresa klijenta je ista kao kod prijave (`X-Forwarded-For` samo od
+pouzdanog proxy-ja; shfd-gui je prosleđuje kao proxy).
+
+**Kad mejl ne radi**: `shfd user reset-link <username> [--public-url URL]
+[--gui-base /gui]` ispisuje link (30 min, jednom) bez slanja mejla, a admin
+ga prenosi privatnim kanalom. Raniji linkovi naloga time prestaju da važe.
+Bez `--public-url` (ili `$SHFD_PUBLIC_URL`) ispisuje putanju i token.
+`shfd user passwd` (privremena lozinka) radi i dalje.
+
+#### Podešavanje (Brevo i env varijable)
+
+| Promenljiva / opcija `shfd serve` | Podrazumevano | Značenje |
+|---|---|---|
+| `SHFD_BREVO_KEY_FILE` / `--brevo-key-file` | — | fajl sa Brevo API ključem (prvi red). **Bez njega mejl je isključen.** |
+| `SHFD_MAIL_FROM` / `--mail-from` | `shared-storage <noreply@digitalcube.rs>` | pošiljalac; domen `digitalcube.rs` je autentifikovan u Brevo nalogu |
+| `SHFD_PUBLIC_URL` / `--public-url` | — | javni `https://` URL servera (npr. `https://shared-storage.igor.digitalcube.work`); bez njega mejl je isključen |
+| `SHFD_GUI_BASE` / `--gui-base` | `/gui` | base path shfd-gui-ja pod javnim URL-om (`/` kad je GUI na korenu); isto ime kao u `shfd-gui.service` |
+| `SHFD_BREVO_URL` | Brevo | samo za testove (lažni server); nema opciju |
+
+- Ključ se čita **samo iz fajla**, nikad iz vrednosti env varijable ili
+  argumenta, i ne pojavljuje se u logu, grešci ni odgovoru API-ja (Brevo
+  greška se loguje sa statusom i porukom, ključ izrezan). Fajl:
+  `/etc/shfd/brevo.key`, `root:shfd 0640` ([deploy.md](deploy.md#mejl-brevo)).
+  `shfd serve` upozorava ako ga može čitati svaki korisnik.
+- Kad je mejl isključen, `shfd serve` loguje `mail: disabled (…)` sa
+  razlogom, a `/healthz` vraća `"mail":"disabled"`; forgot i dalje vraća
+  isti `202`, ali ništa ne šalje (ni token ne pravi). Uključen:
+  `mail: enabled` i `"mail":"enabled"`.
+- Provera ključa i pošiljaoca: `shfd mail test <adresa>` (čita iste
+  varijable i opcije) šalje probni mejl i ispisuje `sent a test mail to …`.
+- Neuspelo slanje se loguje kao `mail: not sent` (vrsta mejla, nalog,
+  greška), bez linka i tokena.
+
+```sh
+sudo -u shfd env SHFD_BREVO_KEY_FILE=/etc/shfd/brevo.key shfd mail test igor@example.com
+shfd user set-email marko marko@example.com
+shfd user reset-link marko --public-url https://shared-storage.igor.digitalcube.work
+curl -s -d '{"login":"marko","lang":"sr"}' https://shf.example.com/v1/auth/forgot
 ```
 
 ## Trash

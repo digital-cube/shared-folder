@@ -15,8 +15,11 @@ import (
 //
 //	POST   /v1/auth/login          {username, password, device_name, kind} -> server.LoginResult (no token; attempt limit)
 //	POST   /v1/auth/logout         (device token) revokes that device
+//	POST   /v1/auth/forgot         {login, lang} -> 202 ForgotResponse, always the same (reset.go in server)
+//	POST   /v1/auth/reset          {token, new_password, lang} -> server.ResetResult
 //	GET    /v1/me                  (device token) MeResponse
 //	POST   /v1/me/password         (device token) {old, new}
+//	PUT    /v1/me/email            (device token) {email, current_password} -> {status, user}
 //	DELETE /v1/me/devices/{id}     (device token) revokes one of the account's devices
 //	GET    /v1/users?q=            (device token of a folder admin, or an admin's member token) [{username, display_name}]
 //	POST   /v1/shares/{id}/devices (device token) server.FolderDevice: the device's folder token
@@ -118,6 +121,9 @@ func (a *api) clientIP(r *http.Request) string {
 func registerAccounts(mux *http.ServeMux, a *api) {
 	mux.HandleFunc("POST /v1/auth/login", a.login)
 	mux.Handle("POST /v1/auth/logout", a.session(true, a.logout))
+	mux.HandleFunc("POST /v1/auth/forgot", a.forgot)
+	mux.HandleFunc("POST /v1/auth/reset", a.reset)
+	mux.Handle("PUT /v1/me/email", a.session(false, a.setEmail))
 	mux.Handle("GET /v1/me", a.session(true, a.me))
 	mux.Handle("POST /v1/me/password", a.session(true, a.changePassword))
 	mux.Handle("DELETE /v1/me/devices/{device}", a.session(true, a.revokeDevice))
@@ -158,6 +164,73 @@ func (a *api) login(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, res)
+}
+
+// ForgotResponse is the body of every 202 of POST /v1/auth/forgot.
+type ForgotResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+var forgotAccepted = ForgotResponse{
+	Status:  "accepted",
+	Message: "if the account exists and has an email address, a link to choose a new password was sent to it",
+}
+
+// forgot asks for a reset link. Whether or not the account exists, the
+// answer is 202 with the same body; only too many requests from one
+// address (429) and an empty login (400) differ, and neither depends on
+// the account.
+func (a *api) forgot(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	var req server.ForgotRequest
+	if err := decode(r, &req); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	req.IP = a.clientIP(r)
+	if err := a.srv.Forgot(req); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusAccepted, forgotAccepted)
+}
+
+// reset sets a new password with the token of a reset link.
+func (a *api) reset(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	var req server.ResetRequest
+	if err := decode(r, &req); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	req.IP = a.clientIP(r)
+	res, err := a.srv.ResetWithToken(r.Context(), req)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, res)
+}
+
+// EmailRequest is the body of PUT /v1/me/email; an empty email removes
+// the address.
+type EmailRequest struct {
+	Email           string `json:"email"`
+	CurrentPassword string `json:"current_password"`
+}
+
+func (a *api) setEmail(w http.ResponseWriter, r *http.Request, sess *server.Session) (any, error) {
+	var req EmailRequest
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	if err := a.srv.SetMyEmail(r.Context(), sess, req.Email, req.CurrentPassword, a.clientIP(r)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": "ok", "user": sess.User}, nil
 }
 
 type sessionHandler func(w http.ResponseWriter, r *http.Request, sess *server.Session) (any, error)

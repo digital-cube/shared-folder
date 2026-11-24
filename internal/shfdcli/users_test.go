@@ -53,7 +53,7 @@ func TestUserCommands(t *testing.T) {
 
 	// list and show.
 	code, out, _ = run(t, env, "user", "list")
-	if code != 0 || !regexp.MustCompile(`(?m)^bob\s+Bob Bobić\s+active \(temporary password\)\s+-\s+0$`).MatchString(out) {
+	if code != 0 || !regexp.MustCompile(`(?m)^bob\s+Bob Bobić\s+-\s+active \(temporary password\)\s+-\s+0$`).MatchString(out) {
 		t.Errorf("user list:\n%s", out)
 	}
 	srv, err := server.Open(root, server.Options{})

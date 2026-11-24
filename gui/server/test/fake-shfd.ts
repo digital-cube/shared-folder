@@ -12,8 +12,17 @@ export interface FakeUser {
   username: string;
   display_name: string;
   password: string;
+  email: string;
   must_change: boolean;
   disabled: boolean;
+}
+
+/** A mail the fake shfd "sent": a reset link, or the notice of a reset. */
+export interface FakeMail {
+  to: string;
+  kind: "reset" | "changed";
+  lang: string;
+  token?: string;
 }
 
 /** A signed-in device of an account. */
@@ -57,6 +66,14 @@ export class FakeShfd {
   failLimit = 5;
   /** The device_name of the last sign-in. */
   lastDeviceName = "";
+  /** X-Forwarded-For of the last call made without a token (login, forgot, reset). */
+  lastForwardedFor: string | null = null;
+  /** Mails of a forgotten password, and the live reset tokens (token -> username). */
+  mails: FakeMail[] = [];
+  resetTokens = new Map<string, string>();
+  /** POST /v1/auth/forgot answers 429 after this many requests. */
+  forgotLimit = 10;
+  forgotCount = 0;
   /** The headers of the last content request. */
   lastContentHeaders: Headers | null = null;
   /** The If-None-Match of the last thumbnail request. */
@@ -88,12 +105,13 @@ export class FakeShfd {
   }
 
   /** An account; mustChange makes its password temporary. */
-  user(username: string, password: string, opts: { mustChange?: boolean; displayName?: string } = {}): FakeUser {
+  user(username: string, password: string, opts: { mustChange?: boolean; displayName?: string; email?: string } = {}): FakeUser {
     const u: FakeUser = {
       id: this.users.length + 1,
       username,
       display_name: opts.displayName ?? "",
       password,
+      email: opts.email ?? "",
       must_change: !!opts.mustChange,
       disabled: false,
     };
@@ -164,6 +182,44 @@ export class FakeShfd {
   /** The routes of accounts; undefined when the path is not one of them. */
   private accounts(url: URL, method: string, token: string, init: RequestInit | undefined, json: (s: number, b: unknown) => Response, err: (s: number, c: string) => Response): Response | undefined {
     const body = init?.body ? JSON.parse(String(init.body)) : {};
+    if (["/v1/auth/login", "/v1/auth/forgot", "/v1/auth/reset"].includes(url.pathname)) {
+      this.lastForwardedFor = new Headers(init?.headers).get("x-forwarded-for");
+    }
+    if (url.pathname === "/v1/auth/forgot" && method === "POST") {
+      if (++this.forgotCount > this.forgotLimit) {
+        return new Response(JSON.stringify({ error: { code: "too_many_attempts", message: "too many requests from this address; try again in 1h0m0s" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "3600" },
+        });
+      }
+      const login = String(body.login ?? "").toLowerCase();
+      const u = this.users.find((x) => x.username === login || (x.email && x.email === login));
+      if (u && u.email && !u.disabled) {
+        for (const [t, n] of this.resetTokens) if (n === u.username) this.resetTokens.delete(t);
+        const token = `rst_${u.username}_${this.mails.length + 1}`;
+        this.resetTokens.set(token, u.username);
+        this.mails.push({ to: u.email, kind: "reset", lang: body.lang, token });
+      }
+      return json(202, { status: "accepted", message: "if the account exists and has an email address, a link to choose a new password was sent to it" });
+    }
+    if (url.pathname === "/v1/auth/reset" && method === "POST") {
+      const name = this.resetTokens.get(String(body.token));
+      const u = this.users.find((x) => x.username === name);
+      if (!u) return json(400, { error: { code: "invalid_reset_token", message: "the link is not valid" } });
+      if (String(body.new_password).length < 12) return json(400, { error: { code: "invalid_password", message: "the password must have at least 12 characters" } });
+      this.resetTokens.delete(String(body.token));
+      u.password = body.new_password;
+      u.must_change = false;
+      let n = 0;
+      for (const d of this.devices) {
+        if (d.user === u.username && d.kind === "gui" && !d.revoked_at) {
+          d.revoked_at = "2026-11-24T13:00:00Z";
+          n++;
+        }
+      }
+      if (u.email) this.mails.push({ to: u.email, kind: "changed", lang: body.lang });
+      return json(200, { username: u.username, signed_out: n });
+    }
     if (url.pathname === "/v1/auth/login" && method === "POST") {
       const fails = this.failures.get(body.username) ?? 0;
       if (fails >= this.failLimit) {
@@ -192,7 +248,7 @@ export class FakeShfd {
       const { password: _p, disabled: _d, ...user } = u;
       return json(200, { token: d.token, user, must_change: u.must_change });
     }
-    const isAccount = ["/v1/auth/logout", "/v1/me", "/v1/me/password", "/v1/users"].includes(url.pathname) || url.pathname.startsWith("/v1/me/devices/");
+    const isAccount = ["/v1/auth/logout", "/v1/me", "/v1/me/password", "/v1/me/email", "/v1/users"].includes(url.pathname) || url.pathname.startsWith("/v1/me/devices/");
     if (!isAccount) return undefined;
     const d = this.deviceOf(token);
     if (!d) return err(401, "unauthorized");
@@ -218,6 +274,15 @@ export class FakeShfd {
       return json(200, { status: "ok" });
     }
     if (u.must_change) return err(403, "password_change_required");
+    if (url.pathname === "/v1/me/email" && method === "PUT") {
+      if (body.current_password !== u.password) return err(403, "wrong_password");
+      const email = String(body.email ?? "").trim().toLowerCase();
+      if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err(400, "invalid_email");
+      if (email && this.users.some((x) => x !== u && x.email === email)) return err(409, "email_taken");
+      u.email = email;
+      const { password: _p, disabled: _d, ...user } = u;
+      return json(200, { status: "ok", user });
+    }
     const dm = /^\/v1\/me\/devices\/(\d+)$/.exec(url.pathname);
     if (dm && method === "DELETE") {
       const t = this.devices.find((x) => x.id === Number(dm[1]) && x.user === u.username && !x.revoked_at);

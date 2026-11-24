@@ -41,12 +41,13 @@ func TestHealthOK(t *testing.T) {
 		if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
 			t.Errorf("GET %s: Cache-Control %q", p, cc)
 		}
-		// Exactly these keys: nothing about folders, members or paths.
+		// Exactly these keys: nothing about folders, members or paths (mail
+		// says only whether forgotten-password mails go out).
 		var m map[string]any
 		if err := json.Unmarshal(b, &m); err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]any{"service": "shfd", "version": version.Version, "ok": true}
+		want := map[string]any{"service": "shfd", "version": version.Version, "ok": true, "mail": "disabled"}
 		if len(m) != len(want) {
 			t.Errorf("GET %s: body %s, want only %v", p, b, want)
 		}
@@ -90,7 +91,7 @@ func TestHealthRegistryUnavailable(t *testing.T) {
 		if err := json.Unmarshal(b, &h); err != nil {
 			t.Fatal(err)
 		}
-		want := httpapi.Health{Service: "shfd", Version: version.Version, OK: false, Error: "registry unavailable"}
+		want := httpapi.Health{Service: "shfd", Version: version.Version, OK: false, Error: "registry unavailable", Mail: "disabled"}
 		if h != want {
 			t.Errorf("GET %s: %+v, want %+v", p, h, want)
 		}
@@ -154,7 +155,7 @@ func TestHealthShareWriterStuck(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"service": "shfd", "version": version.Version, "ok": false, "error": "share " + e.share + " stuck"}
+	want := map[string]any{"service": "shfd", "version": version.Version, "ok": false, "error": "share " + e.share + " stuck", "mail": "disabled"}
 	if len(m) != len(want) {
 		t.Errorf("body %s, want only %v", b, want)
 	}
