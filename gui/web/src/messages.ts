@@ -5,6 +5,10 @@ import type { Messages } from "@jsudc/react";
 const sr = (s: string) => ({ sr: s, en: s });
 
 export const messages: Messages = {
+  APP: {
+    TAB_TABLE: sr("Tabela"),
+    TAB_THUMBS: sr("Mreža"),
+  },
   COLLECTIONS: {
     MEMBERS: sr("Članovi"),
     LOGS: sr("Logovi"),

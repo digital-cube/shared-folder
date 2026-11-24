@@ -19,6 +19,7 @@ import {
   type SourceContext,
   type SourceListRequest,
 } from "@jsudc/server";
+import { knownExtensions } from "../../shared/filekinds.js";
 import type { LogFeed } from "./logs.js";
 import { short, toRow } from "./logs.js";
 import type { ShfdClient } from "./shfd.js";
@@ -169,6 +170,7 @@ class FilesSource extends ArraySource {
       hash: f.hash ? f.hash.slice(0, 12) : "",
       hash_full: f.hash,
       seq: f.seq,
+      thumb: f.kind === "file" ? (f.thumb ?? "") : "",
     }));
     const head: Row[] = [];
     if (dir) {
@@ -186,6 +188,7 @@ class FilesSource extends ArraySource {
         hash: "",
         hash_full: "",
         seq: null,
+        thumb: "",
       } as Row);
     }
     return { rows: rows as Row[], filter: rest, head };
@@ -331,24 +334,27 @@ const filesSchema = SchemaDocSchema.parse({
     hash: { type: "string" },
     hash_full: { type: "string" },
     seq: { type: "integer" },
+    thumb: { type: "string" },
   },
 });
 
 const filesView = ViewConfigSchema.parse({
   default_renderer: "table",
-  available_renderers: ["table"],
+  available_renderers: ["table", "thumbs"],
   page_size_default: 200,
   columns_mode: "listed",
   folder_options: { preview: false },
   columns: [
-    { field: "name", width: "fill", min_width: 260 },
+    { field: "name", render: "filename", width: "fill", min_width: 260 },
     { field: "size", render: "bytes", align: "right", width: 110 },
     { field: "mtime", render: "datetime", width: 170 },
     { field: "updated_by", width: 130 },
     { field: "hash", render: "hash", width: 140 },
   ],
   search: { fields: ["name"] },
-  filters: [{ field: "ext", kind: "select", label: "Ekstenzija" }],
+  // A select chip offers only the options listed here (jsudc reads no
+  // distinct values): the extensions the type icons know.
+  filters: [{ field: "ext", kind: "select", label: "Ekstenzija", options: knownExtensions() }],
 });
 
 const trashSchema = SchemaDocSchema.parse({

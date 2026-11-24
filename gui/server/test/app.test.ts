@@ -151,3 +151,95 @@ describe("change stream", () => {
     ctl.abort();
   });
 });
+
+describe("thumbnails", () => {
+  const H = "cd".repeat(32);
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+
+  it("files rows carry the thumbnail state; folders and .. have none", async () => {
+    const { fake, app } = await setup();
+    fake.files[""].push(
+      { path: "slika.jpg", name: "slika.jpg", kind: "file", size: 9, mtime: "2026-11-24T10:00:00Z", hash: H, seq: 4, updated_by: "ana", thumb: "ready" },
+      { path: "nova.pdf", name: "nova.pdf", kind: "file", size: 9, mtime: "2026-11-24T10:00:00Z", hash: "ef".repeat(32), seq: 5, updated_by: "ana", thumb: "pending" },
+      { path: "stara.png", name: "stara.png", kind: "file", size: 9, mtime: "2026-11-24T10:00:00Z", hash: "01".repeat(32), seq: 6, updated_by: "ana" },
+    );
+    const { cookie } = await login(app, fake.members[0].token);
+    const root = await udc(app, cookie, "list", { collection: "files" });
+    const by = Object.fromEntries(root.payload.rows.map((r: any) => [r.name, r]));
+    expect(by["slika.jpg"]).toMatchObject({ thumb: "ready", hash_full: H });
+    expect(by["nova.pdf"].thumb).toBe("pending");
+    expect(by["stara.png"].thumb).toBe(""); // an older shfd sends no thumb
+    expect(by["docs"].thumb).toBe("");
+    const sub = await udc(app, cookie, "list", { collection: "files", filter: { field: "path", op: "eq", value: "docs" } });
+    expect(sub.payload.rows[0]).toMatchObject({ name: "..", thumb: "" });
+  });
+
+  it("the files view offers the Grid and extensions in its chip", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const d = await udc(app, cookie, "describe", { collection: "files" });
+    expect(d.payload.view.available_renderers).toEqual(["table", "thumbs"]);
+    const ext = d.payload.view.filters.find((f: any) => f.field === "ext");
+    expect(ext.options).toEqual(expect.arrayContaining(["jpg", "pdf", "docx", "xlsx", "zip", "txt"]));
+    const members = await udc(app, cookie, "describe", { collection: "members" });
+    expect(members.payload.view.available_renderers).toEqual(["table"]);
+  });
+
+  it("needs a session", async () => {
+    const { fake, app } = await setup();
+    fake.thumbs.set(H, JPEG);
+    const res = await app.inject({ method: "GET", url: `/gui/api/thumb/${H}?size=s` });
+    expect(res.statusCode).toBe(401);
+    expect(fake.calls.some((c) => c.includes("/thumbs/"))).toBe(false);
+  });
+
+  it("refuses a bad hash or size without asking shfd", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    for (const url of [
+      `/gui/api/thumb/${H.toUpperCase()}?size=s`,
+      `/gui/api/thumb/${H.slice(1)}?size=s`,
+      `/gui/api/thumb/..%2F${H.slice(3)}?size=s`,
+      `/gui/api/thumb/${H}?size=xl`,
+      `/gui/api/thumb/${H}?size=`,
+    ]) {
+      const res = await app.inject({ method: "GET", url, headers: { cookie } });
+      expect(res.statusCode, url).toBe(400);
+    }
+    expect(fake.calls.some((c) => c.includes("/thumbs/"))).toBe(false);
+  });
+
+  it("sends the bytes with shfd's headers, a 304 for a known ETag and a 404 for none", async () => {
+    const { fake, app } = await setup();
+    fake.thumbs.set(H, JPEG);
+    const { cookie } = await login(app, fake.members[0].token);
+    const ok = await app.inject({ method: "GET", url: `/gui/api/thumb/${H}?size=l`, headers: { cookie } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.headers["content-type"]).toBe("image/jpeg");
+    expect(ok.headers["etag"]).toBe(`"${H}.l"`);
+    expect(ok.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+    expect(new Uint8Array(ok.rawPayload)).toEqual(JPEG);
+    expect(fake.calls).toContain(`GET /v1/shares/${fake.share}/admin/thumbs/${H}?size=l`);
+
+    const again = await app.inject({ method: "GET", url: `/gui/api/thumb/${H}?size=l`, headers: { cookie, "if-none-match": `"${H}.l"` } });
+    expect(fake.lastIfNoneMatch).toBe(`"${H}.l"`);
+    expect(again.statusCode).toBe(304);
+    expect(again.headers["etag"]).toBe(`"${H}.l"`);
+    expect(again.rawPayload.length).toBe(0);
+
+    const none = await app.inject({ method: "GET", url: `/gui/api/thumb/${"ab".repeat(32)}?size=m`, headers: { cookie } });
+    expect(none.statusCode).toBe(404);
+    expect(none.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("a 401 of shfd ends the session", async () => {
+    const { fake, app } = await setup();
+    fake.thumbs.set(H, JPEG);
+    const { cookie } = await login(app, fake.members[0].token);
+    fake.members[0].status = "revoked";
+    const res = await app.inject({ method: "GET", url: `/gui/api/thumb/${H}?size=m`, headers: { cookie } });
+    expect(res.statusCode).toBe(401);
+    const s = await app.inject({ method: "GET", url: "/gui/api/session", headers: { cookie } });
+    expect(s.statusCode).toBe(401);
+  });
+});

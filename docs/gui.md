@@ -144,6 +144,36 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
   `examples.jsudc.dev/udc/files` postoji; izvor primera je na npm-u ili u
   repou jsudc). Ako ima, koristi se on sa našim izvorom podataka. Ako nema,
   koristi se Table renderer sa putanjom foldera iznad tabele.
+- **Sličice i ikonice.** Uz ime svakog fajla stoji sličica (slike i
+  PDF-ovi, naslovna strana; pravi ih `shfd thumbs`, [admin.md](admin.md#thumbnails))
+  ili ikonica tipa: list papira sa presavijenim uglom i obojenom pločicom,
+  **W** plavo (Word: doc, docx, odt, rtf), **X** zeleno (Excel: xls, xlsx,
+  ods, csv), **P** narandžasto (PowerPoint: ppt, pptx, odp), **PDF** crveno,
+  `</>` za kod, **ZIP** za arhive, znak slike, zvuka i videa, linije za
+  tekst; ostalo je prazan list, folder je plavi folder. Naš crtež, ne logo
+  proizvođača. Dok sličica nije napravljena stoji ikonica tipa; kad stigne,
+  sama je zameni, bez osvežavanja strane.
+- **Tabela i Mreža.** Dva jezička iznad trake alata. U Tabeli je sličica
+  28 px pored imena (redovi iste visine kao ranije). Mreža su pločice:
+  kvadrat sa sličicom ili ikonicom, ispod ime (do dva reda, celo ime na
+  prelaz mišem), veličina i datum; folderi su prvi, `..` je pločica. Klik
+  ili Enter na folder ulazi u njega (fokus prelazi na prvu pločicu, pa se
+  kroz stablo ide samo tastaturom). Pretraga, filter po ekstenziji, putanja
+  foldera i straničenje su isti u oba prikaza.
+- **Klizač „Veličina sličica“** (samo u Mreži, desno u traci alata): 64–320
+  px, podrazumevano 144, dupli klik vraća 144. Menja veličinu odmah, bez
+  novog učitavanja liste; prema veličini (i gustini ekrana) bira se sličica
+  `s` (96 px), `m` (256) ili `l` (512). Ispod 112 px pločica ima samo ime.
+  Veličina i poslednji jezičak (Tabela/Mreža) pamte se u browseru
+  (`localStorage`).
+- **Uživo.** Dok trenutni prikaz ima fajl čija sličica „čeka“ (`pending`),
+  lista se ponovo učitava na 3 s, najduže 2 min za isti skup takvih fajlova
+  (nov folder, pretraga ili promena skupa počinje iznova); bez njih nema
+  dodatnih zahteva. Pauza „uživo“ zaustavlja i ovo. Fajl koji stigne dok
+  je strana otvorena dolazi preko change feeda, sa ikonicom, pa mu sličica
+  stiže sama.
+- Filter **Ekstenzija** nudi ekstenzije iz tabele tipova (jpg, pdf, docx,
+  xlsx, zip, txt, …); jsudc select čip ne čita vrednosti iz podataka.
 - Samo čitanje: nema upload-a, brisanja ni preuzimanja sadržaja u v1.
 - Kartica **Trash**: lista iz postojećeg `GET …/admin/trash` (putanja, razlog,
   ko, kad, veličina) i akcija **Vrati** (`POST …/trash/{id}/restore`), uz
@@ -201,6 +231,8 @@ Strana bez prijave, dve kartice:
 3. Promena fajla na klijentu se pojavi u Logovima za ≤ 3 s bez osvežavanja
    strane, a u Fajlovima posle toga.
 4. Fajlovi: ulazak u podfolder, povratak preko putanje foldera, pretraga.
+   Isto u Mreži; sličice slika i PDF-ova, ikonice ostalih tipova; klizač
+   menja veličinu odmah.
    Trash: vraćanje unosa.
 5. `go test ./...` prolazi uz nove testove admin API-ja. Za `gui/` važe
    `npm run build` i `npm test` (bar testovi parsiranja log reda i sesije).
@@ -225,9 +257,15 @@ gui/
     sessions.ts           sesije u memoriji (cookie shfd_gui_sid, 12 h neaktivnosti)
     shfd.ts               klijent shfd HTTP API-ja + srpske rečenice za kodove grešaka
     collections.ts        jsudc kolekcije members, logs, files, trash (ArraySource + share_id scope)
+  shared/filekinds.ts     tabela ekstenzija po tipu (ikonice u web-u, opcije čipa Ekstenzija na serveru)
     logs.ts               bafer service.log-a po folderu, poller (1 s), redovi tabele, pločice
-  server/test/            vitest: sesije, parsiranje/mapiranje log reda, poller, login i akcije (lažni shfd)
+  server/test/            vitest: sesije, parsiranje/mapiranje log reda, poller, login i akcije, ruta sličica (lažni shfd)
   web/                    React + @jsudc/react, Vite; ekrani Prijava, Članovi, Logovi, Fajlovi, Instalacija
+    src/filekind.ts       fileKind(name, kind), pickVariant(cssPx, dpr)
+    src/FileIcon.tsx      ikonica tipa (SVG), src/Thumb.tsx sličica preko ikonice
+    src/ThumbGrid.tsx     renderer „thumbs“ (Mreža), klizač, tabela sa osvežavanjem
+    src/thumbsize.ts      veličina pločica i poslednji jezičak (localStorage)
+    src/liveThumbs.ts     ponovno učitavanje dok ima pending sličica
   deploy/                 shfd-gui.service, nginx-gui.conf
   scripts/build-server.mjs  esbuild: ceo server u jedan dist/server.js (bez node_modules na serveru)
 ```
@@ -259,7 +297,33 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
   renderera kad view ima `folder_options`, isto kao primer
   `examples.jsudc.dev/udc/files`. Izvor `files` iz filtera vadi
   `path eq <folder>` i zove `admin/files?dir=`. Pretraga po imenu, filter po
-  ekstenziji. Bez preview-a i preuzimanja (v1).
+  ekstenziji. Bez preview-a i preuzimanja (v1). Red ima i `thumb`
+  (`ready`/`pending`/`failed`/`""`, iz `admin/files`) i `hash_full`, ključ
+  sličice.
+- **Sličice: `GET /gui/api/thumb/{hash}?size=s|m|l`.** Ruta shfd-gui-ja (nije
+  pod `/gui/udc`; nginx je pokriva kroz `location /gui/`). Traži sesiju
+  (`401`), sama proverava hash (`^[0-9a-f]{64}$`) i veličinu (`400`), pa zove
+  `GET /v1/shares/{id}/admin/thumbs/{hash}?size=` tokenom i folderom sesije.
+  Prosleđuje `200` (telo, `content-type`, `etag`, `cache-control:
+  private, max-age=31536000, immutable`), `304` (šalje dalje `if-none-match`)
+  i `404` (sa `cache-control: no-store`, da browser ne zapamti „nema“);
+  `401` od shfd-a gasi sesije tog tokena, kao kod ostalih poziva, a sve
+  ostalo je `502`. Ključ je hash sadržaja, pa browser jednom učitanu sličicu
+  više ne traži.
+- **Renderer „thumbs“ (Mreža).** Sopstveni `RendererDefinition`
+  (`paging: true`, `editMode: false`, `toolbar`: klizač), registrovan samo za
+  `UdcDataView` Fajlova (`renderers={…}`) zajedno sa tabelom koja osvežava
+  pending sličice; `filesView.available_renderers` je `["table", "thumbs"]`,
+  ostale kolekcije su samo tabela. Crta `props.data` (isti red, pretraga,
+  filter i straničenje kao tabela) i ide kroz foldere preko `props.folder`
+  (`isFolderRow`, `folder.open(path)`). jsudc-ov `cards` ne odgovara: ima tri
+  fiksne veličine iz konfiguracije servera i za red bez slike crta inicijale.
+  Ćelija imena u tabeli je `render: "filename"`; table renderer je i dalje
+  obavija folder linkom (`folder_options.label_field`), pa klik na folder
+  radi kao ranije, a njegova mala ikonica je sakrivena u CSS-u
+  (`.files-view`), jer je zamenjuje naša. Poslednji jezičak se pamti kroz
+  `urlState`: memorijski adapter (`createMemoryUrlStateAdapter`) počinje sa
+  sačuvanim `tab`-om i pri svakom upisu ga čuva.
 - **Logovi uživo.** Za svaki folder sa bar jednom sesijom shfd-gui jednom u
   sekundi zove `admin/log?after=<next_offset>` (tokenom poslednje korišćene
   sesije) i drži poslednjih 5000 redova. Novi redovi → `changes.notify("logs")`

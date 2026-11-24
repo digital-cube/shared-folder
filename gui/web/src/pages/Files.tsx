@@ -1,15 +1,48 @@
-import { UdcDataView, useUdcClient, type BulkActionContext } from "@jsudc/react";
+import {
+  createMemoryUrlStateAdapter,
+  createRendererRegistry,
+  UdcDataView,
+  useUdcClient,
+  type BulkActionContext,
+  type UrlStateAdapter,
+} from "@jsudc/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { restoreTrash } from "../../../shared/actions";
 import { Folder, Trash2, X } from "../icons";
 import { messageOf } from "./Members";
+import { filesTableRenderer, thumbsRenderer } from "../ThumbGrid";
+import { savedFilesTab, saveFilesTab } from "../thumbsize";
+
+// The Files view's own tabs: the table (refreshing while thumbnails are
+// pending) and the Grid. Trash keeps the provider's table.
+const FILES_RENDERERS = createRendererRegistry(filesTableRenderer, thumbsRenderer);
+const FILES_CHROME = { preset: "embedded", tabs: true } as const;
+
+/**
+ * The view's state in memory, as before, opening on the tab used last: the
+ * tab is the view's `tab` parameter, so the store starts with it and every
+ * write of the view keeps it.
+ */
+function filesUrlState(): UrlStateAdapter {
+  const tab = savedFilesTab();
+  const mem = createMemoryUrlStateAdapter(tab ? { tab } : undefined);
+  return {
+    get: () => mem.get(),
+    subscribe: (l) => mem.subscribe(l),
+    set: (next, opts) => {
+      saveFilesTab(next.get("tab") ?? "table");
+      mem.set(next, opts);
+    },
+  };
+}
 
 export function Files() {
   const [tab, setTab] = useState<"files" | "trash">("files");
   const client = useUdcClient();
   const qc = useQueryClient();
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const filesState = useMemo(filesUrlState, []);
 
   const actions = {
     restore: async ({ row }: BulkActionContext) => {
@@ -53,8 +86,14 @@ export function Files() {
         </div>
       ) : null}
       {tab === "files" ? (
-        <div className="view-card">
-          <UdcDataView key="files" collection="files" urlState="memory" chrome="embedded" />
+        <div className="view-card files-view">
+          <UdcDataView
+            key="files"
+            collection="files"
+            urlState={filesState}
+            chrome={FILES_CHROME}
+            renderers={FILES_RENDERERS}
+          />
         </div>
       ) : (
         <>

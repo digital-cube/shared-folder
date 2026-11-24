@@ -1,6 +1,6 @@
 // A fake shfd for tests: just enough of the HTTP API, behind a fetch.
 
-import type { LogLine, MemberInfo } from "../src/shfd.js";
+import type { FileEntry, LogLine, MemberInfo } from "../src/shfd.js";
 
 export interface FakeMember extends MemberInfo {
   token: string;
@@ -11,6 +11,20 @@ export class FakeShfd {
   members: FakeMember[] = [];
   log: LogLine[] = [];
   calls: string[] = [];
+  /** The listing of each folder ("" is the root). */
+  files: Record<string, FileEntry[]> = {
+    "": [
+      { path: "docs", name: "docs", kind: "dir", size: 0, mtime: null, hash: "", seq: 1, updated_by: "ana", thumb: "" },
+      { path: "a.txt", name: "a.txt", kind: "file", size: 3, mtime: "2026-11-24T10:00:00Z", hash: "aa".repeat(32), seq: 2, updated_by: "bob", thumb: "" },
+    ],
+    docs: [
+      { path: "docs/plan.md", name: "plan.md", kind: "file", size: 7, mtime: "2026-11-24T10:00:00Z", hash: "bb".repeat(32), seq: 3, updated_by: "ana", thumb: "" },
+    ],
+  };
+  /** Thumbnails by content hash; every size gets the same bytes. */
+  thumbs = new Map<string, Uint8Array>();
+  /** The If-None-Match of the last thumbnail request. */
+  lastIfNoneMatch: string | null = null;
   private n = 0;
 
   constructor() {
@@ -58,6 +72,12 @@ export class FakeShfd {
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const err = (status: number, code: string) => json(status, { error: { code, message: code } });
     if (url.pathname === "/healthz") return json(200, { service: "shfd", version: "abc1234", ok: true });
+    // As shfd: the hash and the size are checked before the token.
+    const tm = new RegExp(`^/v1/shares/[^/]+/admin/thumbs/([^/]+)$`).exec(url.pathname);
+    if (tm) {
+      const size = url.searchParams.get("size") ?? "m";
+      if (!/^[0-9a-f]{64}$/.test(tm[1]) || !["s", "m", "l"].includes(size)) return err(400, "invalid_request");
+    }
     const me = this.members.find((m) => m.token === token && m.status !== "revoked");
     if (!me) return err(401, "unauthorized");
     if (url.pathname === "/v1/whoami") {
@@ -107,22 +127,19 @@ export class FakeShfd {
     }
     if (rest === "files") {
       const dir = url.searchParams.get("dir") ?? "";
-      if (dir === "") {
-        return json(200, {
-          dir: "",
-          entries: [
-            { path: "docs", name: "docs", kind: "dir", size: 0, mtime: null, hash: "", seq: 1, updated_by: "ana" },
-            { path: "a.txt", name: "a.txt", kind: "file", size: 3, mtime: "2026-11-24T10:00:00Z", hash: "aa".repeat(32), seq: 2, updated_by: "bob" },
-          ],
-        });
-      }
-      if (dir === "docs") {
-        return json(200, {
-          dir: "docs",
-          entries: [{ path: "docs/plan.md", name: "plan.md", kind: "file", size: 7, mtime: "2026-11-24T10:00:00Z", hash: "bb".repeat(32), seq: 3, updated_by: "ana" }],
-        });
-      }
-      return err(404, "not_found");
+      const entries = this.files[dir];
+      if (!entries) return err(404, "not_found");
+      return json(200, { dir, entries });
+    }
+    if (tm) {
+      const size = url.searchParams.get("size") ?? "m";
+      const bytes = this.thumbs.get(tm[1]);
+      if (!bytes) return err(404, "not_found");
+      const etag = `"${tm[1]}.${size}"`;
+      const headers = { etag, "cache-control": "private, max-age=31536000, immutable" };
+      this.lastIfNoneMatch = new Headers(init?.headers).get("if-none-match");
+      if (this.lastIfNoneMatch === etag) return new Response(null, { status: 304, headers });
+      return new Response(bytes, { status: 200, headers: { ...headers, "content-type": "image/jpeg" } });
     }
     if (rest === "trash") return json(200, { entries: [], count: 0, total_size: 0 });
     return err(404, "not_found");

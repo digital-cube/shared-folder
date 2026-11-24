@@ -2,6 +2,7 @@
 
 import { createCellRegistry, type CellProps } from "@jsudc/react";
 import { ago, stamp } from "./format";
+import { Thumb } from "./Thumb";
 
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
@@ -132,6 +133,24 @@ function Hash({ value, row }: CellProps) {
   );
 }
 
+/**
+ * The name column of Files: the thumbnail or the type icon, then the name.
+ * jsudc wraps this column (folder_options.label_field) in its folder link,
+ * so a click on a folder still opens it; its own small icon is hidden in
+ * CSS (.files-view), this one stands in for it.
+ */
+function FileName({ value, row }: CellProps) {
+  const name = str(value);
+  return (
+    <span className="filename">
+      <Thumb row={row} px={28} />
+      <span className="filename-text" title={name}>
+        {name}
+      </span>
+    </span>
+  );
+}
+
 function Reason({ value }: CellProps) {
   return value === "deleted" ? <span className="badge err">obrisan</span> : <span className="badge warn">zamenjen</span>;
 }
@@ -149,4 +168,5 @@ export const cells = createCellRegistry(
   { name: "logpath", component: LogPath },
   { name: "hash", component: Hash },
   { name: "reason", component: Reason },
+  { name: "filename", component: FileName },
 );

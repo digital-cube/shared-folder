@@ -64,6 +64,18 @@ export interface FileEntry {
   hash: string;
   seq: number;
   updated_by: string;
+  /** The thumbnail: "ready", "pending", "failed", or "" (none for this kind). */
+  thumb?: ThumbState;
+}
+
+export type ThumbState = "ready" | "pending" | "failed" | "";
+export type ThumbSize = "s" | "m" | "l";
+
+/** shfd's answer for a thumbnail, as it came: the GUI passes it through. */
+export interface ThumbResponse {
+  status: number;
+  headers: Headers;
+  body: Uint8Array;
 }
 
 export interface DirListing {
@@ -205,6 +217,34 @@ export class ShfdClient {
   }
   restore(token: string, share: string, id: number): Promise<RestoreResult> {
     return this.call("POST", `${this.share(share)}/admin/trash/${id}/restore`, token, {});
+  }
+
+  /**
+   * One thumbnail, not read as JSON: the status (200, 304, 404, …), the
+   * headers and the bytes. A 401 / 403 is a ShfdError, as for every call,
+   * so the caller ends the session the same way.
+   */
+  async thumb(token: string, share: string, hash: string, size: ThumbSize, ifNoneMatch?: string): Promise<ThumbResponse> {
+    const headers: Record<string, string> = { accept: "image/jpeg", authorization: `Bearer ${token}` };
+    if (ifNoneMatch) headers["if-none-match"] = ifNoneMatch;
+    const url = `${this.baseUrl.replace(/\/$/, "")}${this.share(share)}/admin/thumbs/${encodeURIComponent(hash)}?size=${size}`;
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, { method: "GET", headers, signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch (err) {
+      throw new ShfdError(502, "unreachable", `shfd is not reachable: ${(err as Error).message}`);
+    }
+    const body = new Uint8Array(await res.arrayBuffer());
+    if (res.status === 401 || res.status === 403) {
+      let e: { code?: string; message?: string } | undefined;
+      try {
+        e = JSON.parse(new TextDecoder().decode(body))?.error;
+      } catch {
+        e = undefined;
+      }
+      throw new ShfdError(res.status, e?.code ?? (res.status === 401 ? "unauthorized" : "forbidden"), e?.message ?? `shfd answered ${res.status}`);
+    }
+    return { status: res.status, headers: res.headers, body };
   }
 }
 

@@ -19,7 +19,7 @@ import { buildRegistry, type Ctx } from "./collections.js";
 import { toUdcError } from "./errors.js";
 import { FILE_OPS, LogFeed, summarize } from "./logs.js";
 import { COOKIE, readCookie, sessionCookie, SessionStore } from "./sessions.js";
-import { errorMessage, ShfdClient, ShfdError, type LogLine } from "./shfd.js";
+import { errorMessage, ShfdClient, ShfdError, type LogLine, type ThumbSize } from "./shfd.js";
 
 export interface AppOptions {
   shfdUrl: string;
@@ -34,6 +34,9 @@ export interface AppOptions {
 
 export const LOGIN_INVALID = "Token nije ispravan ili je opozvan.";
 export const LOGIN_NOT_ADMIN = "Samo admin foldera može da koristi GUI.";
+
+const THUMB_HASH = /^[0-9a-f]{64}$/;
+const THUMB_SIZES = new Set(["s", "m", "l"]);
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -224,6 +227,53 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     const s = sessionOf(req);
     if (!s) return reply.code(401).send({ error: "not signed in" });
     return publicSession(s);
+  });
+
+  // ---- thumbnails --------------------------------------------------------
+
+  // One thumbnail of the signed-in folder, from shfd with the session's
+  // token: the bytes and the caching headers as shfd sent them, so the
+  // browser keeps each one for good (the key is the content hash) and asks
+  // again with If-None-Match at most.
+  app.get(`${base}/api/thumb/:hash`, async (req, reply) => {
+    const s = sessionOf(req);
+    if (!s) return reply.code(401).send({ error: "not signed in" });
+    const hash = (req.params as { hash: string }).hash;
+    const size = String((req.query as { size?: unknown }).size ?? "m");
+    if (!THUMB_HASH.test(hash)) return reply.code(400).send({ error: "invalid hash" });
+    if (!THUMB_SIZES.has(size)) return reply.code(400).send({ error: "size must be s, m or l" });
+    const inm = req.headers["if-none-match"];
+    let r;
+    try {
+      r = await shfd.thumb(s.token, s.shareId, hash, size as ThumbSize, typeof inm === "string" ? inm : undefined);
+    } catch (err) {
+      if (err instanceof ShfdError && err.status === 401) {
+        sessions.dropToken(s.token);
+        return reply.code(401).send({ error: "not signed in" });
+      }
+      if (err instanceof ShfdError && err.status === 403) {
+        sessions.delete(s.id);
+        return reply.code(403).send({ error: LOGIN_NOT_ADMIN });
+      }
+      req.log.warn({ err: (err as Error).message }, "thumbnail failed");
+      return reply.code(502).send({ error: errorMessage("unreachable") });
+    }
+    if (r.status !== 200 && r.status !== 304 && r.status !== 404) {
+      return reply.code(502).send({ error: `shfd answered ${r.status}` });
+    }
+    reply.code(r.status);
+    for (const h of ["etag", "cache-control"]) {
+      const v = r.headers.get(h);
+      if (v) reply.header(h, v);
+    }
+    if (r.status === 404) {
+      reply.header("cache-control", "no-store");
+      return reply.send({ error: "no thumbnail" });
+    }
+    if (r.status === 304) return reply.send();
+    reply.header("content-type", r.headers.get("content-type") ?? "image/jpeg");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send(Buffer.from(r.body));
   });
 
   // ---- the web app -------------------------------------------------------
