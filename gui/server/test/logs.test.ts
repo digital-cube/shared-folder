@@ -46,8 +46,11 @@ describe("log rows", () => {
   });
 
   it("a sync row shows its numbers; a failed one is an error", () => {
-    const r = toRow(line({ type: "sync", op: "sync", outcome: "ok", path: "", detail: "from=0 to=3 sent=3" }));
-    expect(r).toMatchObject({ kind: "sync", op: "sync", path: "from=0 to=3 sent=3", error: false });
+    const r = toRow(line({ type: "sync", op: "sync", outcome: "ok", path: "", detail: "from=5 to=7 sent=2 received=0 conflicts=0 took=349ms" }));
+    expect(r).toMatchObject({ kind: "sync", op: "sync", path: "seq 5→7 · ↑2 ↓0 · 349ms", error: false });
+    expect(toRow(line({ type: "sync", detail: 'from=1 to=1 sent=0 received=0 conflicts=1 took=5ms error="key refused"' })).path).toBe(
+      "seq 1→1 · ↑0 ↓0 · konflikti 1 · 5ms · greška: key refused",
+    );
     expect(toRow(line({ type: "sync", op: "sync", outcome: "failed", detail: "error=x" })).error).toBe(true);
   });
 

@@ -307,12 +307,12 @@ const logsView = ViewConfigSchema.parse({
   columns_mode: "listed",
   default_sort: [{ field: "pos", dir: "desc" }],
   columns: [
-    { field: "ts", render: "logtime", width: 170, sortable: false },
-    { field: "kind", render: "logkind", width: 110, sortable: false },
+    { field: "ts", render: "logtime", width: 160, sortable: false },
+    { field: "kind", render: "logkind", width: 100, sortable: false },
     { field: "member", width: 120, sortable: false },
-    { field: "op", render: "op", width: 130, sortable: false },
-    { field: "path", render: "logpath", width: "fill", min_width: 260, sortable: false },
-    { field: "seq", align: "right", width: 80, sortable: false },
+    { field: "op", render: "op", width: 110, sortable: false },
+    { field: "path", render: "logpath", width: "fill", min_width: 200, sortable: false },
+    { field: "seq", align: "right", width: 64, sortable: false },
   ],
   search: { fields: ["path", "member", "op"] },
 });

@@ -47,7 +47,7 @@ export function kindOf(l: LogLine): LogKind {
 /** One row of the logs collection. */
 export function toRow(l: LogLine): LogRow {
   let path = l.path ?? "";
-  if (l.type === "sync") path = l.detail ?? "";
+  if (l.type === "sync") path = syncSummary(l.detail ?? "");
   if (l.type === "event" && l.old_path) path = `${l.old_path} → ${l.path}`;
   if (l.type === "key-replaced") {
     const m = /old=(\S*) new=(\S*)/.exec(l.detail ?? "");
@@ -67,6 +67,17 @@ export function toRow(l: LogLine): LogRow {
     error: (l.type === "transfer" || l.type === "sync") && outcome !== "" && outcome !== "ok",
     raw: l.raw,
   };
+}
+
+/** "seq 5→7 · ↑2 ↓0 · 349ms" from the detail of a sync line. */
+export function syncSummary(detail: string): string {
+  const kv: Record<string, string> = {};
+  for (const m of detail.matchAll(/(\w+)=("(?:[^"\\]|\\.)*"|\S+)/g)) kv[m[1]] = m[2].replace(/^"|"$/g, "");
+  const parts = [`seq ${kv.from ?? "?"}→${kv.to ?? "?"}`, `↑${kv.sent ?? 0} ↓${kv.received ?? 0}`];
+  if (kv.conflicts && kv.conflicts !== "0") parts.push(`konflikti ${kv.conflicts}`);
+  if (kv.took) parts.push(kv.took);
+  if (kv.error) parts.push(`greška: ${kv.error}`);
+  return parts.join(" · ");
 }
 
 /** A fingerprint cut for a table cell: "SHA256:Yp7c…02kd". */

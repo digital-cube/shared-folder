@@ -115,7 +115,7 @@ function LogPath({ value, row }: CellProps) {
   const detail = (row.kind === "odbijeno" && row.op !== "sync") || row.kind === "ostalo" ? str(row.detail) : "";
   const full = detail ? `${v} · ${detail}` : v;
   return (
-    <span className="mono" style={{ fontSize: 12.5 }} title={str(row.raw)}>
+    <span className="mono" style={{ fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }} title={str(row.raw)}>
       {full}
     </span>
   );
