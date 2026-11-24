@@ -530,6 +530,10 @@ func TestIntegrationHostKeyAndRevoke(t *testing.T) {
 	os.WriteFile(tr.KnownHosts(), kh, 0o600)
 
 	// Revoking ana removes her line: the key is refused by sshd.
+	// The folder keeps an admin: its last one cannot be revoked.
+	if _, err := w.sh.AddMember("bos", true); err != nil {
+		t.Fatal(err)
+	}
 	if err := w.sh.RevokeMember("ana"); err != nil {
 		t.Fatal(err)
 	}
@@ -641,6 +645,10 @@ func TestIntegrationSharedConnection(t *testing.T) {
 	// Revoked while the connection is open: the next transfer over it is
 	// refused (rsync-gate checks the member on every session), and the
 	// client stops the connection.
+	// The folder keeps an admin: its last one cannot be revoked.
+	if _, err := w.sh.AddMember("bos", true); err != nil {
+		t.Fatal(err)
+	}
 	if err := w.sh.RevokeMember("ana"); err != nil {
 		t.Fatal(err)
 	}

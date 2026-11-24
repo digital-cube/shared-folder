@@ -266,14 +266,37 @@ func (s *Share) ResetToken(username string) (string, error) {
 // revoking twice is not an error. rsync-gate refuses a revoked member even
 // while the line is still there, so a failure to rewrite authorized_keys
 // (returned after the revocation is stored) does not keep access open.
+// Revoking the folder's last active admin is refused (CodeLastAdmin), as
+// in SetRole: a folder must always have one.
 func (s *Share) RevokeMember(username string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var id int64
-	err := s.db.QueryRow(`UPDATE members SET revoked_at = coalesce(revoked_at, ?) WHERE username = ? RETURNING id`,
-		fmtTime(s.now()), username).Scan(&id)
+	var role string
+	var revoked sql.NullString
+	err = tx.QueryRow(`SELECT id, role, revoked_at FROM members WHERE username = ?`, username).Scan(&id, &role, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errf(CodeUnknownMember, "no member %q", username)
 	}
 	if err != nil {
+		return err
+	}
+	if !revoked.Valid && role == RoleAdmin {
+		var others int
+		if err := tx.QueryRow(`SELECT count(*) FROM members WHERE role = 'admin' AND revoked_at IS NULL AND id != ?`, id).Scan(&others); err != nil {
+			return err
+		}
+		if others == 0 {
+			return errf(CodeLastAdmin, "%s is the last active admin of the folder; make another member an admin first", username)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE members SET revoked_at = coalesce(revoked_at, ?) WHERE id = ?`, fmtTime(s.now()), id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	s.revokeWatchers(id)

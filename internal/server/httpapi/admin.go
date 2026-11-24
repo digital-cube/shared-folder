@@ -18,6 +18,17 @@ import (
 //	POST /v1/shares/{id}/admin/trash/purge                server.PurgeRequest
 //	POST /v1/shares/{id}/admin/verify                     {"repair": bool}
 //	GET  /v1/shares/{id}/admin/stats
+//	GET  /v1/shares/{id}/admin/members
+//	POST /v1/shares/{id}/admin/members                    AddMemberRequest
+//	POST /v1/shares/{id}/admin/members/{username}/revoke
+//	POST /v1/shares/{id}/admin/members/{username}/role    SetRoleRequest
+//	POST /v1/shares/{id}/admin/members/{username}/reset-token
+//	GET  /v1/shares/{id}/admin/log?after=&limit=
+//	GET  /v1/shares/{id}/admin/files?dir=
+//
+// The member routes change members with the same functions as shfd
+// member add/revoke/set-role/reset-token. A token appears only in the
+// answer to add and reset-token; it is never logged.
 //
 // The same routes are served without a token on shfd's local admin socket
 // (NewLocal), which is how the shfd commands reach a running server.
@@ -42,6 +53,13 @@ func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler) {
 	mux.Handle("POST /v1/shares/{id}/admin/trash/{trash}/restore", wrap(trashRestore))
 	mux.Handle("POST /v1/shares/{id}/admin/verify", wrap(verify))
 	mux.Handle("GET /v1/shares/{id}/admin/stats", wrap(stats))
+	mux.Handle("GET /v1/shares/{id}/admin/members", wrap(memberList))
+	mux.Handle("POST /v1/shares/{id}/admin/members", wrap(memberAdd))
+	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/revoke", wrap(memberRevoke))
+	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/role", wrap(memberRole))
+	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/reset-token", wrap(memberResetToken))
+	mux.Handle("GET /v1/shares/{id}/admin/log", wrap(logRead))
+	mux.Handle("GET /v1/shares/{id}/admin/files", wrap(filesList))
 }
 
 // admin is auth plus the admin role.
@@ -165,4 +183,114 @@ func (a *api) local(h handler) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
+}
+
+// AddMemberRequest is the body of POST /admin/members.
+type AddMemberRequest struct {
+	Username string `json:"username"`
+	Admin    bool   `json:"admin"`
+}
+
+// TokenResponse answers add and reset-token: the member as it is now and
+// its new token, which is shown only this once (only its hash is stored).
+type TokenResponse struct {
+	Member      *server.MemberInfo `json:"member"`
+	Token       string             `json:"token"`
+	Reactivated bool               `json:"reactivated,omitempty"`
+}
+
+// SetRoleRequest is the body of POST /admin/members/{username}/role.
+type SetRoleRequest struct {
+	Role string `json:"role"`
+}
+
+// MemberResponse answers revoke and role: the member as it is now.
+type MemberResponse struct {
+	Member  *server.MemberInfo `json:"member"`
+	OldRole string             `json:"old_role,omitempty"`
+}
+
+func memberList(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	return sh.MemberInfos()
+}
+
+func memberAdd(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	var req AddMemberRequest
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	token, reactivated, err := sh.AddOrReactivateMember(strings.TrimSpace(req.Username), req.Admin)
+	if err != nil {
+		return nil, err
+	}
+	mi, err := sh.MemberInfoByName(strings.TrimSpace(req.Username))
+	if err != nil {
+		return nil, err
+	}
+	return TokenResponse{Member: mi, Token: token, Reactivated: reactivated}, nil
+}
+
+func memberRevoke(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	name := r.PathValue("username")
+	if err := sh.RevokeMember(name); err != nil {
+		return nil, err
+	}
+	mi, err := sh.MemberInfoByName(name)
+	if err != nil {
+		return nil, err
+	}
+	return MemberResponse{Member: mi}, nil
+}
+
+func memberRole(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	name := r.PathValue("username")
+	var req SetRoleRequest
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	old, err := sh.SetRole(name, req.Role)
+	if err != nil {
+		return nil, err
+	}
+	mi, err := sh.MemberInfoByName(name)
+	if err != nil {
+		return nil, err
+	}
+	return MemberResponse{Member: mi, OldRole: old}, nil
+}
+
+func memberResetToken(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	name := r.PathValue("username")
+	token, err := sh.ResetToken(name)
+	if err != nil {
+		return nil, err
+	}
+	mi, err := sh.MemberInfoByName(name)
+	if err != nil {
+		return nil, err
+	}
+	return TokenResponse{Member: mi, Token: token}, nil
+}
+
+// logRead reads service.log: from the byte offset after= (as returned in
+// next_offset), or, without it, its last limit lines.
+func logRead(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	q := r.URL.Query()
+	after := int64(-1)
+	if v := q.Get("after"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, &server.Error{Code: server.CodeInvalidRequest, Message: "after must be a non-negative byte offset"}
+		}
+		after = n
+	}
+	limit, err := intParam(q.Get("limit"), server.DefaultLogLimit)
+	if err != nil || limit < 1 {
+		return nil, &server.Error{Code: server.CodeInvalidRequest, Message: "limit must be a positive integer"}
+	}
+	return sh.ReadLog(after, int(min(limit, server.MaxLogLimit)))
+}
+
+func filesList(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	return sh.ListDir(r.URL.Query().Get("dir"))
 }

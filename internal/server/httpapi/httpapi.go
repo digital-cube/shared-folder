@@ -4,6 +4,7 @@
 // in the URL.
 //
 //	GET  /healthz                      (and GET /; no token, see health)
+//	GET  /v1/whoami                    (the folder and member of the token)
 //	GET  /v1/shares/{id}/changes?since=N&limit=M
 //	POST /v1/shares/{id}/uploads
 //	POST /v1/shares/{id}/uploads/{upload_id}/commit
@@ -100,6 +101,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	mux.Handle("POST /v1/shares/{id}/sync-report", a.auth(a.syncReport))
 	mux.Handle("PUT /v1/shares/{id}/ssh-key", a.auth(a.setSSHKey))
 	mux.HandleFunc("GET /v1/shares/{id}/ws", a.ws)
+	mux.HandleFunc("GET /v1/whoami", a.whoami)
 	registerAdmin(mux, a.admin)
 	// Without a method in the pattern: the catch-all "/" below matches
 	// every method, so the mux would answer 404 instead of 405.
@@ -152,6 +154,29 @@ func (a *api) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// Whoami is the body of GET /v1/whoami.
+type Whoami struct {
+	ShareID   string `json:"share_id"`
+	ShareName string `json:"share_name"`
+	Username  string `json:"username"`
+	Role      string `json:"role"`
+}
+
+// whoami says which folder and member a token belongs to; a token is bound
+// to one folder, so it is all a sign-in needs (shfd-gui). Any active
+// member may ask; an unknown or revoked token gets 401.
+func (a *api) whoami(w http.ResponseWriter, r *http.Request) {
+	si, m, sh, err := a.srv.Whoami(bearerToken(r))
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if err := sh.Touch(m.ID); err != nil {
+		a.log.Warn("last_seen_at not updated", "share", sh.ID, "member", m.Username, "err", err)
+	}
+	writeJSON(w, http.StatusOK, Whoami{ShareID: si.ID, ShareName: si.Name, Username: m.Username, Role: m.Role})
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error)
@@ -318,7 +343,7 @@ func status(c server.Code) int {
 		return http.StatusNotFound
 	case server.CodeStaleBase, server.CodeCaseConflict, server.CodeDestExists, server.CodeKindMismatch,
 		server.CodeParentNotDir, server.CodeIsDir, server.CodeDirNotEmpty, server.CodeUploadMissing,
-		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged:
+		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged, server.CodeLastAdmin:
 		return http.StatusConflict
 	case server.CodeSSHNotConfigured:
 		return http.StatusNotImplemented

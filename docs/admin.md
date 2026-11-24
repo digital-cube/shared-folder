@@ -59,6 +59,13 @@ procesu odmah). API pozivi starim tokenom dobijaju `401` odmah.
 Username je jedinstven u folderu, **i za opozvane članove**: opozvan član
 ostaje u listi i u istoriji (`updated_by`, „by“ u trash-u, dnevnik).
 
+`member revoke` odbija poslednjeg aktivnog admina foldera (`last_admin`), iz
+istog razloga kao `set-role` ispod: folder ne sme ostati bez admina. Prvo
+dodeli ulogu nekom drugom, pa onda opozovi.
+
+Iste promene radi i admin API (odeljak [Admin API](#admin-api)) i web GUI
+(`docs/gui.md`), istim funkcijama kao ove komande.
+
 ### Jedan član = jedan uređaj
 
 Server čuva **jedan SSH ključ po članu** (`members.ssh_pubkey`). Svaki
@@ -347,6 +354,53 @@ samo za člana sa ulogom `admin`. Greške su
 | `POST /v1/shares/{id}/admin/trash/purge` | `{"older_than": "30d"}` ili `{"ids": [1,2]}` ili `{"all": true}`, uz `"dry_run": true` | `{dry_run, entries, count, total_size, events, head}` |
 | `POST /v1/shares/{id}/admin/verify` | `{"repair": false}` | `{repair, issues, checked, events, head}` |
 | `GET /v1/shares/{id}/admin/stats` | — | `server.Stats` |
+| `GET /v1/shares/{id}/admin/members` | — | `{head, members: [{username, role, status, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, behind, ssh_fingerprint, connected}]}` |
+| `POST /v1/shares/{id}/admin/members` | `{"username": "bob", "admin": false}` | `{member, token, reactivated?}` |
+| `POST /v1/shares/{id}/admin/members/{username}/revoke` | — | `{member}` |
+| `POST /v1/shares/{id}/admin/members/{username}/role` | `{"role": "admin"}` ili `"member"` | `{member, old_role}` |
+| `POST /v1/shares/{id}/admin/members/{username}/reset-token` | — | `{member, token}` |
+| `GET /v1/shares/{id}/admin/log` | `?after=<bajt-offset>&limit=<n>` | `{offset, next_offset, size, lines}` |
+| `GET /v1/shares/{id}/admin/files` | `?dir=<putanja>` (prazno = koren) | `{dir, entries}` |
+
+Uz njih postoji i `GET /v1/whoami`, koji **ne traži** ulogu admin: za
+`Authorization: Bearer shf_…` vraća `{share_id, share_name, username, role}`.
+Token je vezan za jedan folder, pa je dovoljan za prijavu (tako radi
+shfd-gui); nepoznat ili opozvan token dobija `401`.
+
+**Članovi.** Pozivi menjaju članove istim funkcijama kao `shfd member …`, sa
+istim posledicama: posle `revoke` i `reset-token` stari token odmah dobija
+`401`, a WebSocket veze člana se zatvaraju. `status` je `active`, `pending`
+(aktivan, ali još nema SSH ključ: `shf join` nije završen) ili `revoked`;
+`ssh_fingerprint` je otisak jedinog ključa člana, `connected` broj njegovih
+otvorenih WebSocket veza ka ovom procesu. **Token** stoji samo u odgovoru na
+`add` i `reset-token`; čuva se samo njegov hash i ne loguje se nigde. Greške
+kao u CLI-ju: `member_exists` (409), `unknown_member` (404), `last_admin`
+(409: oduzimanje uloge ili opoziv poslednjeg admina), `invalid_request` (400:
+loše ime ili uloga).
+
+**Log.** `admin/log` čita `service.log` kao parsirane redove. Bez `after`
+vraća poslednjih `limit` redova (podrazumevano 200, najviše 5000); sa
+`after=<next_offset>` prethodnog odgovora vraća samo ono što je stiglo posle
+(red koji se još upisuje čeka sledeći poziv). Red je
+`{offset, ts, type, seq?, member, op, path, old_path?, dir?, outcome?, detail?, raw}`;
+`type` je `event` (izmena u folderu, `op` je `put`, `delete`, `move`, …),
+`transfer` (rsync-gate; `op` = `dir` = `upload`/`download`/`-`, `outcome`
+`ok`/`denied`/`failed`), `key-replaced` (`detail` = `old=… new=…`) ili
+`other` (red koji nije parsiran, samo `raw`). `offset` je bajt-pozicija reda
+u fajlu i služi kao njegov id.
+
+**Fajlovi.** `admin/files` vraća jedan nivo iz tabele `files` (disk se ne
+čita): `{path, name, kind, size, mtime, hash, seq, updated_by}`, prvo
+folderi, pa po imenu. Nepostojeći folder je `not_found` (404), fajl umesto
+foldera `kind_mismatch` (409).
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://shf.example.com/v1/whoami
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"username":"bob"}' \
+  "https://shf.example.com/v1/shares/$SHARE/admin/members"
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "https://shf.example.com/v1/shares/$SHARE/admin/log?after=10240"
+```
 
 Kodovi grešaka: `forbidden` (403) za člana bez uloge admin,
 `unknown_trash` (404) za nepoznat ili očišćen unos, `trash_damaged` (409)
