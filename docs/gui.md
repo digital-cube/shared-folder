@@ -154,11 +154,12 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
 
 Statička strana, dve kartice:
 
-- **Klijent (shf):** preuzimanje binarnog fajla (Linux / macOS / Windows,
-  kako je danas u README-u), `shf join …`, `shf service install`, `shf status`
-  i napomena o „key refused“ (jedan član = jedan uređaj). Ime hosta se
-  popunjava iz trenutnog URL-a. U v1 nema `install.sh`; ako ga dodamo kasnije,
-  ova strana ga prikazuje.
+- **Klijent (shf):** instalacija (Linux / macOS / Windows; gotov paket iz
+  `make release` ili build iz izvornog koda, po [install.md](install.md); na
+  macOS-u skidanje karantina sa `xattr`), `shf join …`, `shf service
+  install`, `shf status` i napomena o „key refused“ (jedan član = jedan
+  uređaj). Ime hosta se popunjava iz trenutnog URL-a. U v1 nema `install.sh`;
+  ako ga dodamo kasnije, ova strana ga prikazuje.
 - **Server (shfd + shfd-gui):** sažetak iz `docs/server-ssh.md` i odeljka
   „Instalacija“ ispod.
 
@@ -282,8 +283,10 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
   sync je „odbijeno“ i ulazi u Greške).
 - `admin/members` vraća `{head, members}`; član ima i `status`
   (`active`/`pending`/`revoked`) i `connected`.
-- Na strani Instalacija klijent se pravi iz izvornog koda (`make build`),
-  jer gotovih binarnih fajlova za preuzimanje još nema.
+- Strana Instalacija nudi gotov paket (`make release`: linux-amd64,
+  darwin-amd64, darwin-arm64) ili build iz izvornog koda. Paketi se ne
+  serviraju sa servera: daje ih admin, pa komande rade nad
+  `~/Downloads/shared-folder-*-<os>-<arch>.tar.gz`.
 
 ### Instalacija na server
 

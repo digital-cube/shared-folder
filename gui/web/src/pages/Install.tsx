@@ -35,21 +35,47 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 }
 
 type Os = "linux" | "macos" | "windows";
-const BUILD: Record<Os, string> = {
-  linux: `git clone https://github.com/digital-cube/shared-folder.git
-cd shared-folder
-make build                       # bin/shf i bin/shfd (Go 1.27+)
-sudo install -m 755 bin/shf /usr/local/bin/shf
-sudo apt install rsync openssh-client   # rsync 3.2.4+`,
-  macos: `git clone https://github.com/digital-cube/shared-folder.git
-cd shared-folder
-make build                       # bin/shf (Go 1.27+)
-sudo install -m 755 bin/shf /usr/local/bin/shf
+type How = "pkg" | "src";
+
+// Ready-made packages from `make release` (docs/install.md); there is none for Windows.
+const PKG: Record<Exclude<Os, "windows">, string> = {
+  linux: `cd ~/Downloads                   # shared-folder-<verzija>-linux-amd64.tar.gz
+tar -xzf shared-folder-*-linux-amd64.tar.gz
+sudo install -m 755 shared-folder-*-linux-amd64/shf /usr/local/bin/shf
+sudo apt install rsync openssh-client   # rsync 3.2.4+
+shf version`,
+  macos: `cd ~/Downloads                   # …-darwin-arm64 (M1, M2…) ili …-darwin-amd64 (Intel)
+tar -xzf shared-folder-*-darwin-$(uname -m | sed s/x86_64/amd64/).tar.gz
+sudo install -d -m 755 /usr/local/bin
+sudo install -m 755 shared-folder-*-darwin-*/shf /usr/local/bin/shf
+sudo xattr -d com.apple.quarantine "$(command -v shf)"   # skida karantin
+xattr -l "$(command -v shf)"     # ne sme da ispiše com.apple.quarantine
 brew install rsync               # /usr/bin/rsync (openrsync) ne radi
-eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile`,
-  windows: `git clone https://github.com/digital-cube/shared-folder.git
+eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile
+shf version`,
+};
+
+const SRC: Record<Os, string> = {
+  linux: `sudo apt install make git rsync openssh-client   # Fedora: dnf install golang make git rsync openssh-clients
+# Go 1.27+ sa go.dev (apt-ov golang-go je obično stariji):
+curl -fsSL https://go.dev/dl/go1.27.4.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+export PATH=$PATH:/usr/local/go/bin   # i u ~/.profile
+git clone https://github.com/digital-cube/shared-folder.git
 cd shared-folder
-go build -o shf.exe ./cmd/shf    # Go 1.27+
+make build                       # bin/shf i bin/shfd
+sudo install -m 755 bin/shf /usr/local/bin/shf`,
+  macos: `xcode-select --install          # make, git
+brew install go rsync            # Go 1.27+; /usr/bin/rsync (openrsync) ne radi
+eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile
+git clone https://github.com/digital-cube/shared-folder.git
+cd shared-folder
+make build                       # bin/shf
+sudo install -d -m 755 /usr/local/bin
+sudo install -m 755 bin/shf /usr/local/bin/shf`,
+  windows: `winget install GoLang.Go Git.Git   # Go 1.27+; make ne treba
+git clone https://github.com/digital-cube/shared-folder.git
+cd shared-folder
+go build -trimpath -o shf.exe ./cmd/shf
 # rsync 3.2.4+ i ssh moraju biti u PATH-u (npr. MSYS2: pacman -S rsync openssh),
 # ili ih zadaj apsolutnim putanjama u SHF_RSYNC i SHF_SSH`,
 };
@@ -57,6 +83,8 @@ go build -o shf.exe ./cmd/shf    # Go 1.27+
 export function Install({ standalone }: { standalone?: boolean }) {
   const [tab, setTab] = useState<"client" | "server">("client");
   const [os, setOs] = useState<Os>("linux");
+  const [how, setHow] = useState<How>("pkg");
+  const showHow: How = os === "windows" ? "src" : how;
   const origin = location.origin;
   const app = useAppMaybe();
   const shareId = app?.me.share_id ?? "<share-id>";
@@ -84,10 +112,11 @@ export function Install({ standalone }: { standalone?: boolean }) {
 
       {tab === "client" ? (
         <div className="steps">
-          <Step n={1} title="Preuzmi shf">
+          <Step n={1} title="Instaliraj shf">
             <p>
-              Za sada se <code>shf</code> pravi iz izvornog koda (gotovih binarnih fajlova i <code>install.sh</code> još
-              nema). Potrebni su još <code>ssh</code> i <b>rsync 3.2.4 ili noviji</b>.
+              Gotov paket postoji za Linux x86-64, Mac sa Apple čipom i Mac sa Intel procesorom (
+              <code>shared-folder-&lt;verzija&gt;-&lt;os&gt;-&lt;arch&gt;.tar.gz</code>, daje ga admin; prave se sa{" "}
+              <code>make release</code>). Na uređaju su potrebni još <code>ssh</code> i <b>rsync 3.2.4 ili noviji</b>.
             </p>
             <div className="tabs os-tabs" style={{ display: "inline-flex" }}>
               {(["linux", "macos", "windows"] as Os[]).map((o) => (
@@ -95,8 +124,34 @@ export function Install({ standalone }: { standalone?: boolean }) {
                   {o === "linux" ? "Linux" : o === "macos" ? "macOS" : "Windows"}
                 </button>
               ))}
-            </div>
-            <Code>{BUILD[os]}</Code>
+            </div>{" "}
+            {os !== "windows" ? (
+              <div className="tabs os-tabs" style={{ display: "inline-flex", marginLeft: 8 }}>
+                <button className={how === "pkg" ? "on" : ""} onClick={() => setHow("pkg")}>
+                  Gotov paket
+                </button>
+                <button className={how === "src" ? "on" : ""} onClick={() => setHow("src")}>
+                  Iz izvornog koda
+                </button>
+              </div>
+            ) : null}
+            <Code>{showHow === "pkg" && os !== "windows" ? PKG[os] : SRC[os]}</Code>
+            {showHow === "src" ? (
+              <p className="side-note" style={{ marginTop: 6 }}>
+                Za build trebaju <b>Go 1.27+</b>, <b>make</b> i <b>git</b> (na Windows-u make ne treba). Detalji po
+                OS-u: <code>docs/install.md</code>.
+              </p>
+            ) : null}
+            {os === "macos" && showHow === "pkg" ? (
+              <div className="callout" style={{ marginTop: 8 }}>
+                <span>
+                  <b>Karantin.</b> Preuzet fajl macOS označava sa <code>com.apple.quarantine</code>, a paket nije
+                  potpisan, pa Gatekeeper <code>shf</code> ne pušta (terminal kaže <code>killed</code>, launchd agent
+                  tiho ne radi). Zato <code>xattr -d</code> iznad, posle svake instalacije ili nove verzije;{" "}
+                  <code>xattr -l</code> ne sme da ispiše <code>com.apple.quarantine</code>.
+                </span>
+              </div>
+            ) : null}
           </Step>
           <Step n={2} title="Pridruži se folderu">
             <p>

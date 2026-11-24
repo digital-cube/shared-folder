@@ -41,8 +41,27 @@ E2E_FLAGS ?= -count=1 -timeout 30m
 e2e:
 	GO=$(GO) $(GO) test -tags e2e $(E2E_FLAGS) ./e2e/
 
+## release: packages for download, one per platform, into $(DIST_DIR)/:
+##          shared-folder-$(VERSION)-<os>-<arch>.tar.gz (shf, shfd, INSTALL.md,
+##          README.md) and SHA256SUMS. Pure Go (CGO_ENABLED=0), so one machine
+##          builds them all (docs/install.md)
+DIST_DIR  ?= dist
+PLATFORMS ?= linux/amd64 darwin/amd64 darwin/arm64
+SHA256    := $(shell command -v sha256sum 2>/dev/null || echo shasum -a 256)
+.PHONY: release
+release:
+	rm -rf $(DIST_DIR) && mkdir -p $(DIST_DIR)
+	@set -e; for p in $(PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; name=shared-folder-$(VERSION)-$$os-$$arch; d=$(DIST_DIR)/$$name; \
+		echo "build $$name"; mkdir -p $$d; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $$d/ ./cmd/shf ./cmd/shfd; \
+		cp docs/install.md $$d/INSTALL.md; cp README.md $$d/; \
+		tar -C $(DIST_DIR) -czf $$d.tar.gz $$name; rm -rf $$d; \
+	done
+	cd $(DIST_DIR) && $(SHA256) *.tar.gz > SHA256SUMS && cat SHA256SUMS
+
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(DIST_DIR)
 
 ## gui: build shfd-gui (Node 22+): gui/dist with bin/shfd-gui, server.js and web/
 ##      (needs npm; see docs/gui.md)

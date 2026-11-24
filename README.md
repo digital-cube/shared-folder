@@ -83,6 +83,15 @@ opisani u [docs/server-ssh.md](docs/server-ssh.md).
 
 ## Klijent
 
+Instalacija `shf` (gotov paket ili build): [docs/install.md](docs/install.md).
+Na macOS-u posle instalacije preuzetog paketa obavezno skinuti karantin, inače
+ga Gatekeeper ne pušta:
+
+```sh
+sudo xattr -d com.apple.quarantine "$(command -v shf)"
+xattr -l "$(command -v shf)"        # ne sme da ispiše com.apple.quarantine
+```
+
 ```sh
 shf join https://shf.example.org <share-id> <token> ~/Tim   # pridruživanje i prvi sync
 shf sync   [<folder>]    # jedan ciklus; izlazni kod 1 ako nešto nije uspelo
@@ -236,15 +245,26 @@ tumači kao brisanje.
 cmd/shfd/        server
 cmd/shf/         klijent
 internal/        zajednički kod
-docs/            specifikacija, postavljanje servera, admin komande
+docs/            specifikacija, instalacija, postavljanje servera, admin komande
 ```
+
+## Instalacija
+
+Gotovi paketi za Linux x86-64, macOS Intel i macOS Apple Silicon
+(`make release`), šta treba na uređaju (rsync 3.2.4+, ssh), korak sa
+karantinom na macOS-u (`xattr -d com.apple.quarantine "$(command -v shf)"`)
+i build iz izvornog koda po OS-u: [docs/install.md](docs/install.md).
 
 ## Build i testovi
 
-Potreban je Go 1.27 ili noviji.
+Potrebni su **Go 1.27+** (iz `go.mod`), **make** i **git**; za testove još
+rsync 3.2.4+, OpenSSH klijent i `sshd`, a za GUI Node 22+ i npm. Kako se to
+instalira na Debian/Ubuntu, Fedora, macOS i Windows:
+[docs/install.md](docs/install.md#2-build-iz-izvornog-koda).
 
 ```sh
 make build   # bin/shfd i bin/shf
+make release # dist/: paketi za linux-amd64, darwin-amd64, darwin-arm64 i SHA256SUMS
 make test    # go test ./...
 make lint    # go vet + gofmt -l (i golangci-lint ako je instaliran)
 make check   # lint + test + build
