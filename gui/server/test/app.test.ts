@@ -136,3 +136,18 @@ describe("collections and actions", () => {
     expect(ov.payload).toMatchObject({ version: "abc1234", server_ok: true, head: 3, members: 2, connected: 0 });
   });
 });
+
+describe("change stream", () => {
+  it("asks proxies not to buffer it", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const addr = app.server.address() as { port: number };
+    const ctl = new AbortController();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/gui/udc/changes?collections=logs`, { headers: { cookie }, signal: ctl.signal });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-accel-buffering")).toBe("no");
+    expect(res.headers.get("content-type")).toMatch(/event-stream/);
+    ctl.abort();
+  });
+});

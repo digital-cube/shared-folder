@@ -170,6 +170,12 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     };
   });
 
+  // The change stream must reach the browser unbuffered through every
+  // reverse proxy on the way (nginx honours this header).
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.url.startsWith(`${base}/udc/changes`)) reply.raw.setHeader("X-Accel-Buffering", "no");
+  });
+
   await app.register(udcPlugin, {
     prefix: base,
     dispatcher,
