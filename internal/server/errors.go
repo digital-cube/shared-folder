@@ -52,6 +52,11 @@ const (
 	CodeInvalidEmail           Code = "invalid_email"            // not a bare email address
 	CodeEmailTaken             Code = "email_taken"              // the email address belongs to another account
 	CodeInvalidResetToken      Code = "invalid_reset_token"      // a reset link that is unknown, used, expired or replaced by a newer one
+
+	// Profile pictures (avatars.go).
+	CodeImageTooLarge      Code = "image_too_large"       // more than MaxAvatarBytes
+	CodeUnsupportedImage   Code = "unsupported_image"     // the content is not a PNG, JPEG, WebP or GIF image
+	CodeImageTooManyPixels Code = "image_too_many_pixels" // over thumbs.AvatarMaxPixels (a decompression bomb)
 )
 
 // Error is an operation refused by the rules. It never leaves the database

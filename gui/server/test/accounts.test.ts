@@ -79,6 +79,7 @@ describe("password sign-in", () => {
       share_name: "",
       role: "",
       member: "ana",
+      avatar_url: null,
     });
     const set = String(res.headers["set-cookie"]);
     expect(set).toMatch(/HttpOnly/);

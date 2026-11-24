@@ -46,7 +46,7 @@ function useHash(): string {
 }
 
 /** The signed-in session, for every page: shown with or without a folder. */
-interface SessionApi {
+export interface SessionApi {
   me: Me;
   /** The session changed (a folder chosen, the password changed). */
   setMe: (m: Me) => void;
@@ -56,7 +56,7 @@ interface SessionApi {
   /** The server already ended the session (this browser's device was revoked). */
   signedOut: () => void;
 }
-const SessionContext = createContext<SessionApi | null>(null);
+export const SessionContext = createContext<SessionApi | null>(null);
 export const useSession = () => useContext(SessionContext)!;
 
 /** The account (GET /api/me): folders, devices, password rules. */

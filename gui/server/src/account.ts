@@ -6,6 +6,7 @@
 // hidden option ("Prijava tokenom") while SHFD_GUI_TOKEN_LOGIN is not 0.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { AVATAR_MAX_BYTES } from "../../shared/avatar.js";
 import { langOf, tr, type Lang } from "./lang.js";
 import { COOKIE, readCookie, sessionCookie, type Session, type SessionStore } from "./sessions.js";
 import { errorMessage, forwardedFor, ShfdError, type ShfdClient } from "./shfd.js";
@@ -87,6 +88,7 @@ export function publicSession(s: Session) {
     share_name: s.shareName,
     role: s.role,
     member: s.member,
+    avatar_url: s.avatarUrl,
   };
 }
 
@@ -170,6 +172,7 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
       username: r.user.username,
       displayName: r.user.display_name,
       mustChange: r.must_change,
+      avatarUrl: r.user.avatar_url ?? null,
     });
     reply.header("set-cookie", sessionCookie(s.id, cookieOpts));
     reply.header("cache-control", "no-store");
@@ -283,6 +286,7 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
       const me = await shfd.me(s.token);
       s.mustChange = me.user.must_change;
       s.displayName = me.user.display_name;
+      s.avatarUrl = me.user.avatar_url ?? null;
       // The chosen folder as it is now: renamed, another role, or gone.
       if (s.shareId) {
         const f = me.folders.find((x) => x.share_id === s.shareId);
@@ -350,6 +354,100 @@ export function registerAccountRoutes(app: FastifyInstance, o: AccountRoutesOpti
       }
       return refuse(req, reply, s, err);
     }
+  });
+
+  // ---- the profile picture ---------------------------------------------------
+  // The browser sends the file as it is (its type in Content-Type); shfd
+  // reads the format from the content, makes the 256×256 square and has
+  // the last word. The answer carries the session, so the header follows.
+
+  // A picture's bytes as they are, for PUT <base>/api/me/avatar only.
+  const raw = (_req: FastifyRequest, body: Buffer, done: (err: Error | null, body?: unknown) => void) => done(null, body);
+  app.addContentTypeParser(/^image\//, { parseAs: "buffer", bodyLimit: AVATAR_MAX_BYTES + 1 }, raw);
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: AVATAR_MAX_BYTES + 1 }, raw);
+
+  app.put(
+    `${base}/api/me/avatar`,
+    {
+      bodyLimit: AVATAR_MAX_BYTES + 1,
+      errorHandler: (err: { statusCode?: number; code?: string }, req, reply) => {
+        const lang = langOf(req);
+        if (err.statusCode === 413) return reply.code(413).send({ error: errorMessage("image_too_large", undefined, lang), code: "image_too_large" });
+        if (err.statusCode === 415) return reply.code(415).send({ error: errorMessage("unsupported_image", undefined, lang), code: "unsupported_image" });
+        req.log.warn({ err }, "avatar upload failed");
+        return reply.code(400).send({ error: errorMessage("invalid_request", undefined, lang), code: "invalid_request" });
+      },
+    },
+    async (req, reply) => {
+      const lang = langOf(req);
+      const s = accountOf(req, reply);
+      if (!s) return reply;
+      reply.header("cache-control", "no-store");
+      const body = req.body;
+      if (!(body instanceof Buffer) || body.length === 0) {
+        return reply.code(415).send({ error: errorMessage("unsupported_image", undefined, lang), code: "unsupported_image" });
+      }
+      try {
+        const r = await shfd.setAvatar(s.token, body, String(req.headers["content-type"] ?? ""));
+        s.avatarUrl = r.avatar_url;
+        return { ok: true, avatar_url: r.avatar_url, session: publicSession(s) };
+      } catch (err) {
+        return refuse(req, reply, s, err);
+      }
+    },
+  );
+
+  app.delete(`${base}/api/me/avatar`, async (req, reply) => {
+    const s = accountOf(req, reply);
+    if (!s) return reply;
+    reply.header("cache-control", "no-store");
+    try {
+      await shfd.removeAvatar(s.token);
+      s.avatarUrl = null;
+      return { ok: true, avatar_url: null, session: publicSession(s) };
+    } catch (err) {
+      return refuse(req, reply, s, err);
+    }
+  });
+
+  // The picture of any account, with the session's credential (an
+  // account's device token or a member token: shfd takes both), with the
+  // caching headers as shfd sent them: the URL carries the version, so the
+  // browser keeps the current one for good.
+  app.get(`${base}/api/avatar/:username`, async (req, reply) => {
+    const s = sessionOf(req);
+    if (!s) return reply.code(401).header("cache-control", "no-store").send({ error: "not signed in" });
+    const username = (req.params as { username: string }).username;
+    const v = String((req.query as { v?: unknown }).v ?? "");
+    if (!/^[a-z0-9._-]{1,64}$/i.test(username) || !/^\d{0,20}$/.test(v)) {
+      return reply.code(400).header("cache-control", "no-store").send({ error: "invalid picture" });
+    }
+    const inm = req.headers["if-none-match"];
+    let r;
+    try {
+      r = await shfd.avatar(s.token, username, v, typeof inm === "string" ? inm : undefined);
+    } catch (err) {
+      reply.header("cache-control", "no-store");
+      if (err instanceof ShfdError && err.status === 401) {
+        sessions.dropToken(s.token);
+        return reply.code(401).send({ error: "not signed in" });
+      }
+      req.log.warn({ err: (err as Error).message }, "avatar failed");
+      return reply.code(502).send({ error: errorMessage("unreachable", undefined, langOf(req)) });
+    }
+    if (r.status !== 200 && r.status !== 304 && r.status !== 404) {
+      return reply.code(502).header("cache-control", "no-store").send({ error: `shfd answered ${r.status}` });
+    }
+    reply.code(r.status);
+    for (const h of ["etag", "cache-control"]) {
+      const val = r.headers.get(h);
+      if (val) reply.header(h, val);
+    }
+    if (r.status === 404) return reply.header("cache-control", "no-store").send({ error: "no picture" });
+    if (r.status === 304) return reply.send();
+    reply.header("content-type", "image/jpeg");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send(Buffer.from(r.body));
   });
 
   app.delete(`${base}/api/me/devices/:id`, async (req, reply) => {

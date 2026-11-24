@@ -642,6 +642,10 @@ Kad svi članovi pređu na naloge (spec §8, korak 5), postavi
   istom dijalogu (`{username, admin}`, token se prikaže jednom).
 - U tabeli su kolone **Nalog** i **Uređaji** (broj aktivnih). Član bez
   naloga ima oznaku **„bez naloga“**. „Nov token“ se nudi samo njemu.
+- Pored imena člana je **profilna slika** njegovog naloga, ili inicijali na
+  boji izvedenoj iz imena naloga (član bez naloga: iz imena člana; opozvan
+  član: sivo). Isto je u koloni **Član** u **Logovima** (slike članova GUI
+  server čita iz `admin/members` najviše jednom u 30 s po folderu).
 - Akcija reda **„Uređaji“** otvara listu uređaja člana u ovom folderu: ime,
   tip (klijent / GUI sesija), SSH otisak i poslednji put viđen. Odatle se
   opoziva jedan uređaj
@@ -649,6 +653,17 @@ Kad svi članovi pređu na naloge (spec §8, korak 5), postavi
 
 ### Moj nalog
 
+- **Profilna slika**: trenutna slika (ili inicijali), dugme „Izaberi
+  sliku…“, **pregled** izabrane slike pre snimanja (kvadrat iz sredine,
+  kako će izgledati), pa **Sačuvaj** ili **Otkaži**; **Ukloni** briše
+  postojeću. Browser odmah odbija fajl veći od 5 MB ili tipa koji nije PNG,
+  JPEG, WebP ili GIF; shfd isto proverava ponovo iz sadržaja. Greške su na
+  SR i EN: „Slika je prevelika; najviše 5 MB.“, „Taj fajl nije slika u
+  podržanom formatu (PNG, JPEG, WebP ili GIF).“, „Slika ima previše
+  piksela…“. Posle snimanja ili uklanjanja zaglavlje se odmah menja.
+  Slika je i u **zaglavlju** pored imena (klik vodi u Moj nalog) i na vrhu
+  stranice Moj nalog. Komponenta je `web/src/Avatar.tsx`, pomoćne funkcije
+  (inicijali, boja, URL, provera fajla) u `shared/avatar.ts`.
 - **Email**: adresa na koju stiže link za zaboravljenu lozinku. Promena (ili
   brisanje, prazno polje) traži trenutnu lozinku
   (`PUT <base>/api/me/email` → `PUT /v1/me/email`). Greške: „Lozinka nije
@@ -681,7 +696,7 @@ u `server/src/csrf.ts`, a testovi su u `server/test/accounts.test.ts`.
 | `POST /api/auth/login` | `{username, password}` → sesija naloga |
 | `POST /api/login` | `{token}` → sesija tokenom (samo kad je uključena) |
 | `POST /api/logout` | odjava (`/v1/auth/logout` za nalog) |
-| `GET /api/session` | `{kind, username, display_name, must_change, share_id, share_name, role, member}` |
+| `GET /api/session` | `{kind, username, display_name, must_change, share_id, share_name, role, member, avatar_url}` |
 | `GET /api/me` | `/v1/me` (folderi, uređaji, pravila lozinke) i `session` |
 | `POST /api/folder` | `{share_id}` → izbor foldera |
 | `POST /api/me/password` | `{old, new}` |
@@ -689,6 +704,9 @@ u `server/src/csrf.ts`, a testovi su u `server/test/accounts.test.ts`.
 | `POST /api/auth/reset` | `{token, new_password}` → `{ok, username}` (bez sesije) |
 | `PUT /api/me/email` | `{email, current_password}` → `{ok, email}` |
 | `DELETE /api/me/devices/:id` | opoziv svog uređaja; `{signed_out}` kad je to ova sesija |
+| `PUT /api/me/avatar` | slika kao telo (`Content-Type: image/*`), najviše 5 MB → `PUT /v1/me/avatar`; `{ok, avatar_url, session}` |
+| `DELETE /api/me/avatar` | uklanja sliku → `{ok, avatar_url: null, session}` |
+| `GET /api/avatar/:username?v=` | slika naloga sa kredencijalom sesije (nalog ili token člana), sa `ETag` i `Cache-Control` kako ih je shfd postavio (`immutable` za tačnu verziju); `404` bez slike |
 
 Nove jsudc akcije: `shfd.member_add_account`, `shfd.users_search`,
 `shfd.member_devices`, `shfd.member_device_revoke`.

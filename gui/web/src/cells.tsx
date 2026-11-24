@@ -1,6 +1,7 @@
 // Cell components the views' columns name in `render`.
 
 import { createCellRegistry, type CellProps } from "@jsudc/react";
+import { Avatar } from "./Avatar";
 import { ago, stamp } from "./format";
 import { tr } from "./lang";
 import { usePreview } from "./FilePreview";
@@ -8,14 +9,13 @@ import { Thumb } from "./Thumb";
 
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
+/** A member: the picture of its account (or initials), the name. */
 function Member({ value, row }: CellProps) {
   const name = str(value);
   const revoked = row.status === "revoked";
   return (
     <span className="who">
-      <span className="avatar" style={revoked ? { background: "var(--g-bg-sunk)", color: "var(--g-faint)" } : undefined}>
-        {name.slice(0, 1).toUpperCase()}
-      </span>
+      <Avatar username={str(row.account) || name} url={revoked ? null : (row.avatar_url as string | null)} muted={revoked} />
       <b style={revoked ? { color: "var(--g-muted)" } : undefined}>{name}</b>
       {row.me ? <span className="faint">{tr("(ti)", "(you)")}</span> : null}
     </span>
@@ -27,6 +27,18 @@ function AccountCell({ value, row }: CellProps) {
   const v = str(value);
   if (row.legacy) return <span className="badge warn" title={tr("Član radi starim tokenom, bez naloga.", "The member works with an old token, without an account.")}>{tr("bez naloga", "no account")}</span>;
   return <span>{v}</span>;
+}
+
+/** The member of a log line, with its account's picture when it has one. */
+function LogMember({ value, row }: CellProps) {
+  const name = str(value);
+  if (!name) return <span className="faint">—</span>;
+  return (
+    <span className="who small-who">
+      <Avatar username={name} url={row.avatar_url as string | null} className="sm" />
+      <span>{name}</span>
+    </span>
+  );
 }
 
 function Devices({ value, row }: CellProps) {
@@ -197,6 +209,7 @@ export const cells = createCellRegistry(
   { name: "behind", component: Behind },
   { name: "fingerprint", component: Fingerprint },
   { name: "logtime", component: LogTime },
+  { name: "logmember", component: LogMember },
   { name: "logkind", component: LogKind },
   { name: "op", component: Op },
   { name: "logpath", component: LogPath },

@@ -39,6 +39,8 @@ export interface MemberInfo {
   /** The account the member is linked to; absent for a member with only a token. */
   user_id?: number;
   account?: string;
+  /** The picture of that account ("/v1/users/<u>/avatar?v=<n>"); null without one. */
+  avatar_url?: string | null;
   devices?: MemberDevice[];
 }
 
@@ -64,6 +66,8 @@ export interface User {
   created_at: string;
   disabled_at?: string | null;
   last_login_at?: string | null;
+  /** The profile picture ("/v1/users/<u>/avatar?v=<n>"); null without one. */
+  avatar_url?: string | null;
 }
 
 export interface LoginResult {
@@ -280,19 +284,7 @@ export class ShfdClient {
     } catch (err) {
       throw new ShfdError(502, "unreachable", `shfd is not reachable: ${(err as Error).message}`);
     }
-    const text = await res.text();
-    let json: unknown;
-    try {
-      json = text ? JSON.parse(text) : undefined;
-    } catch {
-      json = undefined;
-    }
-    if (!res.ok) {
-      const e = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
-      const ra = Number(res.headers.get("retry-after"));
-      throw new ShfdError(res.status, e?.code ?? "internal", e?.message ?? `shfd answered ${res.status}`, Number.isFinite(ra) && ra > 0 ? ra : undefined);
-    }
-    return json as T;
+    return readJSON<T>(res);
   }
 
   private share(id: string): string {
@@ -334,6 +326,51 @@ export class ShfdClient {
   }
   revokeMyDevice(token: string, id: number): Promise<unknown> {
     return this.call("DELETE", `/v1/me/devices/${id}`, token);
+  }
+  /** A new profile picture, sent as it is (shfd reads the format from the content). */
+  async setAvatar(token: string, body: Uint8Array, contentType: string): Promise<{ avatar_url: string; user: User }> {
+    let res: Response;
+    try {
+      res = await this.fetchFn(this.baseUrl.replace(/\/$/, "") + "/v1/me/avatar", {
+        method: "PUT",
+        headers: { accept: "application/json", authorization: `Bearer ${token}`, "content-type": contentType || "application/octet-stream" },
+        body,
+        signal: AbortSignal.timeout(this.timeoutMs * 3),
+      });
+    } catch (err) {
+      throw new ShfdError(502, "unreachable", `shfd is not reachable: ${(err as Error).message}`);
+    }
+    return readJSON(res);
+  }
+  removeAvatar(token: string): Promise<{ status: string; removed: boolean }> {
+    return this.call("DELETE", "/v1/me/avatar", token);
+  }
+  /**
+   * The picture of an account, not read as JSON: the status (200, 304,
+   * 404), the headers and the bytes, like thumb. A 401 is a ShfdError.
+   */
+  async avatar(token: string, username: string, v: string, ifNoneMatch?: string): Promise<ThumbResponse> {
+    const headers: Record<string, string> = { accept: "image/jpeg", authorization: `Bearer ${token}` };
+    if (ifNoneMatch) headers["if-none-match"] = ifNoneMatch;
+    const q = v ? `?v=${encodeURIComponent(v)}` : "";
+    const url = `${this.baseUrl.replace(/\/$/, "")}/v1/users/${encodeURIComponent(username)}/avatar${q}`;
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, { method: "GET", headers, signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch (err) {
+      throw new ShfdError(502, "unreachable", `shfd is not reachable: ${(err as Error).message}`);
+    }
+    const body = new Uint8Array(await res.arrayBuffer());
+    if (res.status === 401 || res.status === 403) {
+      let e: { code?: string; message?: string } | undefined;
+      try {
+        e = JSON.parse(new TextDecoder().decode(body))?.error;
+      } catch {
+        e = undefined;
+      }
+      throw new ShfdError(res.status, e?.code ?? (res.status === 401 ? "unauthorized" : "forbidden"), e?.message ?? `shfd answered ${res.status}`);
+    }
+    return { status: res.status, headers: res.headers, body };
   }
   searchUsers(token: string, q: string): Promise<UserRef[]> {
     return this.call("GET", `/v1/users?q=${encodeURIComponent(q)}`, token);
@@ -455,6 +492,23 @@ export class ShfdClient {
   }
 }
 
+/** The JSON of an answer of shfd, or its refusal as a ShfdError. */
+async function readJSON<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : undefined;
+  } catch {
+    json = undefined;
+  }
+  if (!res.ok) {
+    const e = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
+    const ra = Number(res.headers.get("retry-after"));
+    throw new ShfdError(res.status, e?.code ?? "internal", e?.message ?? `shfd answered ${res.status}`, Number.isFinite(ra) && ra > 0 ? ra : undefined);
+  }
+  return json as T;
+}
+
 /** Sentences for shfd's error codes, Serbian and English; the UI never shows a bare code. */
 const ERROR_MESSAGES: Record<string, [sr: string, en: string]> = {
   member_exists: ["Član sa tim imenom već postoji.", "A member with that name already exists."],
@@ -505,6 +559,15 @@ const ERROR_MESSAGES: Record<string, [sr: string, en: string]> = {
     "The file on disk is not the version the database records (missing or changed); run shfd verify.",
   ],
   unreachable: ["shfd ne odgovara.", "shfd is not answering."],
+  image_too_large: ["Slika je prevelika; najviše 5 MB.", "The picture is too large; 5 MB at most."],
+  unsupported_image: [
+    "Taj fajl nije slika u podržanom formatu (PNG, JPEG, WebP ili GIF).",
+    "That file is not a picture in a supported format (PNG, JPEG, WebP or GIF).",
+  ],
+  image_too_many_pixels: [
+    "Slika ima previše piksela (najviše 40 megapiksela); smanji je pa pokušaj ponovo.",
+    "The picture has too many pixels (40 megapixels at most); make it smaller and try again.",
+  ],
 };
 
 /** The sentence for one of shfd's error codes, in the UI's language. */

@@ -21,6 +21,9 @@ import (
 //	POST   /v1/me/password         (device token) {old, new}
 //	PUT    /v1/me/email            (device token) {email, current_password} -> {status, user}
 //	DELETE /v1/me/devices/{id}     (device token) revokes one of the account's devices
+//	PUT    /v1/me/avatar           (device token) the picture, raw or multipart -> AvatarResponse (avatars.go)
+//	DELETE /v1/me/avatar           (device token) removes the picture
+//	GET    /v1/users/{username}/avatar?v=  (device token or any member token) image/jpeg, 404 without one
 //	GET    /v1/users?q=            (device token of a folder admin, or an admin's member token) [{username, display_name}]
 //	POST   /v1/shares/{id}/devices (device token) server.FolderDevice: the device's folder token
 //
@@ -127,6 +130,9 @@ func registerAccounts(mux *http.ServeMux, a *api) {
 	mux.Handle("GET /v1/me", a.session(true, a.me))
 	mux.Handle("POST /v1/me/password", a.session(true, a.changePassword))
 	mux.Handle("DELETE /v1/me/devices/{device}", a.session(true, a.revokeDevice))
+	mux.Handle("PUT /v1/me/avatar", a.sessionBody(false, maxAvatarBody, a.putAvatar))
+	mux.Handle("DELETE /v1/me/avatar", a.session(false, a.deleteAvatar))
+	mux.HandleFunc("GET /v1/users/{username}/avatar", a.getAvatar)
 	mux.HandleFunc("GET /v1/users", a.users)
 	mux.Handle("POST /v1/shares/{id}/devices", a.session(false, a.folderDevice))
 }
@@ -239,6 +245,11 @@ type sessionHandler func(w http.ResponseWriter, r *http.Request, sess *server.Se
 // an account with a temporary password is refused with
 // password_change_required.
 func (a *api) session(allowMustChange bool, h sessionHandler) http.Handler {
+	return a.sessionBody(allowMustChange, maxBody, h)
+}
+
+// sessionBody is session with a body of up to limit bytes.
+func (a *api) sessionBody(allowMustChange bool, limit int64, h sessionHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		if token == "" {
@@ -254,7 +265,7 @@ func (a *api) session(allowMustChange bool, h sessionHandler) http.Handler {
 			a.fail(w, r, errMustChange)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		out, err := h(w, r, sess)
 		if err != nil {
 			a.fail(w, r, err)

@@ -18,13 +18,14 @@ import (
 //	shfd user disable|enable <username> [--authorized-keys FILE]
 //	shfd user list
 //	shfd user show <username>
+//	shfd user avatar rm <username>
 //
 // Like the member commands they work on the databases directly, next to a
 // running shfd serve: it reads accounts and devices on every request, so
 // a disable takes effect at once.
 func userCmd(args []string, env Env) error {
 	if len(args) == 0 {
-		return usageError("user: want add, set-email, reset-link, passwd, disable, enable, list or show")
+		return usageError("user: want add, set-email, reset-link, passwd, disable, enable, list, show or avatar")
 	}
 	open := func(root roots) (*server.Server, error) {
 		return root.open(server.Options{SkipRecovery: true})
@@ -196,8 +197,8 @@ func userCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(env.Stdout, "username:     %s\ndisplay name: %s\nemail:        %s\nstatus:       %s\ncreated:      %s\nlast login:   %s\n",
-			u.Username, orDash(u.DisplayName), orDash(u.Email), userStatus(u), u.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), when(u.LastLoginAt))
+		fmt.Fprintf(env.Stdout, "username:     %s\ndisplay name: %s\nemail:        %s\nstatus:       %s\ncreated:      %s\nlast login:   %s\npicture:      %s\n",
+			u.Username, orDash(u.DisplayName), orDash(u.Email), userStatus(u), u.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), when(u.LastLoginAt), avatarStatus(u))
 		fmt.Fprintf(env.Stdout, "\nFolders:\n")
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SHARE ID\tNAME\tMEMBER\tROLE")
@@ -222,8 +223,40 @@ func userCmd(args []string, env Env) error {
 			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Name, d.Kind, when(&d.CreatedAt), when(d.LastSeenAt), st)
 		}
 		return tw.Flush()
+	case "avatar":
+		if len(args) < 2 || args[1] != "rm" {
+			return usageError("user avatar: want rm <username>")
+		}
+		fs := flag.NewFlagSet("user avatar rm", flag.ContinueOnError)
+		root, pos, err := flags(fs, args[2:], 1, env)
+		if err != nil {
+			return err
+		}
+		srv, err := open(root)
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		removed, err := srv.RemoveUserAvatar(pos[0])
+		if err != nil {
+			return err
+		}
+		if removed {
+			fmt.Fprintf(env.Stdout, "removed the profile picture of %s; initials show in its place\n", pos[0])
+		} else {
+			fmt.Fprintf(env.Stdout, "%s has no profile picture\n", pos[0])
+		}
+		return nil
 	}
 	return usageError("user: unknown subcommand %q", args[0])
+}
+
+// avatarStatus is the "picture:" line of user show.
+func avatarStatus(u *server.User) string {
+	if u.AvatarVersion == nil {
+		return "-"
+	}
+	return "yes, set " + when(u.AvatarUpdatedAt)
 }
 
 func userStatus(u *server.User) string {

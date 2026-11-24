@@ -89,6 +89,9 @@ type MemberInfo struct {
 	// Account is filled by Server.FillAccounts.
 	UserID  *int64 `json:"user_id,omitempty"`
 	Account string `json:"account,omitempty"`
+	// AvatarURL is the profile picture of the account (AvatarURL), null
+	// without an account or a picture. Filled by Server.FillAccounts.
+	AvatarURL *string `json:"avatar_url"`
 	// Devices are the credentials of the account's devices in this folder
 	// (member_devices), revoked ones included; name, kind and last use are
 	// filled by Server.FillAccounts.

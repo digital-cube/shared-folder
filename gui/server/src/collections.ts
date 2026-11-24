@@ -95,6 +95,7 @@ class MembersSource extends ArraySource {
         ssh_fingerprint_full: m.ssh_fingerprint,
         connected: m.connected,
         account: m.account ?? "",
+        avatar_url: m.avatar_url ?? null,
         legacy: !m.account,
         devices: (m.devices ?? []).filter((d) => !d.revoked).length,
         me: m.username === c.member,
@@ -105,6 +106,34 @@ class MembersSource extends ArraySource {
 
 // ---- logs ------------------------------------------------------------------
 
+/**
+ * The pictures of a folder's members, by member name, for the log's
+ * "member" column: read from admin/members at most once per AVATARS_TTL_MS
+ * per folder, so a live log does not ask for the members on every line.
+ * A log line stands without a picture when the list cannot be read.
+ */
+export const AVATARS_TTL_MS = 30_000;
+
+export class MemberAvatars {
+  private readonly cache = new Map<string, { at: number; byMember: Map<string, string> }>();
+  constructor(
+    private readonly shfd: ShfdClient,
+    private readonly now: () => number = Date.now,
+  ) {}
+  async get(token: string, shareId: string): Promise<Map<string, string>> {
+    const hit = this.cache.get(shareId);
+    if (hit && this.now() - hit.at < AVATARS_TTL_MS) return hit.byMember;
+    const byMember = new Map<string, string>();
+    try {
+      for (const m of (await this.shfd.members(token, shareId)).members) if (m.avatar_url) byMember.set(m.username, m.avatar_url);
+    } catch {
+      return hit?.byMember ?? byMember;
+    }
+    this.cache.set(shareId, { at: this.now(), byMember });
+    return byMember;
+  }
+}
+
 class LogsSource extends ArraySource {
   readonly capabilities: Capabilities = { ...READ_ONLY_ARRAY_CAPABILITIES };
   protected readonly label = "collection logs";
@@ -113,16 +142,20 @@ class LogsSource extends ArraySource {
     private readonly feed: LogFeed,
     schema: ConstructorParameters<typeof ArraySource>[0]["schema"],
     private readonly onRefused: OnRefused = () => {},
+    private readonly avatars?: MemberAvatars,
   ) {
     super({ schema, pageSizeDefault: 100 });
   }
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
-    const lines = await this.feed.lines(c.shareId, c.token).catch((e) => refuse(this.onRefused, e, c));
+    const [lines, pics] = await Promise.all([
+      this.feed.lines(c.shareId, c.token).catch((e) => refuse(this.onRefused, e, c)),
+      this.avatars?.get(c.token, c.shareId) ?? new Map<string, string>(),
+    ]);
     return {
       rows: lines.map((l) => {
         const r = toRow(l);
-        return { __meta: meta(r.id), share_id: c.shareId, pos: l.offset, ...r } as Row;
+        return { __meta: meta(r.id), share_id: c.shareId, pos: l.offset, ...r, avatar_url: pics.get(r.member) ?? null } as Row;
       }),
     };
   }
@@ -266,6 +299,7 @@ const membersSchema = SchemaDocSchema.parse({
     ssh_fingerprint_full: { type: "string" },
     connected: { type: "integer" },
     account: { type: "string" },
+    avatar_url: { type: "string" },
     legacy: { type: "bool" },
     devices: { type: "integer" },
     me: { type: "bool" },
@@ -325,6 +359,7 @@ const logsSchema = SchemaDocSchema.parse({
     ts: { type: "datetime" },
     kind: { type: "enum", values: ["izmena", "transfer", "kljuc", "sync", "odbijeno", "ostalo"] },
     member: { type: "string" },
+    avatar_url: { type: "string" },
     op: { type: "string" },
     path: { type: "string" },
     seq: { type: "integer" },
@@ -344,7 +379,7 @@ const logsView = ViewConfigSchema.parse({
   columns: [
     { field: "ts", render: "logtime", width: 172, sortable: false },
     { field: "kind", render: "logkind", width: 100, sortable: false },
-    { field: "member", width: 110, sortable: false },
+    { field: "member", render: "logmember", width: 140, sortable: false },
     { field: "op", render: "op", width: 110, sortable: false },
     { field: "path", render: "logpath", width: "fill", min_width: 200, sortable: false },
     { field: "seq", align: "right", width: 64, sortable: false },
@@ -424,7 +459,7 @@ const trashView = ViewConfigSchema.parse({
 export function buildRegistry(shfd: ShfdClient, feed: LogFeed, onRefused: OnRefused = () => {}): CollectionRegistry {
   const registry = new CollectionRegistry();
   registry.register({ name: "members", label: "Članovi", source: new MembersSource(shfd, membersSchema, onRefused), view: membersView });
-  registry.register({ name: "logs", label: "Logovi", source: new LogsSource(feed, logsSchema, onRefused), view: logsView });
+  registry.register({ name: "logs", label: "Logovi", source: new LogsSource(feed, logsSchema, onRefused, new MemberAvatars(shfd)), view: logsView });
   registry.register({ name: "files", label: "Fajlovi", source: new FilesSource(shfd, filesSchema, onRefused), view: filesView });
   registry.register({ name: "trash", label: "Trash", source: new TrashSource(shfd, trashSchema, onRefused), view: trashView });
   return registry;

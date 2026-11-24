@@ -166,3 +166,14 @@ table.plain td > .badge:first-child { margin-left: 0; }
 details.advanced { margin-top: 12px; font-size: 13px; }
 details.advanced summary { cursor: pointer; color: var(--g-muted); }
 .login-card .foot a svg { vertical-align: -2px; }
+
+/* Profile pictures (Avatar.tsx): the picture fills the circle; initials sit on the account's colour. */
+.avatar { flex: none; overflow: hidden; user-select: none; }
+.avatar.has-img { background: var(--g-bg-sunk); }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-xl { font-size: 34px; }
+.avatar-form { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.avatar-form-side { display: grid; gap: 8px; flex: 1; min-width: 220px; }
+.avatar-form .row-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.small-who { gap: 6px; }
+.page-head > .avatar { margin-right: 4px; }

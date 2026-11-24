@@ -19,6 +19,7 @@
 //	GET  /v1/shares/{id}/admin/files/content  (admin role only; the file, see content.go)
 //	GET  /v1/shares/{id}/files, files/content, thumbs/{hash}  (any member; read-only, see admin.go)
 //	     /v1/auth/..., /v1/me/..., /v1/users      (accounts and device tokens, see accounts.go)
+//	GET  /v1/users/{username}/avatar  (any account or member token; image/jpeg, see avatars.go)
 //	POST /v1/shares/{id}/devices       (account device token; the device's folder token, see accounts.go)
 //
 // The routes of a folder take three credentials (server.AuthenticateFolder):
@@ -430,6 +431,12 @@ func status(c server.Code) int {
 		return http.StatusConflict
 	case server.CodeSSHNotConfigured:
 		return http.StatusNotImplemented
+	case server.CodeImageTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case server.CodeUnsupportedImage:
+		return http.StatusUnsupportedMediaType
+	case server.CodeImageTooManyPixels:
+		return http.StatusUnprocessableEntity
 	case server.CodeHashMismatch, server.CodeSizeMismatch:
 		return http.StatusUnprocessableEntity
 	default:

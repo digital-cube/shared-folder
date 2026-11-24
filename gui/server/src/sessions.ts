@@ -36,6 +36,8 @@ export interface Session {
   role: string;
   /** The member's name in the chosen folder. */
   member: string;
+  /** The account's picture as shfd gives it (avatar_url); null without one. */
+  avatarUrl: string | null;
   createdAt: number;
   lastUsed: number;
 }
@@ -50,6 +52,7 @@ export interface NewSession {
   shareName?: string;
   role?: string;
   member?: string;
+  avatarUrl?: string | null;
 }
 
 export class SessionStore {
@@ -74,6 +77,7 @@ export class SessionStore {
       shareName: s.shareName ?? "",
       role: s.role ?? "",
       member: s.member ?? s.username,
+      avatarUrl: s.avatarUrl ?? null,
       id,
       createdAt: t,
       lastUsed: t,

@@ -1,8 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +133,17 @@ func TestMoveDBs(t *testing.T) {
 	if _, err := sh.AddMember("bob", false); err != nil {
 		t.Fatal(err)
 	}
+	// An account with a profile picture: the picture goes along.
+	p := cheapPW
+	srv.opts.PasswordParams = &p
+	acct, _, err := srv.AddUser("bob", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.SetAvatar(acct.ID, onePixelPNG(t)); err != nil {
+		t.Fatal(err)
+	}
+	pic, _ := os.ReadFile(srv.avatarPath(acct.ID))
 	// The server is still open, so the last commits sit in the WAL and
 	// not in service.db: a copy of the file alone would miss them.
 	if fi, err := os.Stat(sh.DBPath() + "-wal"); err != nil || fi.Size() == 0 {
@@ -167,6 +182,15 @@ func TestMoveDBs(t *testing.T) {
 	if sh2.DBPath() != filepath.Join(to, id, DBFile) {
 		t.Errorf("DBPath %s", sh2.DBPath())
 	}
+	if f, _, err := srv2.Avatar("bob"); err != nil {
+		t.Errorf("picture not in the copy: %v", err)
+	} else {
+		got, _ := io.ReadAll(f)
+		f.Close()
+		if !bytes.Equal(got, pic) || len(pic) == 0 {
+			t.Errorf("picture in the copy differs")
+		}
+	}
 	srv2.Close()
 
 	// Without the new db-root the data-root is refused, so nothing runs
@@ -199,6 +223,10 @@ func TestMoveDBs(t *testing.T) {
 	os.Remove(filepath.Join(root, id, DBFile))
 	os.Remove(filepath.Join(root, id, DBFile+"-wal"))
 	os.Remove(filepath.Join(root, id, DBFile+"-shm"))
+	if _, err := MoveDBs(root, to, root); err == nil || !strings.Contains(err.Error(), AvatarsDir+" already exists") {
+		t.Errorf("move back over the old pictures: %v", err)
+	}
+	os.RemoveAll(filepath.Join(root, AvatarsDir))
 	if _, err := MoveDBs(root, to, root); err != nil {
 		t.Fatal(err)
 	}
@@ -212,6 +240,11 @@ func TestMoveDBs(t *testing.T) {
 	defer srv3.Close()
 	if _, err := srv3.Share(id); err != nil {
 		t.Error(err)
+	}
+	if f, _, err := srv3.Avatar("bob"); err != nil {
+		t.Errorf("picture after moving back: %v", err)
+	} else {
+		f.Close()
 	}
 }
 
@@ -253,4 +286,13 @@ func TestProbe(t *testing.T) {
 	if err := probe(2 * time.Second); err == nil || errors.Is(err, ErrStuck) {
 		t.Errorf("closed database: %v", err)
 	}
+}
+
+func onePixelPNG(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }

@@ -198,7 +198,8 @@ shfd user passwd <username>      # nova privremena lozinka
 shfd user disable <username>     # odmah odjavljuje sve uređaje i sesije naloga
 shfd user enable <username>      # uređaji ostaju odjavljeni; prijavljuje se ponovo
 shfd user list
-shfd user show <username>        # folderi (član, uloga) i uređaji
+shfd user show <username>        # folderi (član, uloga), uređaji i da li ima profilnu sliku
+shfd user avatar rm <username>   # uklanja neprikladnu profilnu sliku (vidi Profilna slika)
 
 shfd member add <share-id> <username> --user [--admin]   # nalog postaje član foldera
 shfd member link <share-id> <član> <username>            # postojeći član dobija vezu sa nalogom
@@ -332,13 +333,17 @@ Za rsync preko SSH-a svaki uređaj treba **svoj** ključ, pa uređaj naloga
 | `POST /v1/auth/forgot` | — | `{"login","lang"}` (username ili email; `lang` `sr`\|`en`) | `202 {status, message}`, uvek isto |
 | `POST /v1/auth/reset` | — | `{"token","new_password","lang"}` | `{username, signed_out}` |
 | `DELETE /v1/me/devices/{id}` | device | — | `{status}` |
+| `PUT /v1/me/avatar` | device | slika kao telo zahteva, ili prvi fajl `multipart/form-data` tela; najviše 5 MB | `{avatar_url, user}` |
+| `DELETE /v1/me/avatar` | device | — | `{status, removed, avatar_url: null}` |
+| `GET /v1/users/{username}/avatar` | device bilo kog naloga, ili token bilo kog aktivnog člana | `?v=<verzija>` | `image/jpeg`; `404` kad slike nema |
 | `GET /v1/users` | device admina foldera, ili token člana-admina | `?q=` (početak username-a ili deo imena) | `[{username, display_name}]`, najviše 20 |
 | `POST /v1/shares/{id}/devices` | device | — | `{token, member, role, device_id, ssh: {user, host, port}}` (folder-token uređaja) |
 | `DELETE /v1/shares/{id}/admin/members/{član}/devices/{device_id}` | admin foldera | — | `{member}` |
 | `POST /v1/shares/{id}/admin/members` | admin foldera | `{"user": "bob", "admin": false}` | `{member, reactivated?}` (bez tokena) |
 
 `user` je `{id, username, display_name, email, must_change, created_at,
-disabled_at?, last_login_at?}` (`email` je `""` kad ga nalog nema); heš lozinke i tokeni se ne vraćaju nigde
+disabled_at?, last_login_at?, avatar_url, avatar_updated_at?}` (`email` je
+`""` kad ga nalog nema, `avatar_url` je `null` kad nema profilnu sliku); heš lozinke i tokeni se ne vraćaju nigde
 osim novog tokena u odgovoru na prijavu. Greške: `invalid_credentials`
 (401), `too_many_attempts` (429), `password_change_required` (403),
 `wrong_password` (403, pogrešna stara lozinka; broji se kao neuspeh),
@@ -346,7 +351,9 @@ osim novog tokena u odgovoru na prijavu. Greške: `invalid_credentials`
 `unknown_device` (404), `user_disabled` i `member_exists` (409),
 `device_revoked` (403, ponovno izdavanje tokena uređaju opozvanom u
 folderu), `invalid_email` (400), `email_taken` (409),
-`invalid_reset_token` (400, link je iskorišćen, istekao ili zamenjen novijim).
+`invalid_reset_token` (400, link je iskorišćen, istekao ili zamenjen novijim),
+`image_too_large` (413), `unsupported_image` (415) i `image_too_many_pixels`
+(422) za profilnu sliku.
 
 ```sh
 TOKEN=$(curl -s -d '{"username":"bob","password":"…","device_name":"laptop","kind":"client"}' \
@@ -354,6 +361,47 @@ TOKEN=$(curl -s -d '{"username":"bob","password":"…","device_name":"laptop","k
 curl -s -H "Authorization: Bearer $TOKEN" https://shf.example.com/v1/me
 curl -s -H "Authorization: Bearer $TOKEN" -d '{"old":"…","new":"…"}' https://shf.example.com/v1/me/password
 curl -s -H "Authorization: Bearer $TOKEN" "https://shf.example.com/v1/shares/$SHARE/admin/files"
+```
+
+### Profilna slika
+
+Nalog sam postavlja, menja i uklanja svoju sliku (u GUI-ju u **Moj nalog**,
+[gui.md](gui.md#moj-nalog)). Bez slike se svuda prikazuju inicijali na boji
+izvedenoj iz korisničkog imena.
+
+- **Šta server prima**: PNG, JPEG, WebP i GIF (od GIF-a samo prvi frejm),
+  najviše **5 MB**. Format se čita iz **sadržaja**, ne iz imena fajla ni iz
+  `Content-Type`, pa HTML stranica nazvana `slika.png` dobija
+  `415 unsupported_image`. Slika veća od **40 megapiksela** odbija se
+  (`422 image_too_many_pixels`) pre dekodiranja, samo na osnovu zaglavlja,
+  što štiti od „dekompresione bombe“ (mali fajl koji tvrdi da ima ogromno
+  platno).
+- **Obrada**: primenjuje se EXIF orijentacija (fotografije sa telefona),
+  iseca se najveći kvadrat iz sredine, smanjuje (ili povećava) na
+  **256×256** i snima kao JPEG kvaliteta 85 **bez metapodataka** (EXIF,
+  GPS i sl. se ne čuvaju). Prozirnost postaje bela. Koristi se isti kod kao
+  za thumbnail-e (`internal/thumbs`).
+- **Skladište**: `<db-root>/avatars/<users.id>.jpg`, na lokalnom disku pored
+  `registry.db` (ne na NFS-u data-root-a), upisan atomično (privremeni fajl
+  + `rename`). U `registry.db` su samo `users.avatar_version` (`NULL` = nema
+  slike) i `users.avatar_updated_at`. `shfd db move` kopira i `avatars/`.
+- **Keš**: `avatar_url` je `/v1/users/<username>/avatar?v=<verzija>`;
+  verzija se menja sa svakom novom slikom. Sa tačnom verzijom odgovor ima
+  `Cache-Control: private, max-age=31536000, immutable` (browser je čuva
+  zauvek, nova slika ima nov URL); sa drugom ili bez nje
+  `private, no-cache` uz `ETag` (304 na `If-None-Match`). Bez tokena je
+  `401`; nalog bez slike i nepostojeći nalog su isti `404`.
+- `avatar_url` je i u `GET /v1/me`, odgovoru na prijavu i u
+  `GET /admin/members` (za člana vezanog za nalog; `null` inače).
+- **Admin servera** uklanja neprikladnu sliku sa `shfd user avatar rm
+  <username>` (radi i dok `shfd serve` radi). `shfd user show` ima red
+  `picture:` (`-` ili `yes, set <vreme>`).
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: image/jpeg' \
+  -X PUT --data-binary @ja.jpg https://shf.example.com/v1/me/avatar
+curl -s -H "Authorization: Bearer $TOKEN" -F avatar=@ja.png -X PUT https://shf.example.com/v1/me/avatar
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE https://shf.example.com/v1/me/avatar
 ```
 
 ### Zaboravljena lozinka
@@ -652,7 +700,8 @@ sudo -u shfd env SHFD_DATA_ROOT=/disk2/shared-storage \
    API-ja**, ne `cp`-om, pa je i ono što je još u WAL-u (`-wal`) deo kopije;
 3. na svakoj kopiji proverava `PRAGMA integrity_check` (mora biti `ok`) i da
    je verzija šeme (`user_version`) ista kao kod originala;
-4. ako u `<to>` već postoji neka od tih baza, ne kopira ništa;
+4. ako u `<to>` već postoji neka od tih baza (ili direktorijum `avatars/`),
+   ne kopira ništa; profilne slike naloga (`avatars/`) kopira kao fajlove;
 5. **stare baze ostavlja** gde su; obrišite ih (`*.db`, `*.db-wal`,
    `*.db-shm`) tek kad server radi kako treba na novim;
 6. u data-root upisuje fajl `db-moved` sa novim db-root-om. Svaka `shfd`

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	sqlite "modernc.org/sqlite"
@@ -20,7 +21,8 @@ type MovedDB struct {
 }
 
 // MoveDBs copies registry.db and every folder's service.db from the
-// db-root from to the db-root to, for shfd db move. The caller makes sure
+// db-root from to the db-root to, for shfd db move; the profile pictures
+// of accounts (avatars/) go along as files. The caller makes sure
 // no server runs (it holds serve.lock of from). Each database is copied
 // with SQLite's online backup API, so what sits in its WAL is part of the
 // copy, and the copy must pass PRAGMA integrity_check and carry the
@@ -65,6 +67,10 @@ func MoveDBs(dataRoot, from, to string) ([]MovedDB, error) {
 			return nil, fmt.Errorf("%s already exists; move it away first, nothing was copied", m.To)
 		}
 	}
+	avFrom, avTo := filepath.Join(fromAbs, AvatarsDir), filepath.Join(toAbs, AvatarsDir)
+	if _, err := os.Lstat(avTo); err == nil {
+		return nil, fmt.Errorf("%s already exists; move it away first, nothing was copied", avTo)
+	}
 	for _, m := range plan {
 		if err := os.MkdirAll(filepath.Dir(m.To), 0o700); err != nil {
 			return nil, err
@@ -76,10 +82,41 @@ func MoveDBs(dataRoot, from, to string) ([]MovedDB, error) {
 			return nil, fmt.Errorf("checking %s: %w", m.To, err)
 		}
 	}
+	if err := copyAvatars(avFrom, avTo); err != nil {
+		return nil, fmt.Errorf("copying %s to %s: %w", avFrom, avTo, err)
+	}
 	if err := writeMovedMarker(abs, toAbs, fromAbs); err != nil {
 		return plan, err
 	}
 	return plan, nil
+}
+
+// copyAvatars copies the pictures in from (none when it does not exist)
+// into the new directory to.
+func copyAvatars(from, to string) error {
+	entries, err := os.ReadDir(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(to, 0o700); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() || strings.HasPrefix(e.Name(), ".") {
+			continue // a temporary file of an upload that did not finish
+		}
+		data, err := os.ReadFile(filepath.Join(from, e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := writeFileAtomic(filepath.Join(to, e.Name()), data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func registryIDs(file string) ([]string, error) {

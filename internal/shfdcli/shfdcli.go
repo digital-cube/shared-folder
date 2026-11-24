@@ -85,6 +85,7 @@ Usage:
   shfd user reset-link <username> [--public-url URL] [--gui-base PATH]
   shfd user passwd|disable|enable|show <username>
   shfd user list
+  shfd user avatar rm <username>
   shfd mail test <addr> [--brevo-key-file FILE] [--mail-from ADDR]
   shfd member add <share-id> <username> [--admin] [--user]
   shfd member link <share-id> <member> <account>
@@ -148,6 +149,8 @@ printed); member link links an existing member to an account, and the
 member's token keeps working. serve --trusted-proxy (default
 $SHFD_TRUSTED_PROXIES, else 127.0.0.1) lists the proxies whose
 X-Forwarded-For gives the client address the sign-in limit counts.
+An account sets its own profile picture (PUT /v1/me/avatar); user show
+says whether it has one and user avatar rm removes an unsuitable one.
 
 Forgotten password (docs/admin.md): an account with an email address
 (user add --email, user set-email; "-" removes it) asks for a link with

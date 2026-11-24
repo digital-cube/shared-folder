@@ -1,8 +1,11 @@
 package shfdcli
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"image"
+	"image/png"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -97,6 +100,36 @@ func TestUserCommands(t *testing.T) {
 	if code, _, errOut = run(t, env, "user", "passwd", "niko"); code != 1 || !strings.Contains(errOut, "no account") {
 		t.Errorf("passwd of unknown: %d %s", code, errOut)
 	}
+	// The profile picture: user show says whether there is one, user
+	// avatar rm removes it.
+	if _, out, _ = run(t, env, "user", "show", "cid"); !regexp.MustCompile(`(?m)^picture:\s+-$`).MatchString(out) {
+		t.Errorf("user show without a picture:\n%s", out)
+	}
+	srv, _ = server.Open(root, server.Options{})
+	cid, _ := srv.UserByName("cid")
+	if _, err := srv.SetAvatar(cid.ID, pngBytes(t)); err != nil {
+		t.Fatal(err)
+	}
+	srv.Close()
+	if _, out, _ = run(t, env, "user", "show", "cid"); !regexp.MustCompile(`(?m)^picture:\s+yes, set `).MatchString(out) {
+		t.Errorf("user show with a picture:\n%s", out)
+	}
+	if code, out, _ = run(t, env, "user", "avatar", "rm", "cid"); code != 0 || !strings.Contains(out, "removed the profile picture of cid") {
+		t.Errorf("avatar rm: %d %s", code, out)
+	}
+	if code, out, _ = run(t, env, "user", "avatar", "rm", "cid"); code != 0 || !strings.Contains(out, "has no profile picture") {
+		t.Errorf("avatar rm twice: %d %s", code, out)
+	}
+	if code, _, _ = run(t, env, "user", "avatar", "rm", "niko"); code != 1 {
+		t.Errorf("avatar rm of an unknown account: %d", code)
+	}
+	if code, _, _ = run(t, env, "user", "avatar"); code != 2 {
+		t.Errorf("user avatar without rm: %d", code)
+	}
+	if _, out, _ = run(t, env, "user", "show", "cid"); !regexp.MustCompile(`(?m)^picture:\s+-$`).MatchString(out) {
+		t.Errorf("user show after rm:\n%s", out)
+	}
+
 	if code, _, _ = run(t, env, "user", "frobnicate"); code != 2 {
 		t.Errorf("unknown subcommand: %d", code)
 	}
@@ -137,4 +170,13 @@ func TestServeTrustedProxyFlag(t *testing.T) {
 	if code, _, errOut := run(t, env, "serve", "--listen", "127.0.0.1:0", "--trusted-proxy", "10.0.0.0/33"); code != 2 {
 		t.Errorf("bad --trusted-proxy: %d %s", code, errOut)
 	}
+}
+
+func pngBytes(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }

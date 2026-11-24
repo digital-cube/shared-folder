@@ -5,6 +5,7 @@ import { overview } from "../../shared/actions";
 import { allowedPages, isAdmin, pageFor, type Page } from "./access";
 import type { Me } from "./api";
 import { useAccount, useApp, usePage, useSession } from "./App";
+import { Avatar } from "./Avatar";
 import { ago, bytes, num } from "./format";
 import { useTr } from "./i18n";
 import { Activity, Check, ChevronDown, Download, Folder, FolderOpen, LogOut, User, Users } from "./icons";
@@ -89,7 +90,7 @@ function UserBadge({ me }: { me: Me }) {
   const tr = useTr();
   const inner = (
     <>
-      <span className="avatar">{me.username.slice(0, 1).toUpperCase()}</span>
+      <Avatar username={me.username} displayName={me.display_name} url={me.avatar_url} />
       <b>{me.username}</b>
       {me.role ? <span className="role">{roleLabel(me.role, tr)}</span> : null}
     </>

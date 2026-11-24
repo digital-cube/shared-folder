@@ -96,6 +96,12 @@ type User struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	DisabledAt  *time.Time `json:"disabled_at,omitempty"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	// AvatarURL is where the account's profile picture is fetched
+	// (AvatarURL), null when it has none. AvatarVersion changes with
+	// every new picture, so the URL does too.
+	AvatarURL       *string    `json:"avatar_url"`
+	AvatarVersion   *int64     `json:"-"`
+	AvatarUpdatedAt *time.Time `json:"avatar_updated_at,omitempty"`
 }
 
 // UserRef is what a search of accounts shows: nothing but the names.
@@ -139,18 +145,24 @@ type UserFolder struct {
 	LastChangeAt *time.Time `json:"last_change_at,omitempty"`
 }
 
-const userCols = `id, username, display_name, coalesce(email, ''), must_change, created_at, disabled_at, last_login_at`
+const userCols = `id, username, display_name, coalesce(email, ''), must_change, created_at, disabled_at, last_login_at, avatar_version, avatar_updated_at`
 
 func scanUser(sc interface{ Scan(...any) error }, extra ...any) (*User, error) {
 	var u User
-	var created, disabled, login sql.NullString
-	if err := sc.Scan(append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.MustChange, &created, &disabled, &login}, extra...)...); err != nil {
+	var created, disabled, login, avatarAt sql.NullString
+	var avatar sql.NullInt64
+	if err := sc.Scan(append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.MustChange, &created, &disabled, &login, &avatar, &avatarAt}, extra...)...); err != nil {
 		return nil, err
 	}
 	if t := parseTime(created); t != nil {
 		u.CreatedAt = *t
 	}
 	u.DisabledAt, u.LastLoginAt = parseTime(disabled), parseTime(login)
+	if avatar.Valid {
+		v := avatar.Int64
+		url := AvatarURL(u.Username, v)
+		u.AvatarVersion, u.AvatarURL, u.AvatarUpdatedAt = &v, &url, parseTime(avatarAt)
+	}
 	return &u, nil
 }
 
@@ -621,7 +633,7 @@ func (s *Server) AuthenticateDevice(token string) (*Session, error) {
 	var kind string
 	var created, seen, expires, revoked sql.NullString
 	u, err := scanUser(s.reg.QueryRow(`SELECT u.id, u.username, u.display_name, coalesce(u.email, ''), u.must_change, u.created_at, u.disabled_at, u.last_login_at,
-		d.id, d.kind, d.created_at, d.last_seen_at, d.expires_at, d.revoked_at
+		u.avatar_version, u.avatar_updated_at, d.id, d.kind, d.created_at, d.last_seen_at, d.expires_at, d.revoked_at
 		FROM devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?`, HashToken(token)),
 		&devID, &kind, &created, &seen, &expires, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1053,7 +1065,7 @@ func (s *Server) UsernamesByID() (map[int64]string, error) {
 	return out, rows.Err()
 }
 
-// FillAccounts sets MemberInfo.Account from MemberInfo.UserID, and the
+// FillAccounts sets MemberInfo.Account and AvatarURL from MemberInfo.UserID, and the
 // name, kind, last use and state of every device in MemberInfo.Devices
 // from the registry. A member with an account but neither its own key nor
 // a device with a working key is pending.
@@ -1066,11 +1078,18 @@ func (s *Server) FillAccounts(ms []MemberInfo) error {
 	if err != nil {
 		return err
 	}
+	avatars, err := s.AvatarURLsByID()
+	if err != nil {
+		return err
+	}
 	now := s.opts.Now()
 	for i := range ms {
 		mi := &ms[i]
 		if mi.UserID != nil {
 			mi.Account = names[*mi.UserID]
+			if u, ok := avatars[*mi.UserID]; ok {
+				mi.AvatarURL = &u
+			}
 		}
 		keyed := false
 		for j := range mi.Devices {

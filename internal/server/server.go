@@ -13,7 +13,8 @@
 //	    thumbnails/          made by shfd thumbs, keyed by content hash (internal/thumbs)
 //	    service.log          human-readable event log
 //	<db-root>/               (Options.DBRoot; the data-root by default)
-//	  registry.db            folders: id (UUID), name, created_at
+//	  registry.db            folders: id (UUID), name, created_at; accounts
+//	  avatars/<user-id>.jpg  profile pictures of accounts (avatars.go)
 //	  <share-id>/
 //	    service.db           SQLite (with -wal and -shm next to it)
 //
@@ -140,6 +141,8 @@ type Server struct {
 	mailWG      sync.WaitGroup // mails being sent (reset.go)
 	mailPending atomic.Int32
 	mailSem     chan struct{} // at most two at a time
+
+	avatarMu sync.Mutex // one change of a profile picture at a time (avatars.go)
 }
 
 // ShareInfo is one row of registry.db.

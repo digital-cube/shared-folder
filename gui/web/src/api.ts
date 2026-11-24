@@ -18,6 +18,8 @@ export interface Me {
   role: string;
   /** The member's name in that folder. */
   member: string;
+  /** The account's picture as shfd gives it (shared/avatar.ts avatarSrc); null without one. */
+  avatar_url?: string | null;
 }
 
 export interface Folder {
@@ -46,7 +48,15 @@ export interface PasswordRules {
 }
 
 export interface Account {
-  user: { username: string; display_name: string; email?: string; must_change: boolean; created_at: string; last_login_at?: string | null };
+  user: {
+    username: string;
+    display_name: string;
+    email?: string;
+    must_change: boolean;
+    created_at: string;
+    last_login_at?: string | null;
+    avatar_url?: string | null;
+  };
   folders: Folder[];
   devices: Device[];
   password_rules?: PasswordRules;
@@ -120,6 +130,33 @@ export const resetPassword = (token: string, newPassword: string, f?: typeof fet
   api<{ ok: boolean; username: string }>("POST", "/api/auth/reset", { token, new_password: newPassword }, f);
 export const setMyEmail = (email: string, currentPassword: string, f?: typeof fetch) =>
   api<{ ok: boolean; email: string }>("PUT", "/api/me/email", { email, current_password: currentPassword }, f);
+
+/** The answer to a new or removed picture: the session with its new avatar_url. */
+export interface AvatarAnswer {
+  ok: boolean;
+  avatar_url: string | null;
+  session: Me;
+}
+
+/** Sends the chosen file as it is; shfd reads the format from the content and makes the square. */
+export async function uploadAvatar(file: Blob, f: typeof fetch = fetch): Promise<Answer<AvatarAnswer>> {
+  let r: Response;
+  try {
+    r = await f(guiUrl("/api/me/avatar"), {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { [LANG_HEADER]: getLang(), "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  } catch {
+    return { ok: false, status: 0, error: tr("GUI server ne odgovara.", "The GUI server is not answering.") };
+  }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, status: r.status, error: data.error ?? tr("Nešto nije uspelo.", "Something went wrong."), code: data.code };
+  return { ok: true, data: data as AvatarAnswer };
+}
+
+export const removeAvatar = (f?: typeof fetch) => api<AvatarAnswer>("DELETE", "/api/me/avatar", undefined, f);
 
 export async function logout(): Promise<void> {
   await api("POST", "/api/logout");

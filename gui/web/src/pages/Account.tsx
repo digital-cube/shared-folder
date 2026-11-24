@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { changePassword, revokeDevice, setMyEmail, type Device, type PasswordRules } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { AVATAR_ACCEPT, avatarFileProblem, type AvatarFileProblem } from "../../../shared/avatar";
+import { changePassword, removeAvatar, revokeDevice, setMyEmail, uploadAvatar, type Device, type PasswordRules } from "../api";
+import { Avatar } from "../Avatar";
 import { useAccount, useSession } from "../App";
 import { Confirm } from "../dialogs";
 import { ago, stamp } from "../format";
@@ -179,6 +181,139 @@ function EmailForm({ current }: { current: string }) {
   );
 }
 
+/** The sentence for a chosen file that is not sent. */
+export function avatarProblemText(p: Exclude<AvatarFileProblem, null>): string {
+  return p === "too_large"
+    ? trNow("Slika je prevelika; najviše 5 MB.", "The picture is too large; 5 MB at most.")
+    : trNow("Taj fajl nije slika u podržanom formatu (PNG, JPEG, WebP ili GIF).", "That file is not a picture in a supported format (PNG, JPEG, WebP or GIF).");
+}
+
+/**
+ * The profile picture: the current one (or the initials), a file to choose
+ * with a preview of it before it is saved, Sačuvaj and Ukloni. The server
+ * cuts the middle square and makes it 256×256, so the preview is cut the
+ * same way (object-fit: cover).
+ */
+export function AvatarForm({ username, displayName, current }: { username: string; displayName?: string; current: string | null }) {
+  const tr = useTr();
+  const { setMe, signedOut } = useSession();
+  const qc = useQueryClient();
+  const input = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => () => void (preview && URL.revokeObjectURL(preview)), [preview]);
+
+  const choose = (f: File | undefined) => {
+    setDone(null);
+    setError(null);
+    if (input.current) input.current.value = "";
+    if (!f) return;
+    const problem = avatarFileProblem(f);
+    if (problem) {
+      setFile(null);
+      setPreview(null);
+      return setError(avatarProblemText(problem));
+    }
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+  };
+  const finish = (r: Awaited<ReturnType<typeof removeAvatar>>, text: string) => {
+    setBusy(false);
+    if (!r.ok) {
+      if (r.status === 401) return signedOut();
+      return setError(r.error);
+    }
+    setFile(null);
+    setPreview(null);
+    setDone(text);
+    setMe(r.data.session);
+    void qc.invalidateQueries({ queryKey: ["account"] });
+  };
+
+  return (
+    <div className="avatar-form" data-testid="avatar-form">
+      <Avatar username={username} displayName={displayName} url={current} preview={preview} size={96} className="avatar-xl" />
+      <div className="avatar-form-side">
+        <input
+          ref={input}
+          id="avatar-file"
+          type="file"
+          accept={AVATAR_ACCEPT}
+          hidden
+          onChange={(e) => choose(e.target.files?.[0])}
+          data-testid="avatar-file"
+        />
+        <div className="row-btns">
+          <button type="button" className="btn" disabled={busy} onClick={() => input.current?.click()} data-testid="avatar-choose">
+            {current || file ? tr("Izaberi drugu sliku…", "Choose another picture…") : tr("Izaberi sliku…", "Choose a picture…")}
+          </button>
+          {file ? (
+            <>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={busy}
+                data-testid="avatar-save"
+                onClick={async () => {
+                  setBusy(true);
+                  setError(null);
+                  finish(await uploadAvatar(file), tr("Slika je sačuvana.", "The picture was saved."));
+                }}
+              >
+                {busy ? tr("Čuvam…", "Saving…") : tr("Sačuvaj", "Save")}
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={busy}
+                onClick={() => {
+                  setFile(null);
+                  setPreview(null);
+                  setError(null);
+                }}
+              >
+                {tr("Otkaži", "Cancel")}
+              </button>
+            </>
+          ) : current ? (
+            <button
+              type="button"
+              className="btn danger"
+              disabled={busy}
+              data-testid="avatar-remove"
+              onClick={async () => {
+                setBusy(true);
+                setError(null);
+                finish(await removeAvatar(), tr("Slika je uklonjena.", "The picture was removed."));
+              }}
+            >
+              {tr("Ukloni", "Remove")}
+            </button>
+          ) : null}
+        </div>
+        <span className="hint">
+          {file
+            ? tr("Pregled: ovako će izgledati posle snimanja (kvadrat iz sredine slike).", "Preview: this is how it will look once saved (the square from the middle).")
+            : tr("PNG, JPEG, WebP ili GIF, najviše 5 MB. Čuva se kvadrat iz sredine, 256×256.", "PNG, JPEG, WebP or GIF, 5 MB at most. The square from the middle is kept, 256×256.")}
+        </span>
+        {error ? (
+          <div className="err-text" role="alert" data-testid="avatar-error">
+            {error}
+          </div>
+        ) : null}
+        {done ? (
+          <div className="banner ok" role="status">
+            {done}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /** The screen of an account with a temporary password: nothing else until it is changed. */
 export function ChangePassword({ forced }: { forced?: boolean }) {
   const tr = useTr();
@@ -247,6 +382,7 @@ export function Account() {
   return (
     <div className="page account-page">
       <div className="page-head">
+        <Avatar username={me.username} displayName={user?.display_name} url={user ? (user.avatar_url ?? null) : me.avatar_url} size={48} />
         <div>
           <h2>{tr("Moj nalog", "My account")}</h2>
           <p>
@@ -263,6 +399,10 @@ export function Account() {
       ) : null}
       <div className="account-grid">
         <div className="account-col">
+          <section className="card">
+            <h4>{tr("Profilna slika", "Profile picture")}</h4>
+            <AvatarForm username={me.username} displayName={user?.display_name} current={user ? (user.avatar_url ?? null) : (me.avatar_url ?? null)} />
+          </section>
           <section className="card">
             <h4>{tr("Email", "Email")}</h4>
             <EmailForm current={user?.email ?? ""} />

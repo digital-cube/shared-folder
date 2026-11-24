@@ -78,6 +78,11 @@ export class FakeShfd {
   lastContentHeaders: Headers | null = null;
   /** The If-None-Match of the last thumbnail request. */
   lastIfNoneMatch: string | null = null;
+  /** Profile pictures by username: the version and the bytes as shfd would store them. */
+  avatars = new Map<string, { v: number; bytes: Uint8Array; type: string }>();
+  /** The Content-Type of the last PUT /v1/me/avatar. */
+  lastAvatarType: string | null = null;
+  private avatarV = 1000;
   private n = 0;
 
   constructor() {
@@ -179,9 +184,50 @@ export class FakeShfd {
     return u && !u.disabled ? d : undefined;
   }
 
+  /** The avatar_url of an account, as shfd gives it. */
+  avatarUrl(username: string): string | null {
+    const a = this.avatars.get(username);
+    return a ? `/v1/users/${username}/avatar?v=${a.v}` : null;
+  }
+
+  /** The routes of pictures; undefined when the path is not one of them. */
+  private pictures(url: URL, method: string, token: string, init: RequestInit | undefined, json: (s: number, b: unknown) => Response, err: (s: number, c: string) => Response): Response | undefined {
+    const gm = /^\/v1\/users\/([^/]+)\/avatar$/.exec(url.pathname);
+    if (gm && method === "GET") {
+      if (!this.deviceOf(token) && !this.members.some((m) => m.token === token && m.status !== "revoked")) return err(401, "unauthorized");
+      const a = this.avatars.get(decodeURIComponent(gm[1]));
+      if (!a) return new Response(JSON.stringify({ error: { code: "not_found", message: "no picture" } }), { status: 404, headers: { "cache-control": "no-store" } });
+      const etag = `"avatar-${a.v}"`;
+      const cache = url.searchParams.get("v") === String(a.v) ? "private, max-age=31536000, immutable" : "private, no-cache";
+      if (new Headers(init?.headers).get("if-none-match") === etag) return new Response(null, { status: 304, headers: { etag, "cache-control": cache } });
+      return new Response(Buffer.from(a.bytes), { status: 200, headers: { "content-type": "image/jpeg", etag, "cache-control": cache } });
+    }
+    if (url.pathname !== "/v1/me/avatar") return undefined;
+    const d = this.deviceOf(token);
+    if (!d) return err(401, "unauthorized");
+    if (method === "DELETE") {
+      const removed = this.avatars.delete(d.user);
+      return json(200, { status: "ok", removed, avatar_url: null });
+    }
+    if (method !== "PUT") return err(405, "method_not_allowed");
+    this.lastAvatarType = new Headers(init?.headers).get("content-type");
+    const bytes = new Uint8Array(init?.body as ArrayBufferLike as ArrayBuffer);
+    if (bytes.length > 5 * 1024 * 1024) return err(413, "image_too_large");
+    // As shfd: the format from the content (PNG or JPEG are enough here).
+    const png = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    const jpg = bytes[0] === 0xff && bytes[1] === 0xd8;
+    if (!png && !jpg) return err(415, "unsupported_image");
+    this.avatars.set(d.user, { v: ++this.avatarV, bytes, type: "image/jpeg" });
+    const u = this.users.find((x) => x.username === d.user)!;
+    const { password: _p, disabled: _d, ...user } = u;
+    return json(200, { avatar_url: this.avatarUrl(d.user), user: { ...user, avatar_url: this.avatarUrl(d.user) } });
+  }
+
   /** The routes of accounts; undefined when the path is not one of them. */
   private accounts(url: URL, method: string, token: string, init: RequestInit | undefined, json: (s: number, b: unknown) => Response, err: (s: number, c: string) => Response): Response | undefined {
-    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    const pic = this.pictures(url, method, token, init, json, err);
+    if (pic) return pic;
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
     if (["/v1/auth/login", "/v1/auth/forgot", "/v1/auth/reset"].includes(url.pathname)) {
       this.lastForwardedFor = new Headers(init?.headers).get("x-forwarded-for");
     }
@@ -246,7 +292,7 @@ export class FakeShfd {
       };
       this.devices.push(d);
       const { password: _p, disabled: _d, ...user } = u;
-      return json(200, { token: d.token, user, must_change: u.must_change });
+      return json(200, { token: d.token, user: { ...user, avatar_url: this.avatarUrl(u.username) }, must_change: u.must_change });
     }
     const isAccount = ["/v1/auth/logout", "/v1/me", "/v1/me/password", "/v1/me/email", "/v1/users"].includes(url.pathname) || url.pathname.startsWith("/v1/me/devices/");
     if (!isAccount) return undefined;
@@ -260,7 +306,7 @@ export class FakeShfd {
     if (url.pathname === "/v1/me") {
       const { password: _p, disabled: _d, ...user } = u;
       return json(200, {
-        user,
+        user: { ...user, avatar_url: this.avatarUrl(u.username) },
         folders: this.foldersOf(u.username),
         devices: this.devices.filter((x) => x.user === u.username && !x.revoked_at).map(({ user: _u, token: t, ...dev }) => ({ ...dev, current: t === token })),
         password_rules: { min_len: 12, max_len: 256, not_username: true, differ_from_old: true },
@@ -401,7 +447,7 @@ export class FakeShfd {
     } else return err(401, "unauthorized");
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     if (rest === "members" && method === "GET") {
-      return json(200, { head: 0, members: this.members.map(({ token: _t, ...m }) => m) });
+      return json(200, { head: 0, members: this.members.map(({ token: _t, ...m }) => ({ ...m, avatar_url: m.account ? this.avatarUrl(m.account) : null })) });
     }
     if (rest === "members" && method === "POST" && body.user) {
       const u = this.users.find((x) => x.username === body.user);
