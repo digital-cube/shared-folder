@@ -67,7 +67,7 @@ function Fingerprint({ value, row }: CellProps) {
 }
 
 function LogTime({ value }: CellProps) {
-  return <span className="mono muted" style={{ fontSize: 12 }}>{stamp(str(value))}</span>;
+  return <span className="mono muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{stamp(str(value))}</span>;
 }
 
 const KIND: Record<string, [string, string]> = {
