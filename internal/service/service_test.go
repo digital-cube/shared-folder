@@ -318,3 +318,35 @@ func TestUnitAndPlistWithoutResolve(t *testing.T) {
 		}
 	}
 }
+
+// Write (shf service install --no-restart, after an automatic update)
+// writes the definition and tells the manager, but restarts nothing.
+func TestWriteRestartsNothing(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			r := &recorder{}
+			tools(t, goodRsync)
+			e, _ := env(t, goos, r)
+			m, err := service.For(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Installed() {
+				t.Fatal("installed before Write")
+			}
+			if err := m.Write(); err != nil {
+				t.Fatal(err)
+			}
+			if !m.Installed() {
+				t.Fatal("not installed after Write")
+			}
+			want := ""
+			if goos == "linux" {
+				want = "systemctl --user daemon-reload"
+			}
+			if got := strings.Join(r.calls, "\n"); got != want {
+				t.Errorf("calls: %q, want %q", got, want)
+			}
+		})
+	}
+}

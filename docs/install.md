@@ -103,14 +103,86 @@ xattr -l "$(command -v shf)"        # ne sme da ispiše com.apple.quarantine
 - Druga mogućnost: pokreni `shf` jednom, pa *System Settings → Privacy &
   Security → Open Anyway*. `xattr` je brži i radi i bez prozora.
 
-Posle zamene binarnog fajla (nova verzija) ponovo: karantin, pa
-`shf service install`.
+Posle **ručne** zamene binarnog fajla (nova verzija) ponovo: karantin, pa
+`shf service install`. `shf update` (dole) ni jedno ni drugo ne traži.
 
 ### Server (`shfd`)
 
 `shfd` iz paketa `linux-amd64` ide na server po
 [docs/server-ssh.md](server-ssh.md) (`/opt/shfd/versions/<verzija>/shfd`,
 symlink `/opt/shfd/current`).
+
+## Ažuriranje (`shf update`)
+
+Kad je `shf` jednom instaliran, ažurira se sa servera foldera, bez ručnog
+preuzimanja. Pravilo: **klijent prati svoj server** — instalira paket čija je
+verzija jednaka verziji koju server prijavljuje (`GET /healthz`), za svoj OS
+i arhitekturu. Najnovija verzija ne postoji kao pojam (verzije su git
+hash-evi).
+
+```sh
+shf version                     # shf 4ac5783
+                                # server https://shf.example.org: 8f3da5e, update available (shf update)
+shf update --check              # šta je dostupno, bez instalacije
+shf update                      # pita, preuzme, proveri SHA-256, zameni shf, restartuje servis
+shf update --yes                # bez pitanja
+shf update --server https://…   # folderi na više servera sa različitim verzijama: izaberi jedan
+```
+
+- Server mora da nudi pakete (`shfd serve --downloads`, vidi
+  [Objavljivanje paketa na serveru](#objavljivanje-paketa-na-serveru)) i
+  među njima paket **iste verzije kao `shfd`**: `make release` i build
+  `shfd`-a koji se deploy-uje iz istog commit-a (ili isti `VERSION=`). Inače
+  `shf update` kaže da nema paket za tu verziju i ne radi ništa.
+- Paket se proverava prema `SHA256SUMS` sa istog servera; ako se ne slaže,
+  ništa se ne menja.
+- `shf` se menja na mestu gde je (`/usr/local/bin/shf`, `~/.local/bin/shf`…),
+  pa taj direktorijum mora biti upisiv za korisnika. Ako nije, `shf update`
+  preuzme i proveri paket u privremeni direktorijum i ispiše tačnu komandu:
+
+  ```
+  shf: cannot replace shf: /usr/local/bin is not writable for you (permission denied)
+  shf 8f3da5e is downloaded and verified in /tmp/shf-update-123; install it as the owner of /usr/local/bin:
+
+    sudo install -m 0755 /tmp/shf-update-123/shf /usr/local/bin/shf
+
+  and then, when the service is installed:
+
+    shf service install
+  ```
+
+  Za automatsko ažuriranje (ispod) je zato najzgodnije držati `shf` u
+  direktorijumu korisnika, npr.
+  `install -D -m 755 shared-folder-…/shf ~/.local/bin/shf` (i `~/.local/bin`
+  u `PATH`-u).
+- Ako je servis instaliran (`shf service install`), novi `shf` ponovo upiše
+  jedinicu ili plist, sa `rsync`-om i `ssh`-om nađenim kao pri instalaciji, i
+  restartuje ga.
+- **macOS:** fajl koji `shf` sam preuzme nema `com.apple.quarantine`, pa
+  nema Gatekeeper prozora ni `xattr` koraka. Ad-hoc potpis koji Go linker
+  stavlja u `darwin/arm64` binarni fajl ostaje važeći: instaliraju se tačno
+  bajtovi iz paketa, kao nov fajl (`rename`), ne upisom preko starog.
+
+**Automatski.** `shf daemon` (i servis) radi isto sam: pri pokretanju i
+zatim na 24 h, zamenu radi između ciklusa sinhronizacije (nikad usred
+prenosa), pa pokreće novi binarni fajl umesto sebe. U
+`settings.json` stanja klijenta (`~/.local/state/shf/settings.json`, na
+macOS-u `~/Library/Application Support/shf/settings.json`):
+
+```json
+{
+  "auto_update": true,
+  "update_interval": "24h"
+}
+```
+
+`"auto_update": false` isključuje automatsko ažuriranje (`shf update` i
+dalje radi). Kad folderi imaju servere različitih verzija, automatsko
+ažuriranje se ne radi (log kaže zašto); `shf update --server <url>` ga radi
+ručno. Svaki pokušaj je jedan red u logu servisa (`journalctl --user -u shf`,
+`~/Library/Logs/shf.log`), npr.
+`auto-update: installed shf 8f3da5e (was 4ac5783); restarting`. Detalji:
+[README.md, Ažuriranje](../README.md#ažuriranje-shf-update).
 
 ## 2. Build iz izvornog koda
 

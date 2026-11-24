@@ -33,7 +33,14 @@ func TestLoadSettings(t *testing.T) {
 	if d := client.DefaultSettings(); time.Duration(d.TransportRetry) != 5*time.Second || time.Duration(d.TransportRetryMax) != 5*time.Minute {
 		t.Errorf("transport retry defaults: %v, %v", d.TransportRetry, d.TransportRetryMax)
 	}
-	for _, bad := range []string{`{"bwlimit": -1}`, `{"poll": "0s"}`, `{"settle": "-1s"}`, `{`,
+	if d := client.DefaultSettings(); !d.AutoUpdate || time.Duration(d.UpdateInterval) != 24*time.Hour {
+		t.Errorf("update defaults: %v, %v", d.AutoUpdate, d.UpdateInterval)
+	}
+	write(`{"auto_update": false, "update_interval": "6h"}`)
+	if s, err = client.LoadSettings(home); err != nil || s.AutoUpdate || time.Duration(s.UpdateInterval) != 6*time.Hour {
+		t.Errorf("auto_update false: %+v %v", s, err)
+	}
+	for _, bad := range []string{`{"update_interval": "0s"}`, `{"bwlimit": -1}`, `{"poll": "0s"}`, `{"settle": "-1s"}`, `{`,
 		`{"transport_retry": "0s"}`, `{"transport_retry": "10m", "transport_retry_max": "5m"}`} {
 		write(bad)
 		if _, err := client.LoadSettings(home); err == nil {

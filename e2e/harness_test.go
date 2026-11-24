@@ -268,8 +268,10 @@ type cluster struct {
 	share    string
 	serveLog string
 	serve    *proc
-	clients  []*client
-	dbh      *sql.DB
+	// serveArgs are added to shfd serve (e.g. --downloads)
+	serveArgs []string
+	clients   []*client
+	dbh       *sql.DB
 }
 
 // newCluster starts sshd and shfd serve with one folder, "tim".
@@ -351,8 +353,8 @@ func (c *cluster) startServer() {
 	c.t.Helper()
 	c.serve = startProc(c.t, "shfd serve", c.serveLog,
 		[]string{"SHFD_DATA_ROOT=" + c.root, "SHFD_DB_ROOT=" + c.dbRoot, "SHFD_AUTHORIZED_KEYS=" + c.ak, "SHFD_BINARY=" + shfdBin},
-		shfdBin, "serve", "--listen", fmt.Sprintf("127.0.0.1:%d", c.port),
-		"--ssh-endpoint", fmt.Sprintf("%s@127.0.0.1:%d", c.sshd.User, c.sshd.Port))
+		shfdBin, append([]string{"serve", "--listen", fmt.Sprintf("127.0.0.1:%d", c.port),
+			"--ssh-endpoint", fmt.Sprintf("%s@127.0.0.1:%d", c.sshd.User, c.sshd.Port)}, c.serveArgs...)...)
 	hc := &http.Client{Timeout: time.Second}
 	eventually(c.t, 20*time.Second, "shfd serve answers", func() error {
 		if !c.serve.running() {

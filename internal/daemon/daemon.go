@@ -24,7 +24,14 @@
 //     before the schedule's first pause. A refused key is logged once,
 //     when it starts;
 //   - ignores the changes its own cycles make on disk (downloads), so they
-//     are not sent back.
+//     are not sent back;
+//   - with Config.Updater (settings auto_update), checks at start and every
+//     Settings.UpdateInterval whether its server runs another version and
+//     publishes a package of it (internal/update). A new shf is staged
+//     while the folders keep synchronizing, installed between cycles (no
+//     new cycle starts, the running ones finish), and then Run stops the
+//     folders and returns ErrUpdated so that the caller starts the new
+//     binary.
 //
 // On SIGTERM (the context ends) every folder finishes the step in progress
 // and the daemon returns.
@@ -71,6 +78,12 @@ type Config struct {
 	// Clock schedules the cycles of the folders; nil is the system clock
 	// (tests set a fake one).
 	Clock Clock
+	// Updater, when set, updates shf on its own (Settings.AutoUpdate):
+	// at start and every UpdateInterval (default 24 h).
+	Updater        Updater
+	UpdateInterval time.Duration
+
+	gate *cycleGate // set by Run
 }
 
 // Clock is the time as the folders' loops see it.
@@ -91,7 +104,8 @@ func (systemClock) At(t time.Time) (<-chan time.Time, func()) {
 }
 
 // Run serves every joined folder until ctx ends. Folders joined while it
-// runs are picked up within Settings.Poll.
+// runs are picked up within Settings.Poll. After an automatic update it
+// returns ErrUpdated.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -107,6 +121,19 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer unlock()
+
+	cfg.gate = &cycleGate{}
+	restart := make(chan struct{})
+	updCtx, cancelUpd := context.WithCancel(ctx)
+	var updWG sync.WaitGroup
+	if cfg.Updater != nil {
+		updWG.Add(1)
+		go func() {
+			defer updWG.Done()
+			autoUpdate(updCtx, cfg, cfg.gate, restart)
+		}()
+	}
+	defer func() { cancelUpd(); updWG.Wait() }()
 
 	stop := make(chan struct{})
 	hard, cancelHard := context.WithCancel(context.Background())
@@ -138,16 +165,24 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	t := time.NewTicker(time.Duration(cfg.Settings.Poll))
 	defer t.Stop()
+	updated := false
 	for {
 		select {
 		case <-t.C:
 			rescan()
 			continue
 		case <-ctx.Done():
+		case <-restart:
+			updated = true
 		}
 		break
 	}
-	cfg.Log.Info("stopping: finishing the step in progress")
+	if updated {
+		// the gate stays shut: no cycle is running, none starts
+		cfg.Log.Info("stopping for the update")
+	} else {
+		cfg.Log.Info("stopping: finishing the step in progress")
+	}
 	close(stop)
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
@@ -158,6 +193,11 @@ func Run(ctx context.Context, cfg Config) error {
 		cancelHard()
 		<-done
 	}
+	cancelUpd()
+	updWG.Wait()
 	cfg.Log.Info("stopped")
+	if updated {
+		return ErrUpdated
+	}
 	return nil
 }

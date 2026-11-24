@@ -59,7 +59,8 @@ func TestCommands(t *testing.T) {
 
 	os.WriteFile(filepath.Join(folder, "second.txt"), []byte("2"), 0o644)
 	code, out = run("status", folder)
-	if code != 0 || !strings.Contains(out, "pending:    1 changes") || !strings.Contains(out, "bad?.txt") {
+	if code != 0 || !strings.Contains(out, "pending:    1 changes") || !strings.Contains(out, "bad?.txt") ||
+		!strings.Contains(out, "version:    shf dev; server dev, up to date") {
 		t.Errorf("status: %d\n%s", code, out)
 	}
 	code, out = run("sync", folder)

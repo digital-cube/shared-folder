@@ -354,7 +354,10 @@ Postoje (TCKTJMT57D): `join` (uz `--ssh user@host[:port]` kad treba zameniti
 ono što server javlja preko `shfd serve --ssh-endpoint`), `sync`, `status`,
 `log`; folder je podrazumevano tekući direktorijum ili bilo koji ispod
 pridruženog foldera. Dodato (TCK5FHY9NF): `daemon`, `confirm`,
-`restore-local`, `service install|uninstall|status`.
+`restore-local`, `service install|uninstall|status`. Dodato (TCKERYXRJ2):
+`update [--check] [--server URL] [--yes]` (klijent prati verziju svog
+servera, i sam u `shf daemon`-u), `version [--short]` sa verzijom servera
+([install.md](install.md#ažuriranje-shf-update)).
 
 Admin (na serveru): `shfd serve`, `shfd share create`,
 `shfd member add|revoke|set-role|reset-token|list`,

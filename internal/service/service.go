@@ -119,7 +119,14 @@ func (env Env) Resolve() (Env, error) {
 type Manager interface {
 	// File is where the unit or agent definition is written.
 	File() string
+	// Installed says the definition is there.
+	Installed() bool
+	// Install writes the definition and (re)starts the daemon with it.
 	Install() error
+	// Write only writes the definition (and tells the service manager
+	// about it), leaving a running daemon alone: shf daemon after it
+	// updated itself, before it restarts on its own.
+	Write() error
 	Uninstall() error
 	// Status returns the manager's own report and whether the daemon runs.
 	Status() (report string, running bool, err error)
@@ -262,7 +269,9 @@ func Unit(env Env) string {
 
 func (s *systemd) File() string { return s.file }
 
-func (s *systemd) Install() error {
+func (s *systemd) Installed() bool { return fileExists(s.file) }
+
+func (s *systemd) Write() error {
 	env, err := s.env.Resolve()
 	if err != nil {
 		return err
@@ -270,15 +279,25 @@ func (s *systemd) Install() error {
 	if err := writeFile(s.file, []byte(Unit(env))); err != nil {
 		return err
 	}
-	if _, err := run(s.env, "systemctl", "--user", "daemon-reload"); err != nil {
+	_, err = run(s.env, "systemctl", "--user", "daemon-reload")
+	return err
+}
+
+func (s *systemd) Install() error {
+	if err := s.Write(); err != nil {
 		return err
 	}
 	// restart picks up a new binary or unit when it was running already
 	if _, err := run(s.env, "systemctl", "--user", "enable", SystemdUnit); err != nil {
 		return err
 	}
-	_, err = run(s.env, "systemctl", "--user", "restart", SystemdUnit)
+	_, err := run(s.env, "systemctl", "--user", "restart", SystemdUnit)
 	return err
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func (s *systemd) Uninstall() error {
@@ -378,7 +397,11 @@ func (l *launchd) domain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 
 func (l *launchd) File() string { return l.file }
 
-func (l *launchd) Install() error {
+func (l *launchd) Installed() bool { return fileExists(l.file) }
+
+// Write writes the plist; launchd reads it at the next bootstrap (the
+// next login, or shf service install).
+func (l *launchd) Write() error {
 	env, err := l.env.Resolve()
 	if err != nil {
 		return err
@@ -386,12 +409,16 @@ func (l *launchd) Install() error {
 	if err := os.MkdirAll(filepath.Dir(l.LogFile()), 0o755); err != nil {
 		return err
 	}
-	if err := writeFile(l.file, []byte(Plist(env, l.LogFile()))); err != nil {
+	return writeFile(l.file, []byte(Plist(env, l.LogFile())))
+}
+
+func (l *launchd) Install() error {
+	if err := l.Write(); err != nil {
 		return err
 	}
 	// bootout first, so a reinstall loads the new definition
 	run(l.env, "launchctl", "bootout", l.domain()+"/"+LaunchdLabel)
-	_, err = run(l.env, "launchctl", "bootstrap", l.domain(), l.file)
+	_, err := run(l.env, "launchctl", "bootstrap", l.domain(), l.file)
 	return err
 }
 

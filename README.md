@@ -35,8 +35,9 @@ preko SSH-a.
 | `internal/thumbs` | sličice slika i PDF-ova: dekodiranje u čistom Go-u (EXIF orijentacija), `pdftoppm` sa rokom, veličine `s`/`m`/`l` (96/256/512 px, JPEG), skladište `thumbnails/` po hash-u sadržaja, markeri `.fail` i `.work` | 3 „Thumbnails“ |
 | `internal/shfdcli` | komande `shfd`; admin komande idu kroz `admin.sock` pokrenutog servera ili, bez njega, kroz isti handler u procesu | 8.5 |
 | `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
-| `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad | 8.3 |
+| `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad, automatsko ažuriranje između ciklusa | 8.3 |
 | `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent; pamti putanje `rsync`-a i `ssh`-a i postavlja `PATH`, odbija star rsync | 8.3 |
+| `internal/update` | `shf update` i automatsko ažuriranje u `shf daemon`-u: paket verzije servera (`/healthz`) za `GOOS/GOARCH` sa `/v1/downloads`, provera prema `SHA256SUMS`, raspakivanje pored binarnog fajla, `version --short`, `os.Rename` | 8.5 |
 | `internal/shfcli` | komande `shf` | 8.5 |
 | `internal/sshdtest` | privremeni `sshd` za integracione testove | — |
 | `e2e` | testovi s kraja na kraj (build tag `e2e`, `make e2e`): pravi `shfd`, `shf daemon`-i i rsync preko SSH-a | 6, 7, 8 |
@@ -110,9 +111,10 @@ opisani u [docs/server-ssh.md](docs/server-ssh.md).
 
 ## Klijent
 
-Instalacija `shf` (gotov paket ili build): [docs/install.md](docs/install.md).
-Na macOS-u posle instalacije preuzetog paketa obavezno skinuti karantin, inače
-ga Gatekeeper ne pušta:
+Instalacija `shf` (gotov paket ili build): [docs/install.md](docs/install.md);
+posle toga se `shf` ažurira sam, sa svog servera (`shf update`, vidi
+[Ažuriranje](#ažuriranje-shf-update)). Na macOS-u posle **prve** instalacije
+preuzetog paketa obavezno skinuti karantin, inače ga Gatekeeper ne pušta:
 
 ```sh
 sudo xattr -d com.apple.quarantine "$(command -v shf)"
@@ -124,6 +126,8 @@ shf join https://shf.example.org <share-id> <token> ~/Tim   # pridruživanje i p
 shf sync   [<folder>]    # jedan ciklus; izlazni kod 1 ako nešto nije uspelo
 shf status [<folder>]    # poslednji sync, seq i HEAD, promene koje čekaju, problemi
 shf log    [<folder>]    # poslednji ciklusi i šta je u njima urađeno
+shf update [--check]     # verzija koju server koristi, i njena instalacija
+shf version              # verzija ovog shf-a, servera, i da li ima ažuriranja
 ```
 
 `join` u folder koji već ima fajlove samo spaja (ništa se ne briše). Stanje
@@ -175,8 +179,8 @@ poll-a. Na Linux-u je jedinica `~/.config/systemd/user/shf.service`, log se
 čita sa `journalctl --user -u shf`; na macOS-u je agent
 `~/Library/LaunchAgents/rs.digitalcube.shf.plist`, a log
 `~/Library/Logs/shf.log`. Ako je pri instalaciji postavljen
-`SHF_STATE_HOME`, upisuje se u jedinicu. Posle zamene binarnog fajla
-ponovo pokrenite `shf service install`.
+`SHF_STATE_HOME`, upisuje se u jedinicu. Posle ručne zamene binarnog fajla
+ponovo pokrenite `shf service install` (`shf update` to radi sam).
 
 Servis ne vidi `PATH` vašeg shell-a (launchd daje samo
 `/usr/bin:/bin:/usr/sbin:/sbin`), pa `shf service install` **pamti putanje
@@ -236,15 +240,98 @@ podrazumevanu vrednost:
   "transport_retry": "5s",
   "transport_retry_max": "5m",
   "mass_delete": {"files": 20, "percent": 10},
-  "bwlimit": 0
+  "bwlimit": 0,
+  "auto_update": true,
+  "update_interval": "24h"
 }
 ```
+
+`auto_update` uključuje automatsko ažuriranje u `shf daemon`-u (pri
+pokretanju i zatim na `update_interval`); `false` ga isključuje, a
+`shf update` i dalje radi ručno. Vidi [Ažuriranje](#ažuriranje-shf-update).
 
 `bwlimit` ograničava brzinu svakog prenosa u KiB/s (rsync `--bwlimit`), 0 je
 bez ograničenja. Prekinut prenos (pukla veza, ugašen ili srušen klijent) se
 nastavlja od onoga što je već stiglo: server za istu najavu vraća isti
 `upload_id`, a preuzimanje ostaje u `.shf-tmp-part-<hash>` pored odredišta.
 Sa `shf daemon -v` svaki prenos se loguje (`msg=transfer … sent=… matched=…`).
+
+### Ažuriranje (`shf update`)
+
+**Klijent prati svoj server.** Verzije su kratki git hash-evi (`git
+describe`) i ne mogu da se porede po veličini, pa `shf` ne traži
+„najnoviju“ verziju: traži paket čija je verzija baš ona koju server
+prijavljuje na `GET /healthz`, za svoj OS i arhitekturu, među paketima koje
+server nudi (`shfd serve --downloads`, `GET /v1/downloads`).
+
+```sh
+shf update --check              # update available: shf 4ac5783 → 8f3da5e (…), ili zašto nema šta
+shf update                      # pita, pa instalira; --yes bez pitanja
+shf update --server https://…   # kad folderi na više servera imaju različite verzije
+```
+
+- Već je na verziji servera, server nema paket za ovaj sistem, ili server
+  nije pokrenut sa `--downloads`: ne radi ništa i kaže to.
+- Server se bira iz pridruženih foldera. Ako su folderi na više servera, svi
+  moraju da odgovore i da imaju istu verziju; inače `shf update` ispiše
+  verziju svakog i traži `--server <url>`, a automatsko ažuriranje se ne
+  radi. Bez pridruženih foldera treba `--server`.
+- Paket se preuzima bez tokena, sa rokom (10 min) i ograničenjem veličine
+  (256 MiB), proverava se SHA-256 prema `SHA256SUMS` sa istog servera
+  (paket koji tamo nije naveden ili se ne slaže se ne instalira), `shf` se
+  raspakuje u privremeni fajl (`.shf-update-*`) **u istom direktorijumu** kao
+  trenutni binarni fajl, nova verzija mora da prijavi verziju servera
+  (`shf version --short`), i tek onda se jednim `rename`-om stavlja preko
+  starog. Kad bilo šta od toga ne uspe, stari binarni fajl ostaje kakav je.
+- Ako direktorijum binarnog fajla nije upisiv (npr. `/usr/local/bin`
+  vlasništvo root-a), `shf update` paket ipak preuzme i proveri u privremeni
+  direktorijum, pa ispiše komandu kojom se postavlja
+  (`sudo install -m 0755 /tmp/shf-update-…/shf /usr/local/bin/shf`) i posle
+  nje `shf service install`. Automatsko ažuriranje tada samo upiše u log da
+  ne može. Ko želi da se `shf` ažurira sam, drži ga u direktorijumu u koji
+  korisnik sme da piše (npr. `~/.local/bin`); vlasništvo nad samim fajlom
+  nije dovoljno, jer se pravi nov fajl pored njega.
+- Posle zamene, ako je servis instaliran, nova verzija sama ponovo upiše
+  jedinicu ili plist (`shf service install`, sa putanjama `rsync`-a i `ssh`-a
+  nađenim kao pri instalaciji) i restartuje ga. Bez servisa, `shf daemon`
+  pokrenut ručno radi staru verziju dok se ponovo ne pokrene.
+
+**Automatski, u `shf daemon`-u** (`auto_update`, podrazumevano uključeno):
+pri pokretanju i zatim na `update_interval` (24 h) daemon radi isto što i
+`shf update --yes`. Paket preuzima i proverava dok folderi normalno rade,
+a zamenu radi **između ciklusa**: novi ciklus ne počinje, tekući (i prenos
+u njemu) se završi, pa tek onda `rename`. Zatim zaustavi foldere i
+**pokrene novi binarni fajl na mestu starog procesa** (`execve`, isti PID).
+Zašto re-exec, a ne izlaz i `Restart=`/`KeepAlive`: radi isto pod systemd-om,
+launchd-om i kad je `shf daemon` pokrenut ručno; jedinica ima
+`Restart=on-failure`, pa uredan izlaz ne bi restartovao, a namerna greška bi
+se brojala u ograničenja restartova (i `RestartSec`/`ThrottleInterval`
+od 10 s); PID ostaje isti, pa systemd i launchd i dalje prate isti proces.
+Definiciju servisa daemon upiše novom verzijom
+(`shf service install --no-restart`: bez restarta, jer se restartuje sam),
+pa važi od sledećeg pokretanja. Svaki pokušaj je jedan red u logu:
+
+```
+level=INFO msg="auto-update: up to date: shf 8f3da5e, server https://… runs 8f3da5e"
+level=INFO msg="auto-update: installed shf 8f3da5e (was 4ac5783); restarting" from=https://…
+level=WARN msg="auto-update failed; next try in 24h0m0s" err="…"
+```
+
+Posle neuspeha čeka sledeći interval (nema ponavljanja u petlji).
+
+`shf version` pokazuje verziju ovog `shf`-a i, za svaki server pridruženih
+foldera, njegovu verziju i da li je ažuriranje dostupno; `shf status` to
+pokazuje za server foldera (red `version:`). `shf version --short` ispisuje
+samo prvi red.
+
+**macOS.** Fajl koji `shf` sam preuzme (HTTP iz Go-a) nema atribut
+`com.apple.quarantine`, pa posle `shf update` nema Gatekeeper prozora i ne
+treba `xattr`. Go linker binarne fajlove za `darwin/arm64` potpisuje ad-hoc
+potpisom (u samom fajlu); `shf update` stavlja tačno bajtove iz paketa
+(proverene SHA-256), u **nov fajl** koji `rename` stavi na mesto starog, pa
+potpis ostaje važeći i macOS ne kešira potpis starog fajla (upis preko
+postojećeg fajla, npr. `cp` na njega, je ono što na Apple čipu daje
+`killed`).
 
 ### Zaštita od masovnog brisanja
 

@@ -69,6 +69,11 @@ type Settings struct {
 	// BwLimit caps the bandwidth of each transfer in KiB/s (rsync's
 	// --bwlimit); 0 means unlimited.
 	BwLimit int `json:"bwlimit"`
+	// AutoUpdate: shf daemon installs the version its server runs, when
+	// the server publishes a package of it (internal/update), at start and
+	// every UpdateInterval.
+	AutoUpdate     bool     `json:"auto_update"`
+	UpdateInterval Duration `json:"update_interval"`
 }
 
 // DefaultSettings are the values of the specification.
@@ -85,6 +90,9 @@ func DefaultSettings() Settings {
 
 		TransportRetry:    Duration(5 * time.Second),
 		TransportRetryMax: Duration(5 * time.Minute),
+
+		AutoUpdate:     true,
+		UpdateInterval: Duration(24 * time.Hour),
 	}
 }
 
@@ -105,7 +113,8 @@ func LoadSettings(home string) (Settings, error) {
 	}
 	for name, d := range map[string]Duration{"debounce": s.Debounce, "poll": s.Poll, "full_sync": s.FullSync,
 		"reconnect_max": s.ReconnectMax, "ping": s.Ping, "retry_max": s.RetryMax,
-		"transport_retry": s.TransportRetry, "transport_retry_max": s.TransportRetryMax} {
+		"transport_retry": s.TransportRetry, "transport_retry_max": s.TransportRetryMax,
+		"update_interval": s.UpdateInterval} {
 		if d <= 0 {
 			return s, fmt.Errorf("%s: %s must be positive", file, name)
 		}

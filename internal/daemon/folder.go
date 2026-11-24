@@ -254,9 +254,14 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 				return
 			default:
 			}
+			// an update being installed holds the cycle back
+			if !f.cfg.gate.enter(stop) {
+				return
+			}
 			full := reason == ReasonFull || reason == ReasonStart
 			f.clearDirty() // changes from now on call for the next cycle
 			res, err := c.SyncWith(hard, client.SyncOptions{Full: full, Stop: stop})
+			f.cfg.gate.leave()
 			if f.cfg.OnCycle != nil {
 				f.cfg.OnCycle(f.fc.ShareID, reason, res, err)
 			}

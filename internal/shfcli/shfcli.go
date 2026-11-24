@@ -9,6 +9,8 @@
 //	shf restore-local [<folder>]
 //	shf log [<folder>] [-n N]
 //	shf service install|uninstall|status
+//	shf update [--check] [--server URL] [--yes]
+//	shf version [--short]
 package shfcli
 
 import (
@@ -43,8 +45,9 @@ Usage:
   shf confirm [<folder>]
   shf restore-local [<folder>]
   shf log [<folder>] [-n N]
-  shf service install|uninstall|status
-  shf version
+  shf service install [--no-restart]|uninstall|status
+  shf update [--check] [--server URL] [--yes]
+  shf version [--short]
   shf help
 
 join connects a local folder (created if missing; existing files are
@@ -64,6 +67,17 @@ your session (systemd user unit on Linux, launchd agent on macOS); it
 records the rsync and ssh found now (in PATH, or $SHF_RSYNC and
 $SHF_SSH) and refuses an rsync older than 3.2.4, so run it again after
 replacing rsync.
+
+update installs the version of shf that the server of the joined
+folders runs (its /healthz), from the packages it publishes (shfd serve
+--downloads): checked against the server's SHA256SUMS, put in place of
+this binary in one rename, and the service restarted when it is
+installed. --check only says what is available; with folders on several
+servers that run different versions, name the one to follow with
+--server. shf daemon does the same on its own at start and every 24 h,
+between cycles, and then restarts (settings.json: auto_update,
+update_interval). version also shows each server's version and whether
+an update is available; --short prints only this shf's version.
 
 A cycle that would delete more than 20 files, or more than 10 % of the
 folder (whichever is less), on the server sends none of the deletions:
@@ -86,11 +100,20 @@ type Env struct {
 	Ctx context.Context
 	// Options are passed to the client (tests inject a transport).
 	Options client.Options
+	// Stdin answers shf update's question (nil: there is nobody to ask).
+	Stdin io.Reader
+	// Exe is the shf binary shf update replaces ("": the running one).
+	Exe string
+	// GOOS and GOARCH choose the package ("": the running platform).
+	GOOS, GOARCH string
+	// Exec starts the updated shf daemon in place of this process (nil:
+	// execve).
+	Exec func(exe string, argv []string) error
 }
 
 // Main runs with the process environment.
 func Main(args []string) int {
-	return Run(args, Env{Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv})
+	return Run(args, Env{Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv, Stdin: os.Stdin})
 }
 
 type usageErr struct{ msg string }
@@ -118,8 +141,9 @@ func Run(args []string, env Env) int {
 	var err error
 	switch args[0] {
 	case "version", "-version", "--version", "-v":
-		fmt.Fprintf(env.Stdout, "shf %s\n", version.Version)
-		return 0
+		err = versionCmd(ctx, args[1:], env)
+	case "update":
+		err = updateCmd(ctx, args[1:], env)
 	case "help", "-help", "--help", "-h":
 		fmt.Fprint(env.Stdout, usage)
 		return 0
@@ -328,6 +352,7 @@ func status(ctx context.Context, args []string, env Env) error {
 	}
 	w := env.Stdout
 	fmt.Fprintf(w, "folder:     %s\nshare:      %s\nserver:     %s\n", s.Config.Folder, s.Config.ShareID, s.Config.URL)
+	fmt.Fprintf(w, "version:    %s\n", statusVersion(ctx, env, s.Config.URL))
 	switch {
 	case s.Last == nil:
 		fmt.Fprintln(w, "last sync:  never")
@@ -442,12 +467,39 @@ func daemonCmd(ctx context.Context, args []string, env Env) error {
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, &slog.HandlerOptions{Level: level}))
 	log.Info("shf daemon starting", "version", version.Version, "state", home)
-	return daemon.Run(ctx, daemon.Config{Home: home, Settings: set, Options: env.Options, Log: log})
+	cfg := daemon.Config{Home: home, Settings: set, Options: env.Options, Log: log,
+		UpdateInterval: time.Duration(set.UpdateInterval)}
+	exe, err := env.exe()
+	if err != nil {
+		return err
+	}
+	if u := daemonUpdater(env, home, set, exe, func(msg string) { log.Info(msg) }); u != nil {
+		cfg.Updater = u
+	} else {
+		log.Info("auto-update off (settings.json: auto_update)")
+	}
+	err = daemon.Run(ctx, cfg)
+	if !errors.Is(err, daemon.ErrUpdated) {
+		return err
+	}
+	// The new binary takes over this process: the same PID, so systemd
+	// and launchd keep tracking it, a daemon started by hand goes on too,
+	// and no restart limit of the service manager is spent.
+	log.Info("starting the new shf", "exe", exe)
+	run := env.Exec
+	if run == nil {
+		run = execSelf
+	}
+	return run(exe, append([]string{exe, "daemon"}, args...))
 }
 
 func serviceCmd(args []string, env Env) error {
+	noRestart := false
+	if len(args) == 2 && args[0] == "install" && args[1] == "--no-restart" {
+		args, noRestart = args[:1], true
+	}
 	if len(args) != 1 {
-		return usageError("service: want install, uninstall or status")
+		return usageError("service: want install [--no-restart], uninstall or status")
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -475,6 +527,14 @@ func serviceCmd(args []string, env Env) error {
 	w := env.Stdout
 	switch args[0] {
 	case "install":
+		if noRestart {
+			// shf daemon after an automatic update: it restarts itself
+			if err := m.Write(); err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "wrote %s (the running daemon was left alone)\n", m.File())
+			return nil
+		}
 		if err := m.Install(); err != nil {
 			return err
 		}
