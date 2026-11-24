@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -33,10 +34,18 @@ func TestKeysRevokeAndGate(t *testing.T) {
 	srv, _ := server.Open(root, opts)
 	sh, _ := srv.Share(id)
 	bob, _ := sh.MemberByID(2)
-	if _, err := sh.SetSSHKey(bob, testKey); err != nil {
+	if _, _, err := sh.SetSSHKey(bob, testKey); err != nil {
 		t.Fatal(err)
 	}
 	srv.Close()
+
+	// member list shows the fingerprint of each member's current key.
+	_, out, _ = run(t, env, "member", "list", id)
+	if !regexp.MustCompile(`(?m)^bob\s.*\s`+regexp.QuoteMeta(authkeys.Fingerprint(testKey))+`$`).MatchString(out) ||
+		!regexp.MustCompile(`(?m)^admin\s.*\s-$`).MatchString(out) || !strings.Contains(out, "SSH KEY") {
+		t.Errorf("member list:\n%s", out)
+	}
+
 	data, _ := os.ReadFile(ak)
 	absRoot, _ := filepath.Abs(root)
 	if !strings.Contains(string(data), `command="/opt/shfd/bin/shfd rsync-gate --data-root `+absRoot+` --share `+id+` --member 2",`) {

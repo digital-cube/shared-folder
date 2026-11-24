@@ -41,6 +41,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/server"
 	"github.com/digital-cube/shared-folder/internal/server/httpapi"
 	"github.com/digital-cube/shared-folder/internal/version"
@@ -381,13 +382,19 @@ func memberCmd(args []string, env Env) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ")
+		// SSH KEY is the fingerprint of the member's one registered key: the
+		// device that joined last (shf join replaces an earlier device's key).
+		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ\tSSH KEY")
 		for _, m := range ms {
 			st := "active"
 			if m.RevokedAt != nil {
 				st = "revoked " + m.RevokedAt.Format(time.RFC3339)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked)
+			fp := "-"
+			if m.SSHPubkey != "" {
+				fp = authkeys.Fingerprint(m.SSHPubkey)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked, fp)
 		}
 		return tw.Flush()
 	}

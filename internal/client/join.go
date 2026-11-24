@@ -33,6 +33,19 @@ type JoinRequest struct {
 	// the server (shfd serve --ssh-endpoint), then from defaults: the host
 	// of URL, port 22, user "shfd".
 	SSH SSH
+	// Warn, when set, is told what the user should know but does not stop
+	// the join: KeyReplacedWarning when registering this device's key
+	// replaced another device's key of the same member.
+	Warn func(msg string)
+}
+
+// KeyReplacedWarning is the warning shf join prints when the member was
+// already joined from another device, whose key (fingerprint) this join
+// replaced: the server keeps one key per member.
+func KeyReplacedWarning(fingerprint string) string {
+	return "this member was already joined from another device (key " + fingerprint + "); " +
+		"that device can no longer sync. Every device or person needs its own member and its own token " +
+		"(shfd member add on the server)"
 }
 
 // Join connects a local folder to a shared folder: it checks the token
@@ -99,7 +112,7 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 		return nil, nil, err
 	}
 	if opts.Transport == nil {
-		if cfg.SSH, err = setupSSH(ctx, a, cfg, u, req.SSH); err != nil {
+		if cfg.SSH, err = setupSSH(ctx, a, cfg, u, req.SSH, req.Warn); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -123,7 +136,7 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 // setupSSH creates the member's key (or reuses the one an interrupted
 // join left), registers it, settles the endpoint and connects once, which
 // remembers the server's host key and proves the key is accepted.
-func setupSSH(ctx context.Context, a *api, cfg *Config, u *url.URL, over SSH) (*SSH, error) {
+func setupSSH(ctx context.Context, a *api, cfg *Config, u *url.URL, over SSH, warn func(string)) (*SSH, error) {
 	var pub string
 	if b, err := os.ReadFile(cfg.KeyFile() + ".pub"); err == nil {
 		pub = strings.TrimSpace(string(b))
@@ -137,6 +150,9 @@ func setupSSH(ctx context.Context, a *api, cfg *Config, u *url.URL, over SSH) (*
 	res, err := a.setSSHKey(ctx, pub)
 	if err != nil {
 		return nil, fmt.Errorf("registering the SSH key: %w", err)
+	}
+	if res.Replaced != nil && warn != nil {
+		warn(KeyReplacedWarning(res.Replaced.Fingerprint))
 	}
 	ep := &SSH{User: over.User, Host: over.Host, Port: over.Port}
 	if ep.User == "" {

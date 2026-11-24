@@ -223,7 +223,8 @@ func join(ctx context.Context, args []string, env Env) error {
 	if err != nil {
 		return err
 	}
-	c, res, err := client.Join(ctx, client.JoinRequest{Home: home, URL: pos[0], ShareID: pos[1], Token: pos[2], Folder: pos[3], SSH: ep}, env.Options)
+	c, res, err := client.Join(ctx, client.JoinRequest{Home: home, URL: pos[0], ShareID: pos[1], Token: pos[2], Folder: pos[3], SSH: ep,
+		Warn: func(msg string) { fmt.Fprintf(env.Stderr, "shf: warning: %s\n", msg) }}, env.Options)
 	if c != nil {
 		defer c.Close()
 		fmt.Fprintf(env.Stdout, "joined %s to share %s\nstate: %s\n", c.Config().Folder, c.Config().ShareID, c.Config().Dir)

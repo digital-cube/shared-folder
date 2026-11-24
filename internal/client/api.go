@@ -87,6 +87,11 @@ type sshKeyResponse struct {
 		Host string `json:"host"`
 		Port int    `json:"port"`
 	} `json:"ssh"`
+	// Replaced is set when the member's earlier, different key (another
+	// device's) was replaced.
+	Replaced *struct {
+		Fingerprint string `json:"fingerprint"`
+	} `json:"replaced"`
 }
 
 // APIError is a refusal of the server, with its machine-readable code

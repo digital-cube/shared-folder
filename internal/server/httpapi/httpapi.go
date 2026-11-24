@@ -280,6 +280,15 @@ type SSHKeyResponse struct {
 	// SSH is where rsync over SSH connects (shfd serve --ssh-endpoint);
 	// empty fields are left to the client's defaults.
 	SSH server.SSHEndpoint `json:"ssh"`
+	// Replaced is set when the member had a different key, registered by
+	// another device, which can no longer sync. Absent on the first
+	// registration and when the same key is registered again.
+	Replaced *ReplacedKey `json:"replaced,omitempty"`
+}
+
+// ReplacedKey is the key a registration replaced.
+type ReplacedKey struct {
+	Fingerprint string `json:"fingerprint"`
 }
 
 func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
@@ -287,11 +296,15 @@ func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share
 	if err := decode(r, &req); err != nil {
 		return nil, err
 	}
-	key, err := sh.SetSSHKey(m, req.PublicKey)
+	key, old, err := sh.SetSSHKey(m, req.PublicKey)
 	if err != nil {
 		return nil, err
 	}
-	return SSHKeyResponse{PublicKey: key, Fingerprint: authkeys.Fingerprint(key), SSH: a.srv.SSH()}, nil
+	res := SSHKeyResponse{PublicKey: key, Fingerprint: authkeys.Fingerprint(key), SSH: a.srv.SSH()}
+	if old != "" {
+		res.Replaced = &ReplacedKey{Fingerprint: authkeys.Fingerprint(old)}
+	}
+	return res, nil
 }
 
 // status maps an error code to its HTTP status.

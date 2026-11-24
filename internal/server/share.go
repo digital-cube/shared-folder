@@ -287,45 +287,60 @@ func (s *Share) RevokeMember(username string) error {
 
 // SetSSHKey registers the member's SSH public key: it is stored in
 // members.ssh_pubkey and written to authorized_keys as the member's line,
-// replacing an earlier key. It returns the key as stored ("type base64").
-func (s *Share) SetSSHKey(m *Member, pubkey string) (string, error) {
+// replacing an earlier key. It returns the key as stored ("type base64")
+// and, when that replaced a different key, the replaced one: a member has
+// one key, so the device that registered it can no longer sync. Such a
+// replacement leaves a key-replaced line in service.log. Registering the
+// same key again (a join repeated after an interruption) replaces nothing.
+func (s *Share) SetSSHKey(m *Member, pubkey string) (key, replaced string, err error) {
 	if s.keys == nil {
-		return "", errf(CodeSSHNotConfigured, "this server does not manage SSH keys (no authorized_keys file configured)")
+		return "", "", errf(CodeSSHNotConfigured, "this server does not manage SSH keys (no authorized_keys file configured)")
 	}
-	key, err := authkeys.ParsePublicKey(pubkey)
+	key, err = authkeys.ParsePublicKey(pubkey)
 	if err != nil {
-		return "", errf(CodeInvalidKey, "%v", err)
+		return "", "", errf(CodeInvalidKey, "%v", err)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer tx.Rollback()
 	var revoked sql.NullString
-	if err := tx.QueryRow(`SELECT revoked_at FROM members WHERE id = ?`, m.ID).Scan(&revoked); err != nil {
+	var old string
+	if err := tx.QueryRow(`SELECT revoked_at, ssh_pubkey FROM members WHERE id = ?`, m.ID).Scan(&revoked, &old); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", errf(CodeUnknownMember, "no member %d", m.ID)
+			return "", "", errf(CodeUnknownMember, "no member %d", m.ID)
 		}
-		return "", err
+		return "", "", err
 	}
 	if revoked.Valid {
-		return "", errf(CodeUnauthorized, "member %s is revoked", m.Username)
+		return "", "", errf(CodeUnauthorized, "member %s is revoked", m.Username)
 	}
 	if _, err := tx.Exec(`UPDATE members SET ssh_pubkey = ? WHERE id = ?`, key, m.ID); err != nil {
-		return "", err
+		return "", "", err
 	}
 	// The file is written while the row is locked, so a concurrent revoke
 	// cannot slip in between and leave the line behind.
 	if err := s.keys.Set(authkeys.Entry{ShareID: s.ID, MemberID: m.ID, Username: m.Username, Key: key}); err != nil {
 		if errors.Is(err, authkeys.ErrKeyInUse) {
-			return "", errf(CodeKeyInUse, "%v", err)
+			return "", "", errf(CodeKeyInUse, "%v", err)
 		}
-		return "", err
+		return "", "", err
 	}
 	if err := tx.Commit(); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return key, nil
+	if old == "" || old == key {
+		return key, "", nil
+	}
+	line := fmt.Sprintf("%s key-replaced member=%s old=%s new=%s\n",
+		fmtTime(s.now()), m.Username, authkeys.Fingerprint(old), authkeys.Fingerprint(key))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The key is registered; a log line that cannot be written does not
+	// undo that.
+	_ = s.writeLog([]byte(line))
+	return key, old, nil
 }
 
 // MemberByID returns a member, revoked or not.

@@ -143,6 +143,17 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
   Ključ se upisuje u `members.ssh_pubkey` i u blok. Novi ključ zamenjuje
   stari. Odgovor sadrži sačuvani ključ, njegov SHA256 otisak i `ssh` (korisnik,
   host i port iz `--ssh-endpoint`). `shf join` ovo radi sam.
+
+  **Jedan član = jedan uređaj**: član ima jedan ključ, pa kad isti član
+  registruje ključ sa drugog uređaja, prvi uređaj više ne može da sinhronizuje
+  (`Permission denied (publickey)`). Kad novi ključ zamenjuje **drugačiji**
+  postojeći, odgovor ima i `"replaced": {"fingerprint": "SHA256:…"}` (otisak
+  zamenjenog ključa), u `service.log` foldera ide red
+  `key-replaced member=marko old=SHA256:… new=SHA256:…`, a `shf join`
+  upozorava korisnika. Isti ključ ponovo (ponovljen `join` posle prekida) nije
+  zamena. Zamena se ne odbija; za drugi uređaj ili osobu napravite novog člana
+  (`shfd member add`). Trenutni ključ svakog člana pokazuje kolona `SSH KEY` u
+  `shfd member list` (vidi [admin.md](admin.md#jedan-član--jedan-uređaj)).
 - **Opoziv**: `shfd member revoke <share-id> <username>` briše red. `rsync-gate`
   odbija opozvanog člana i ako red iz nekog razloga još postoji, i na SSH vezi
   koja je otvorena pre opoziva (vidi niže): član se proverava pri svakom

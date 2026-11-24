@@ -49,7 +49,7 @@ shfd member add <share-id> bob [--admin]   # ispisuje token člana (samo tada); 
 shfd member revoke <share-id> bob
 shfd member set-role <share-id> bob admin|member   # ne oduzima ulogu poslednjem adminu (last_admin)
 shfd member reset-token <share-id> bob     # nov token aktivnom članu; stari odmah prestaje, SSH ključ ostaje
-shfd member list <share-id>
+shfd member list <share-id>                # i otisak trenutnog SSH ključa (uređaj koji je aktivan)
 shfd share list
 shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
 shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem] [--ssh-endpoint shfd@host:22]
@@ -108,6 +108,17 @@ je `shf join` ponovo, u isti folder, sa sopstvenim tokenom: ključ ovog
 uređaja se ponovo registruje, a stanje foldera ostaje. Svaki uređaj treba
 da ima svog člana (token); jedan token na dva uređaja znači da radi samo
 poslednji koji se pridružio.
+
+**Jedan član = jedan uređaj.** Server čuva jedan SSH ključ po članu. Kad se
+član pridruži sa drugog uređaja, `shf join` tamo upozorava:
+
+```
+shf: warning: this member was already joined from another device (key SHA256:…); that device can no longer sync. Every device or person needs its own member and its own token (shfd member add on the server)
+```
+
+Join se ipak završi, ali prvi uređaj od tada dobija `key refused`. Ponovljen
+`join` sa istog uređaja (isti ključ, npr. posle prekida) ne upozorava. Za
+drugi uređaj ili drugu osobu admin pravi novog člana (`shfd member add`).
 
 ### Pozadinski klijent
 

@@ -112,7 +112,7 @@ func newWorld(t *testing.T) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.sh.SetSSHKey(w.ana, w.pubKey); err != nil {
+	if _, _, err := w.sh.SetSSHKey(w.ana, w.pubKey); err != nil {
 		t.Fatal(err)
 	}
 

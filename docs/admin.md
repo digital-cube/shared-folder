@@ -59,6 +59,42 @@ procesu odmah). API pozivi starim tokenom dobijaju `401` odmah.
 Username je jedinstven u folderu, **i za opozvane članove**: opozvan član
 ostaje u listi i u istoriji (`updated_by`, „by“ u trash-u, dnevnik).
 
+### Jedan član = jedan uređaj
+
+Server čuva **jedan SSH ključ po članu** (`members.ssh_pubkey`). Svaki
+`shf join` registruje ključ uređaja na kome je pokrenut i time zamenjuje
+prethodni. Ako se isti član pridruži sa drugog uređaja (npr. Mac i Linux kao
+`marko`), prvi uređaj od tada dobija `Permission denied (publickey)` i
+`shf status` na njemu pokazuje `state: key refused`. Zato svaki uređaj i svaka
+osoba treba svog člana i svoj token: `shfd member add <share-id> marko-linux`.
+
+Kad zamena ipak desi (drugi ključ, ne isti):
+
+- `shf join` na novom uređaju ispisuje upozorenje sa otiskom zamenjenog
+  ključa;
+- u `service.log` foldera ide red
+  ```
+  2026-11-24T10:15:02.3Z key-replaced member=marko old=SHA256:… new=SHA256:…
+  ```
+- `PUT /v1/shares/{id}/ssh-key` u odgovoru ima `"replaced": {"fingerprint": "SHA256:…"}`.
+
+Ponovljen `join` sa istog uređaja (isti ključ, npr. posle prekida) nije
+zamena i ne ostavlja ništa od toga. Zamena se ne odbija; uređaj koji je
+izgubio ključ vraća se ponovnim `shf join`, čime opet zamenjuje ključ onog
+drugog.
+
+Koji je uređaj trenutno aktivan pokazuje kolona `SSH KEY` u
+`shfd member list`: SHA256 otisak registrovanog ključa (`-` ako ga član još
+nema). Isti otisak daje `ssh-keygen -lf ~/.local/state/shf/<share-id>/id_ed25519.pub`
+na uređaju (na macOS-u `~/Library/Application Support/shf/<share-id>/`).
+
+```
+USERNAME  ROLE    STATUS  LAST SEEN             LAST PUSH             ACKED SEQ  SSH KEY
+ana       admin   active  2026-11-24T10:14:00Z  2026-11-24T09:58:12Z  41         SHA256:3vQk…
+marko     member  active  2026-11-24T10:15:02Z  -                     41         SHA256:Yp7c…
+ivan      member  active  -                     -                     0          -
+```
+
 ### Uloga: `set-role`
 
 ```
