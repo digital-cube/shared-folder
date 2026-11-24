@@ -17,6 +17,11 @@
 //	     /v1/shares/{id}/admin/...     (admin role only, see admin.go)
 //	GET  /v1/shares/{id}/admin/thumbs/{hash}  (admin role only; image/jpeg, see thumbs.go)
 //	GET  /v1/shares/{id}/admin/files/content  (admin role only; the file, see content.go)
+//	     /v1/auth/..., /v1/me/..., /v1/users      (accounts and device tokens, see accounts.go)
+//
+// The routes of a folder also take the device token of an account that is
+// an active member of it (see accounts.go), except the WebSocket and
+// PUT ssh-key: devices get their own credentials for a folder later.
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
@@ -28,6 +33,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,6 +100,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 		log = slog.Default()
 	}
 	a := &api{srv: srv, log: log, ping: 30 * time.Second, memberCheck: 10 * time.Second}
+	a.trusted, _ = ParseTrustedProxies(DefaultTrustedProxies)
 	for _, o := range opts {
 		o(a)
 	}
@@ -110,6 +117,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	registerAdmin(mux, a.admin, a.adminRaw, a)
 	registerDownloads(mux, a)
 	registerThumbs(mux, a)
+	registerAccounts(mux, a)
 	// Without a method in the pattern: the catch-all "/" below matches
 	// every method, so the mux would answer 404 instead of 405.
 	mux.HandleFunc("/healthz", a.health)
@@ -126,6 +134,7 @@ type api struct {
 
 	ping, memberCheck time.Duration
 	downloads         string          // directory of the packages, "" = none (downloads.go)
+	trusted           []netip.Prefix  // proxies whose X-Forwarded-For is believed (accounts.go)
 	ctx               context.Context // canceled by Handler.Close
 	cancel            context.CancelFunc
 }
@@ -260,7 +269,9 @@ func bearerToken(r *http.Request) string {
 }
 
 // authenticate resolves the folder and member of a request, answering it
-// with an error when that fails.
+// with an error when that fails. The token is a member token of the
+// folder, or the device token of an account that is an active member of
+// it; either way the result is that member.
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Share, *server.Member, bool) {
 	token := bearerToken(r)
 	if token == "" {
@@ -276,7 +287,12 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Shar
 		a.fail(w, r, err)
 		return nil, nil, false
 	}
-	m, err := sh.Authenticate(token)
+	var m *server.Member
+	if server.IsDeviceToken(token) {
+		m, err = a.deviceMember(sh, token)
+	} else {
+		m, err = sh.Authenticate(token)
+	}
 	if err != nil {
 		a.fail(w, r, err)
 		return nil, nil, false
@@ -363,6 +379,9 @@ type ReplacedKey struct {
 }
 
 func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	if server.IsDeviceToken(bearerToken(r)) {
+		return nil, &server.Error{Code: server.CodeForbidden, Message: "an SSH key is registered with the member's token; device keys come with device credentials"}
+	}
 	var req SSHKeyRequest
 	if err := decode(r, &req); err != nil {
 		return nil, err
@@ -381,16 +400,19 @@ func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share
 // status maps an error code to its HTTP status.
 func status(c server.Code) int {
 	switch c {
-	case server.CodeUnauthorized:
+	case server.CodeUnauthorized, server.CodeInvalidCredentials:
 		return http.StatusUnauthorized
-	case server.CodeForbidden:
+	case server.CodeForbidden, server.CodePasswordChangeRequired, server.CodeWrongPassword:
 		return http.StatusForbidden
-	case server.CodeNotFound, server.CodeUnknownUpload, server.CodeUnknownShare, server.CodeUnknownMember, server.CodeUnknownTrash:
+	case server.CodeTooManyAttempts:
+		return http.StatusTooManyRequests
+	case server.CodeNotFound, server.CodeUnknownUpload, server.CodeUnknownShare, server.CodeUnknownMember, server.CodeUnknownTrash,
+		server.CodeUnknownUser, server.CodeUnknownDevice:
 		return http.StatusNotFound
 	case server.CodeStaleBase, server.CodeCaseConflict, server.CodeDestExists, server.CodeKindMismatch,
 		server.CodeParentNotDir, server.CodeIsDir, server.CodeDirNotEmpty, server.CodeUploadMissing,
 		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged, server.CodeLastAdmin,
-		server.CodeFileChanged:
+		server.CodeFileChanged, server.CodeUserExists, server.CodeUserDisabled:
 		return http.StatusConflict
 	case server.CodeSSHNotConfigured:
 		return http.StatusNotImplemented
@@ -404,6 +426,9 @@ func status(c server.Code) int {
 func (a *api) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var se *server.Error
 	if errors.As(err, &se) {
+		if se.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int((se.RetryAfter+time.Second-1)/time.Second)))
+		}
 		writeErr(w, status(se.Code), se.Code, se.Message)
 		return
 	}

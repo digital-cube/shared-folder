@@ -124,6 +124,9 @@ type Member struct {
 	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
 	LastPushAt   *time.Time `json:"last_push_at,omitempty"`
 	LastSeqAcked int64      `json:"last_seq_acked"`
+	// UserID is the account (registry.db users.id) the member is linked
+	// to; nil for a member that has only its token.
+	UserID *int64 `json:"user_id,omitempty"`
 }
 
 // NewToken returns a fresh random token: "shf_" and 43 base64url characters
@@ -163,12 +166,24 @@ func (s *Share) AddMember(username string, admin bool) (string, error) {
 // call or push replaces them. A name of an active member fails with
 // CodeMemberExists.
 func (s *Share) AddOrReactivateMember(username string, admin bool) (token string, reactivated bool, err error) {
+	return s.addOrReactivate(username, admin, 0)
+}
+
+// addOrReactivate is AddOrReactivateMember; a userID other than 0 links
+// the member to that account (members.user_id). The account must not be
+// another active member of the folder already; a revoked member of the
+// account is the one brought back, whatever its name.
+func (s *Share) addOrReactivate(username string, admin bool, userID int64) (token string, reactivated bool, err error) {
 	if err := pathx.ValidateUsername(username); err != nil {
 		return "", false, errf(CodeInvalidRequest, "%v", err)
 	}
 	role := RoleMember
 	if admin {
 		role = RoleAdmin
+	}
+	var link any // NULL unless userID is set
+	if userID != 0 {
+		link = userID
 	}
 	token = NewToken()
 	tx, err := s.db.Begin()
@@ -178,11 +193,33 @@ func (s *Share) AddOrReactivateMember(username string, admin bool) (token string
 	defer tx.Rollback()
 	var id int64
 	var revoked sql.NullString
-	err = tx.QueryRow(`SELECT id, revoked_at FROM members WHERE username = ?`, username).Scan(&id, &revoked)
+	var linked sql.NullInt64
+	err = tx.QueryRow(`SELECT id, revoked_at, user_id FROM members WHERE username = ?`, username).Scan(&id, &revoked, &linked)
+	if userID != 0 {
+		var byUser string
+		var byUserRevoked sql.NullString
+		uerr := tx.QueryRow(`SELECT id, username, revoked_at FROM members WHERE user_id = ?`, userID).Scan(&id, &byUser, &byUserRevoked)
+		switch {
+		case errors.Is(uerr, sql.ErrNoRows):
+			if err == nil && linked.Valid {
+				return "", false, errf(CodeMemberExists, "member %q of the folder belongs to another account", username)
+			}
+			if err == nil && !revoked.Valid {
+				return "", false, errf(CodeMemberExists, "member %q already exists, with its own token; link it to the account with shfd member link", username)
+			}
+		case uerr != nil:
+			return "", false, uerr
+		case !byUserRevoked.Valid:
+			return "", false, errf(CodeMemberExists, "the account is already member %q of the folder", byUser)
+		default:
+			// The account's revoked member comes back, under its own name.
+			username, revoked, err = byUser, byUserRevoked, nil
+		}
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := tx.Exec(`INSERT INTO members (username, token_hash, role, created_at) VALUES (?, ?, ?, ?)`,
-			username, HashToken(token), role, fmtTime(s.now())); err != nil {
+		if _, err := tx.Exec(`INSERT INTO members (username, token_hash, role, created_at, user_id) VALUES (?, ?, ?, ?, ?)`,
+			username, HashToken(token), role, fmtTime(s.now()), link); err != nil {
 			return "", false, err
 		}
 	case err != nil:
@@ -192,7 +229,7 @@ func (s *Share) AddOrReactivateMember(username string, admin bool) (token string
 	default:
 		reactivated = true
 		if _, err := tx.Exec(`UPDATE members SET token_hash = ?, role = ?, revoked_at = NULL, ssh_pubkey = '',
-			last_seq_acked = 0 WHERE id = ?`, HashToken(token), role, id); err != nil {
+			last_seq_acked = 0, user_id = coalesce(?, user_id) WHERE id = ?`, HashToken(token), role, link, id); err != nil {
 			return "", false, err
 		}
 		// revoke removed the line, but its removal may have failed; the
@@ -397,13 +434,17 @@ func (s *Share) CheckUpload(memberID int64, uploadID string) error {
 	return err
 }
 
-const memberCols = `id, username, role, ssh_pubkey, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked`
+const memberCols = `id, username, role, ssh_pubkey, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, user_id`
 
 func scanMember(sc interface{ Scan(...any) error }) (*Member, error) {
 	var m Member
 	var created, revoked, seen, push sql.NullString
-	if err := sc.Scan(&m.ID, &m.Username, &m.Role, &m.SSHPubkey, &created, &revoked, &seen, &push, &m.LastSeqAcked); err != nil {
+	var user sql.NullInt64
+	if err := sc.Scan(&m.ID, &m.Username, &m.Role, &m.SSHPubkey, &created, &revoked, &seen, &push, &m.LastSeqAcked, &user); err != nil {
 		return nil, err
+	}
+	if user.Valid {
+		m.UserID = &user.Int64
 	}
 	if t := parseTime(created); t != nil {
 		m.CreatedAt = *t

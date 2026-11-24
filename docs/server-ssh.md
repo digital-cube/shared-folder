@@ -120,6 +120,8 @@ Environment=SHFD_AUTHORIZED_KEYS=/var/lib/shfd/.ssh/authorized_keys
 Environment=SHFD_BINARY=/usr/local/bin/shfd
 # paketi za preuzimanje (make release), docs/install.md; može i bez
 Environment=SHFD_DOWNLOADS=/var/lib/shfd/downloads
+# proxy-ji čiji se X-Forwarded-For veruje (prijava lozinkom); vidi niže
+#Environment=SHFD_TRUSTED_PROXIES=127.0.0.1
 ExecStart=/usr/local/bin/shfd serve --listen 127.0.0.1:8443
 Restart=on-failure
 
@@ -149,6 +151,49 @@ idu `/healthz`, `/downloads/…` i `/v1/downloads`.
   ostalo na shfd-gui (8444), a `/gui/…` dobija `301` na `/…`. shfd-ov
   `GET /` se tada spolja ne vidi; za proveru služi `/healthz`.
   Vidi [gui.md](gui.md#base-path-koren-ili-gui).
+
+### Adresa klijenta (X-Forwarded-For)
+
+Prijava lozinkom (`POST /v1/auth/login`, [admin.md](admin.md#nalozi))
+ograničava pokušaje i po adresi klijenta i upisuje je u `auth_log`. Iza
+reverse proxy-ja shfd vidi samo adresu proxy-ja, pa adresu klijenta čita iz
+`X-Forwarded-For`, ali **samo** kad veza dolazi od pouzdanog proxy-ja:
+
+```sh
+shfd serve --trusted-proxy 127.0.0.1,<adresa spoljnog proxy-ja>   # ili SHFD_TRUSTED_PROXIES
+```
+
+Lista su adrese ili CIDR opsezi, odvojeni zarezom; podrazumevano
+`127.0.0.1` (nginx na istoj mašini). Od desnog kraja zaglavlja shfd
+preskače pouzdane hop-ove, a prvi sledeći je klijent; sve levo od njega
+(što je klijent mogao sam da pošalje) se ignoriše. Zahtev koji ne dolazi od
+pouzdanog proxy-ja ostaje na svojoj adresi, šta god pisalo u zaglavlju.
+
+**Dva nginx-a** (spoljni, npr. na hipervizoru, koji prosleđuje na nginx na
+VM-u, koji prosleđuje na shfd na `127.0.0.1:8443`):
+
+1. **Oba** moraju da dodaju adresu u zaglavlje, u svakoj `location` koja
+   ide ka shfd-u (`/v1/`):
+   ```nginx
+   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+   ```
+   `gui/deploy/nginx-gui-root.conf` i `nginx-gui.conf` to već imaju za nginx
+   na VM-u; spoljni nginx treba proveriti i podesiti pri deploy-u. Ako
+   spoljni ne šalje zaglavlje, svi klijenti izgledaju kao on, pa pet
+   pogrešnih lozinki bilo koga zaključava prijavu svima.
+2. shfd mora da veruje i **spoljnom** proxy-ju: nginx na VM-u dodaje adresu
+   spoljnog (`klijent, <spoljni>`), pa bez nje u `--trusted-proxy` shfd bi
+   za klijenta uzeo spoljni proxy:
+   ```ini
+   Environment=SHFD_TRUSTED_PROXIES=127.0.0.1,<adresa spoljnog nginx-a viđena sa VM-a>
+   ```
+
+Provera: posle jedne pogrešne prijave poslednji red `auth_log` treba da
+ima adresu vašeg računara, a ne proxy-ja:
+
+```sh
+sqlite3 "$SHFD_DB_ROOT/registry.db" 'SELECT * FROM auth_log ORDER BY rowid DESC LIMIT 1'
+```
 
 ## 4. `sshd`
 

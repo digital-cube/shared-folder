@@ -26,8 +26,9 @@ preko SSH-a.
 | `internal/pathx` | normalizacija i provera putanja (NFC, `/`, Windows-bezbedna imena), `FoldKey` za poređenje bez veličine slova, imena konflikt, trash i `restored` fajlova, provera korisničkog imena | 6 „Imena“, 3 „Trash“ |
 | `internal/hashx` | SHA-256 celog fajla, strimovano, hex malim slovima | 5 |
 | `internal/ignore` | `.shfignore` sa semantikom `.gitignore`, ugnježdeni fajlovi, ugrađena lista i privremeni fajlovi klijenta | 7 |
-| `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, pravila iz odeljka 6, trash (lista, vraćanje, čišćenje), `verify [--repair]`, statistike, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 4, 6 |
-| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu), admin pozivi (`admin/trash`, `admin/verify`, `admin/stats`, `admin/files` sa stanjem sličice, `admin/thumbs/{hash}`, samo uloga `admin`) i lokalni admin socket (uz rute za `shfd thumbs`: `thumbs/jobs`, `thumbs/done`, `thumbs/unreferenced`) | 4 |
+| `internal/password` | lozinke naloga: Argon2id u PHC zapisu, provera u konstantnom vremenu, rehash slabijih parametara, pravila (12–256 znakova, ne username), privremena lozinka | — |
+| `internal/server` | `registry.db`, folderi, `service.db` sa numerisanim migracijama, članovi, nalozi (korisnici, uređaji, sesije, ograničenje pokušaja, `user_shares`), pravila iz odeljka 6, trash (lista, vraćanje, čišćenje), `verify [--repair]`, statistike, `service.log`, žurnal koraka na disku za oporavak posle pada | 3, 4, 6 |
+| `internal/server/httpapi` | kontrolni API: `changes`, `uploads`, `commit`, `ops`, `sync-report`, `ssh-key`, WebSocket `ws` (`{"head": N}`, ping/pong, opoziv zatvara vezu), prijava i nalozi (`auth/login`, `auth/logout`, `me`, `users`; device token i na rutama foldera; `X-Forwarded-For` samo od `--trusted-proxy`), admin pozivi (`admin/trash`, `admin/verify`, `admin/stats`, `admin/files` sa stanjem sličice, `admin/thumbs/{hash}`, samo uloga `admin`) i lokalni admin socket (uz rute za `shfd thumbs`: `thumbs/jobs`, `thumbs/done`, `thumbs/unreferenced`) | 4 |
 | `internal/transport` | interfejs `Transport` i lokalna implementacija (testovi) | 5 |
 | `internal/transport/rsyncssh` | `Transport` preko sistemskog `rsync`-a i `ssh`-a: nastavljanje prekinutog uploada i downloada (i posle ponovnog pokretanja klijenta), download u `.shf-tmp-part-<hash>` i rename, provera hash-a, ključ servera u direktorijumu stanja | 5 |
 | `internal/rsyncgate` | prinudna komanda `shfd rsync-gate`: propušta samo upis u `tmp/<upload_id>` i čitanje iz `storage/` | 5 |
@@ -53,10 +54,16 @@ shfd member revoke <share-id> bob
 shfd member set-role <share-id> bob admin|member   # ne oduzima ulogu poslednjem adminu (last_admin)
 shfd member reset-token <share-id> bob     # nov token aktivnom članu; stari odmah prestaje, SSH ključ ostaje
 shfd member list <share-id>                # i otisak trenutnog SSH ključa (uređaj koji je aktivan)
+shfd user add bob [--display-name "Bob B."]   # nalog sa lozinkom; ispisuje privremenu lozinku (samo tada)
+shfd user passwd|disable|enable|show bob      # disable odmah odjavljuje sve uređaje naloga
+shfd user list
+shfd member add <share-id> bob --user [--admin]   # nalog postaje član foldera (bez tokena)
+shfd member link <share-id> marko marko           # postojeći član dobija nalog; token mu i dalje radi
 shfd share list
 shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
 shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem] [--ssh-endpoint shfd@host:22]
            [--downloads /var/lib/shfd/downloads]   # paketi iz make release na /downloads/ (SHFD_DOWNLOADS)
+           [--trusted-proxy 127.0.0.1,10.0.0.1]     # čiji X-Forwarded-For se veruje (SHFD_TRUSTED_PROXIES)
 
 shfd trash list <share-id> [--path P] [--by U] [--reason deleted|replaced] [--since 2026-11-01]
 shfd trash restore <share-id> <trash-id> [--to <putanja>]
@@ -85,6 +92,17 @@ zaustavlja pisca foldera. `shfd serve` upozorava (`level=WARN`) kad su baze
 na mrežnom disku; postojeće baze premešta `shfd db move`
 ([docs/server-ssh.md](docs/server-ssh.md#baze-na-lokalnom-disku),
 [docs/admin.md](docs/admin.md#premeštanje-baza-shfd-db-move)).
+
+**Nalozi.** Pored tokena člana (jedan token = jedan folder) server ima
+naloge sa lozinkom: `POST /v1/auth/login` daje **device token** (`shd_…`)
+kojim nalog vidi svoje foldere (`GET /v1/me`) i radi na svakom folderu u
+kom je član, kao taj član. Naloge pravi samo admin servera (`shfd user
+add`); privremena lozinka se menja pri prvoj prijavi. Lozinke su Argon2id,
+pokušaji prijave su ograničeni po nalogu i po adresi (iza proxy-ja:
+`--trusted-proxy`), GUI sesija ističe posle 12 h neaktivnosti (najviše 7
+dana). Prijava tokenom radi kao i do sada. Opis, CLI i API:
+[docs/admin.md](docs/admin.md#nalozi); proxy:
+[docs/server-ssh.md](docs/server-ssh.md#adresa-klijenta-x-forwarded-for).
 
 Username ostaje zauzet i kad je član opozvan: opozvanog člana vraća
 `shfd member add` sa istim imenom (isti id i istorija, nov token, uloga prema

@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/fsnotify/fsnotify v1.10.1
+	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
 	golang.org/x/text v0.44.0
 	modernc.org/sqlite v1.63.0

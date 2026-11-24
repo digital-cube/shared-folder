@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Code is a stable, machine-readable reason an operation was refused. The
@@ -36,6 +37,17 @@ const (
 	CodeUnknownTrash     Code = "unknown_trash"      // no such trash entry (or it was purged)
 	CodeTrashDamaged     Code = "trash_damaged"      // the file of a trash entry is missing or has other content; run verify
 	CodeFileChanged      Code = "file_changed"       // the file on disk is missing or does not have the hash the database records; run verify
+
+	// Accounts (accounts.go).
+	CodeInvalidCredentials     Code = "invalid_credentials"      // wrong password, unknown or disabled account: one answer for all
+	CodeTooManyAttempts        Code = "too_many_attempts"        // the attempt limit of the username or the address; see Error.RetryAfter
+	CodePasswordChangeRequired Code = "password_change_required" // the account has a temporary password: POST /v1/me/password first
+	CodeWrongPassword          Code = "wrong_password"           // the old password of a password change is wrong
+	CodeInvalidPassword        Code = "invalid_password"         // a new password breaks the rules (length, equal to the username)
+	CodeUnknownUser            Code = "unknown_user"             // no such account
+	CodeUserExists             Code = "user_exists"              // the username is taken by another account
+	CodeUserDisabled           Code = "user_disabled"            // the account is disabled (shfd user enable)
+	CodeUnknownDevice          Code = "unknown_device"           // no such device of this account
 )
 
 // Error is an operation refused by the rules. It never leaves the database
@@ -43,6 +55,9 @@ const (
 type Error struct {
 	Code    Code
 	Message string
+	// RetryAfter is set with CodeTooManyAttempts: how long until the next
+	// attempt is let through.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string { return string(e.Code) + ": " + e.Message }

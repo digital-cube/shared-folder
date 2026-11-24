@@ -243,7 +243,7 @@ func TestMigrations(t *testing.T) {
 		t.Errorf("service user_version = %d, migrations = %d", v, len(ms))
 	}
 	f.srv.reg.QueryRow(`PRAGMA user_version`).Scan(&v)
-	if v != 1 {
+	if rm, _ := migrations("registry"); v != len(rm) || v < 2 {
 		t.Errorf("registry user_version = %d", v)
 	}
 	// Reopening applies nothing twice.

@@ -80,6 +80,11 @@ type MemberInfo struct {
 	SSHFingerprint string `json:"ssh_fingerprint"`
 	// Connected counts the member's open WebSockets to this process.
 	Connected int `json:"connected"`
+	// UserID and Account are the account the member is linked to
+	// (members.user_id); absent for a member that has only its token.
+	// Account is filled by Server.FillAccounts.
+	UserID  *int64 `json:"user_id,omitempty"`
+	Account string `json:"account,omitempty"`
 }
 
 // MemberList is the body of GET /admin/members.
@@ -106,7 +111,7 @@ func (s *Share) MemberInfos() (*MemberList, error) {
 			CreatedAt: m.CreatedAt, RevokedAt: m.RevokedAt,
 			LastSeenAt: m.LastSeenAt, LastPushAt: m.LastPushAt,
 			LastSeqAcked: m.LastSeqAcked, Behind: max(head-m.LastSeqAcked, 0),
-			Connected: conn[m.ID],
+			Connected: conn[m.ID], UserID: m.UserID,
 		}
 		if m.SSHPubkey != "" {
 			mi.SSHFingerprint = authkeys.Fingerprint(m.SSHPubkey)

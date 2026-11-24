@@ -19,7 +19,7 @@ import (
 //	POST /v1/shares/{id}/admin/verify                     {"repair": bool}
 //	GET  /v1/shares/{id}/admin/stats
 //	GET  /v1/shares/{id}/admin/members
-//	POST /v1/shares/{id}/admin/members                    AddMemberRequest
+//	POST /v1/shares/{id}/admin/members                    AddMemberRequest (username, or user: an account)
 //	POST /v1/shares/{id}/admin/members/{username}/revoke
 //	POST /v1/shares/{id}/admin/members/{username}/role    SetRoleRequest
 //	POST /v1/shares/{id}/admin/members/{username}/reset-token
@@ -54,10 +54,10 @@ func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler, raw func
 	mux.Handle("GET /v1/shares/{id}/admin/trash", wrap(trashList))
 	mux.Handle("POST /v1/shares/{id}/admin/trash/purge", wrap(trashPurge))
 	mux.Handle("POST /v1/shares/{id}/admin/trash/{trash}/restore", wrap(trashRestore))
-	mux.Handle("POST /v1/shares/{id}/admin/verify", wrap(verify))
+	mux.Handle("POST /v1/shares/{id}/admin/verify", wrap(a.verify))
 	mux.Handle("GET /v1/shares/{id}/admin/stats", wrap(stats))
-	mux.Handle("GET /v1/shares/{id}/admin/members", wrap(memberList))
-	mux.Handle("POST /v1/shares/{id}/admin/members", wrap(memberAdd))
+	mux.Handle("GET /v1/shares/{id}/admin/members", wrap(a.memberList))
+	mux.Handle("POST /v1/shares/{id}/admin/members", wrap(a.memberAdd))
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/revoke", wrap(memberRevoke))
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/role", wrap(memberRole))
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/reset-token", wrap(memberResetToken))
@@ -121,12 +121,22 @@ func trashPurge(w http.ResponseWriter, r *http.Request, sh *server.Share, m *ser
 	return sh.PurgeTrash(m, req)
 }
 
-func verify(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+// verify checks the folder and, in registry.db, its rows of user_shares.
+func (a *api) verify(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
 	var req VerifyRequest
 	if err := decodeOptional(r, &req); err != nil {
 		return nil, err
 	}
-	return sh.Verify(m, req.Repair)
+	res, err := sh.Verify(m, req.Repair)
+	if err != nil {
+		return nil, err
+	}
+	issues, err := a.srv.VerifyUserShares(sh, req.Repair)
+	if err != nil {
+		return nil, err
+	}
+	res.Issues = append(res.Issues, issues...)
+	return res, nil
 }
 
 func stats(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
@@ -199,17 +209,21 @@ func (a *api) localMember(r *http.Request) (*server.Share, *server.Member, error
 	return sh, m, nil
 }
 
-// AddMemberRequest is the body of POST /admin/members.
+// AddMemberRequest is the body of POST /admin/members: a new member with
+// its own token (username), or an account (user), which becomes a member
+// under its username and reaches the folder with its device tokens.
 type AddMemberRequest struct {
-	Username string `json:"username"`
+	Username string `json:"username,omitempty"`
+	User     string `json:"user,omitempty"`
 	Admin    bool   `json:"admin"`
 }
 
 // TokenResponse answers add and reset-token: the member as it is now and
 // its new token, which is shown only this once (only its hash is stored).
+// An account added as a member gets no token.
 type TokenResponse struct {
 	Member      *server.MemberInfo `json:"member"`
-	Token       string             `json:"token"`
+	Token       string             `json:"token,omitempty"`
 	Reactivated bool               `json:"reactivated,omitempty"`
 }
 
@@ -224,14 +238,36 @@ type MemberResponse struct {
 	OldRole string             `json:"old_role,omitempty"`
 }
 
-func memberList(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
-	return sh.MemberInfos()
+func (a *api) memberList(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	l, err := sh.MemberInfos()
+	if err != nil {
+		return nil, err
+	}
+	return l, a.srv.FillAccounts(l.Members)
 }
 
-func memberAdd(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+func (a *api) memberAdd(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
 	var req AddMemberRequest
 	if err := decode(r, &req); err != nil {
 		return nil, err
+	}
+	if req.User != "" {
+		if req.Username != "" {
+			return nil, &server.Error{Code: server.CodeInvalidRequest, Message: "give username or user, not both"}
+		}
+		nm, reactivated, err := a.srv.AddUserMember(sh, req.User, req.Admin)
+		if err != nil {
+			return nil, err
+		}
+		mi, err := sh.MemberInfoByName(nm.Username)
+		if err != nil {
+			return nil, err
+		}
+		one := []server.MemberInfo{*mi}
+		if err := a.srv.FillAccounts(one); err != nil {
+			return nil, err
+		}
+		return TokenResponse{Member: &one[0], Reactivated: reactivated}, nil
 	}
 	token, reactivated, err := sh.AddOrReactivateMember(strings.TrimSpace(req.Username), req.Admin)
 	if err != nil {

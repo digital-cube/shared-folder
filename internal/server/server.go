@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
+	"github.com/digital-cube/shared-folder/internal/password"
 	"github.com/digital-cube/shared-folder/internal/pathx"
 )
 
@@ -61,6 +62,9 @@ type Options struct {
 	// DBRoot is where registry.db and <share-id>/service.db live. Empty
 	// means the data-root, the layout shfd always had.
 	DBRoot string
+	// PasswordParams are the Argon2id parameters of account passwords;
+	// nil is password.Default. Tests make them cheap.
+	PasswordParams *password.Params
 }
 
 // SSHEndpoint is the address and system user of the server's sshd.
@@ -115,6 +119,10 @@ type Server struct {
 	shares map[string]*Share
 
 	thumbSvc thumbService // when shfd thumbs last asked for jobs (thumbs.go)
+
+	pwSem     chan struct{} // at most two password checks at a time (accounts.go)
+	dummyOnce sync.Once
+	dummy     string // the hash an unknown account's sign-in is checked against
 }
 
 // ShareInfo is one row of registry.db.
@@ -145,7 +153,7 @@ func Open(root string, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{root: abs, dbRoot: dbAbs, opts: opts, reg: reg, shares: map[string]*Share{}}, nil
+	return &Server{root: abs, dbRoot: dbAbs, opts: opts, reg: reg, shares: map[string]*Share{}, pwSem: make(chan struct{}, 2)}, nil
 }
 
 // Roots returns the absolute data-root and db-root; an empty dbRoot is

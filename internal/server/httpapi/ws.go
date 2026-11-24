@@ -35,6 +35,12 @@ const (
 // resetting its token closes its connections. Clients send nothing (a data message closes the
 // connection).
 func (a *api) ws(w http.ResponseWriter, r *http.Request) {
+	// A device token gets the WebSocket with its device credentials for
+	// the folder (a later step); its re-check below knows member tokens.
+	if server.IsDeviceToken(bearerToken(r)) {
+		writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "the WebSocket takes a member token of the folder")
+		return
+	}
 	sh, m, ok := a.authenticate(w, r)
 	if !ok {
 		return

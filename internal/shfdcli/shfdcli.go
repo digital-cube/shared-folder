@@ -3,11 +3,13 @@
 //	shfd serve --data-root DIR --listen ADDR [--tls-cert F --tls-key F]
 //	shfd share create <name> [--admin USER]
 //	shfd share list
-//	shfd member add <share-id> <username> [--admin]
+//	shfd member add <share-id> <username> [--admin] [--user]
+//	shfd member link <share-id> <member> <account>
 //	shfd member revoke <share-id> <username>
 //	shfd member set-role <share-id> <username> admin|member
 //	shfd member reset-token <share-id> <username>
 //	shfd member list <share-id>
+//	shfd user add|passwd|disable|enable|list|show ...   (users.go)
 //	shfd keys sync
 //	shfd trash list <share-id> [--path P] [--by USER] [--reason deleted|replaced] [--since DATE]
 //	shfd trash restore <share-id> <trash-id> [--to PATH]
@@ -62,6 +64,7 @@ const (
 	EnvBinary         = "SHFD_BINARY"          // --shfd-binary
 	EnvSSHEndpoint    = "SHFD_SSH_ENDPOINT"    // serve --ssh-endpoint
 	EnvDownloads      = "SHFD_DOWNLOADS"       // serve --downloads
+	EnvTrustedProxies = "SHFD_TRUSTED_PROXIES" // serve --trusted-proxy
 )
 
 const usage = `shfd — shared folder server
@@ -69,9 +72,14 @@ const usage = `shfd — shared folder server
 Usage:
   shfd serve --data-root DIR [--listen ADDR] [--tls-cert FILE --tls-key FILE]
              [--ssh-endpoint USER@HOST[:PORT]] [--downloads DIR]
+             [--trusted-proxy ADDR[,ADDR|CIDR...]]
   shfd share create <name> [--admin USERNAME]
   shfd share list
-  shfd member add <share-id> <username> [--admin]
+  shfd user add <username> [--display-name NAME]
+  shfd user passwd|disable|enable|show <username>
+  shfd user list
+  shfd member add <share-id> <username> [--admin] [--user]
+  shfd member link <share-id> <member> <account>
   shfd member revoke <share-id> <username>
   shfd member set-role <share-id> <username> admin|member
   shfd member reset-token <share-id> <username>
@@ -116,6 +124,17 @@ serve --ssh-endpoint (default $SHFD_SSH_ENDPOINT) is the address clients
 use for rsync over SSH; "shf join" learns it when it registers its key.
 rsync-gate is that forced command: it reads $SSH_ORIGINAL_COMMAND and runs
 only the rsync transfers the member may do.
+
+Accounts (docs/admin.md): a user signs in with a username and password
+(POST /v1/auth/login) and reaches every folder it is a member of. Only
+the server's admin makes accounts: user add and user passwd print a
+temporary password, shown only then, that must be changed at the first
+sign-in. user disable signs out all the account's devices at once.
+member add --user makes the account <username> a member (no token is
+printed); member link links an existing member to an account, and the
+member's token keeps working. serve --trusted-proxy (default
+$SHFD_TRUSTED_PROXIES, else 127.0.0.1) lists the proxies whose
+X-Forwarded-For gives the client address the sign-in limit counts.
 
 Members (docs/admin.md): member add prints the member's token, which is
 shown only then. A username stays taken by a revoked member; member add
@@ -185,6 +204,8 @@ func Run(args []string, env Env) int {
 		err = shareCmd(args[1:], env)
 	case "member":
 		err = memberCmd(args[1:], env)
+	case "user":
+		err = userCmd(args[1:], env)
 	case "keys":
 		err = keysCmd(args[1:], env)
 	case "trash":
@@ -314,7 +335,7 @@ func shareCmd(args []string, env Env) error {
 
 func memberCmd(args []string, env Env) error {
 	if len(args) == 0 {
-		return usageError("member: want add, revoke, set-role, reset-token or list")
+		return usageError("member: want add, link, revoke, set-role, reset-token or list")
 	}
 	var sf sshFlags
 	open := func(root roots, id string) (*server.Server, *server.Share, error) {
@@ -339,6 +360,7 @@ func memberCmd(args []string, env Env) error {
 		fs := flag.NewFlagSet("member add", flag.ContinueOnError)
 		sf.register(fs, env)
 		admin := fs.Bool("admin", false, "make the member an admin")
+		user := fs.Bool("user", false, "<username> is an account (shfd user add): it signs in with its password, no token")
 		root, pos, err := flags(fs, args[1:], 2, env)
 		if err != nil {
 			return err
@@ -348,6 +370,18 @@ func memberCmd(args []string, env Env) error {
 			return err
 		}
 		defer srv.Close()
+		if *user {
+			m, reactivated, err := srv.AddUserMember(sh, pos[1], *admin)
+			if err != nil {
+				return err
+			}
+			what := "added"
+			if reactivated {
+				what = "brought back"
+			}
+			fmt.Fprintf(env.Stdout, "%s member %s (%s), linked to account %s\nThe account reaches the folder with its sign-in; there is no token to hand over.\n", what, m.Username, m.Role, pos[1])
+			return nil
+		}
 		token, reactivated, err := sh.AddOrReactivateMember(pos[1], *admin)
 		if err != nil {
 			return err
@@ -360,6 +394,24 @@ func memberCmd(args []string, env Env) error {
 		if reactivated {
 			fmt.Fprintf(env.Stdout, "\n%s was revoked and is back, with the same history. The old token and\nSSH key stay invalid: run shf join with this token on the member's\nmachine, which registers its SSH key again.\n", pos[1])
 		}
+		return nil
+	case "link":
+		fs := flag.NewFlagSet("member link", flag.ContinueOnError)
+		sf.register(fs, env)
+		root, pos, err := flags(fs, args[1:], 3, env)
+		if err != nil {
+			return err
+		}
+		srv, sh, err := open(root, pos[0])
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		m, err := srv.LinkMember(sh, pos[1], pos[2])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Stdout, "linked member %s to account %s\nThe member's token and SSH key keep working until they are revoked.\n", m.Username, pos[2])
 		return nil
 	case "revoke":
 		fs := flag.NewFlagSet("member revoke", flag.ContinueOnError)
@@ -438,10 +490,14 @@ func memberCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
+		accounts, err := srv.UsernamesByID()
+		if err != nil {
+			return err
+		}
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
 		// SSH KEY is the fingerprint of the member's one registered key: the
 		// device that joined last (shf join replaces an earlier device's key).
-		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ\tSSH KEY")
+		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ\tACCOUNT\tSSH KEY")
 		for _, m := range ms {
 			st := "active"
 			if m.RevokedAt != nil {
@@ -451,7 +507,11 @@ func memberCmd(args []string, env Env) error {
 			if m.SSHPubkey != "" {
 				fp = authkeys.Fingerprint(m.SSHPubkey)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked, fp)
+			acct := "-"
+			if m.UserID != nil {
+				acct = cmp.Or(accounts[*m.UserID], fmt.Sprintf("#%d", *m.UserID))
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked, acct, fp)
 		}
 		return tw.Flush()
 	}
@@ -477,6 +537,7 @@ func serve(args []string, env Env) error {
 	key := fs.String("tls-key", "", "TLS private key (PEM)")
 	sshEP := fs.String("ssh-endpoint", env.Getenv(EnvSSHEndpoint), "user@host[:port] of sshd, told to clients that register a key")
 	downloads := fs.String("downloads", env.Getenv(EnvDownloads), "directory of the release packages (make release) served at /downloads/")
+	trusted := fs.String("trusted-proxy", cmp.Or(env.Getenv(EnvTrustedProxies), httpapi.DefaultTrustedProxies), "comma-separated addresses or CIDRs of proxies whose X-Forwarded-For is believed")
 	var sf sshFlags
 	sf.register(fs, env)
 	root, _, err := flags(fs, args, 0, env)
@@ -485,6 +546,10 @@ func serve(args []string, env Env) error {
 	}
 	if (*cert == "") != (*key == "") {
 		return usageError("serve: --tls-cert and --tls-key go together")
+	}
+	proxies, err := httpapi.ParseTrustedProxies(*trusted)
+	if err != nil {
+		return usageError("serve: --trusted-proxy: %v", err)
 	}
 	opts, err := sf.options(root, env)
 	if err != nil {
@@ -526,7 +591,7 @@ func serve(args []string, env Env) error {
 	} else {
 		defer stopAdmin()
 	}
-	api := httpapi.New(srv, log, httpapi.WithDownloads(*downloads))
+	api := httpapi.New(srv, log, httpapi.WithDownloads(*downloads), httpapi.WithTrustedProxies(proxies))
 	hs := &http.Server{
 		Handler:           api,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -555,7 +620,7 @@ func serve(args []string, env Env) error {
 	if opts.AuthorizedKeys != nil {
 		akeys = opts.AuthorizedKeys.Path
 	}
-	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "downloads", cmp.Or(*downloads, "-"), "version", version.Version)
+	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "downloads", cmp.Or(*downloads, "-"), "trusted_proxies", *trusted, "version", version.Version)
 	if env.Ready != nil {
 		env.Ready(ln.Addr().String())
 	}

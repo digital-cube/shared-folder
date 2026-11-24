@@ -1,4 +1,4 @@
-# Admin komande `shfd`: članovi, trash, verify, stats, thumbnails
+# Admin komande `shfd`: članovi, nalozi, trash, verify, stats, thumbnails
 
 Alati za admina servera: članovi foldera (uloga, novi token, vraćanje
 opozvanog), rad sa trash-om, provera da se `storage/` slaže sa bazom i
@@ -166,6 +166,123 @@ starog:
 
 Nad imenom **aktivnog** člana `member add` i dalje odbija sa `member_exists`.
 
+## Nalozi
+
+Pored tokena člana (jedan token = jedan član jednog foldera) server ima i
+**naloge**: username + lozinka u `registry.db`. Nalog se prijavi jednom i
+vidi sve foldere u kojima je član; svaki uređaj ili sesija u browseru dobija
+svoj **device token**. Prijava tokenom člana ostaje kao do sada (stari
+klijenti i GUI rade isto).
+
+```sh
+shfd user add <username> [--display-name "Ime Prezime"]   # ispisuje privremenu lozinku (samo tada)
+shfd user passwd <username>      # nova privremena lozinka (zaboravljena lozinka)
+shfd user disable <username>     # odmah odjavljuje sve uređaje i sesije naloga
+shfd user enable <username>      # uređaji ostaju odjavljeni; prijavljuje se ponovo
+shfd user list
+shfd user show <username>        # folderi (član, uloga) i uređaji
+
+shfd member add <share-id> <username> --user [--admin]   # nalog postaje član foldera
+shfd member link <share-id> <član> <username>            # postojeći član dobija vezu sa nalogom
+```
+
+- Naloge pravi **samo admin servera**, ovim komandama; javne registracije
+  nema. Kao `shfd member`, komande upisuju direktno u bazu i bezbedne su dok
+  `shfd serve` radi; `disable` važi odmah (server proverava nalog i uređaj
+  pri svakom zahtevu).
+- `user add` i `user passwd` ispisuju **privremenu lozinku** (4×5 znakova,
+  npr. `k7mPq-…`) i postavljaju `must_change`. Lozinku prenesite privatnim
+  kanalom. Dok je ne promeni, nalog sa svojim tokenom može samo
+  `GET /v1/me`, `POST /v1/me/password` i `POST /v1/auth/logout`; sve ostalo
+  vraća `403 password_change_required`. Posle `passwd` uređaji ostaju
+  prijavljeni, ali i oni dobijaju `password_change_required` dok se lozinka
+  ne promeni.
+- **Lozinka**: 12 do 256 znakova, bilo kojih; ne sme biti jednaka
+  username-u (bez obzira na velika i mala slova). Čuva se kao Argon2id
+  (m=64 MiB, t=3, p=1, so 16 B, ključ 32 B) u PHC zapisu
+  (`$argon2id$v=19$m=65536,t=3,p=1$…`); heš sa slabijim parametrima se
+  zamenjuje pri sledećoj uspešnoj prijavi. Server radi najviše dve provere
+  lozinke istovremeno, da prijave ne pojedu memoriju.
+- **`member add --user`** dodaje nalog kao člana pod njegovim username-om;
+  token se ne ispisuje (nalog ulazi svojom prijavom). Ako je nalog bio
+  opozvan član foldera, vraća se taj član (isti id i istorija). Ako ime već
+  nosi član sa tokenom, komanda odbija i upućuje na `member link`.
+- **`member link`** je za prelazak postojećih članova: član `marko` dobija
+  vezu sa nalogom `marko` (imena ne moraju biti ista). Njegov token i SSH
+  ključ rade i dalje, dok ih admin ne opozove. Nalog može biti najviše jedan
+  član jednog foldera.
+- `member list` ima kolonu `ACCOUNT` (nalog člana, `-` za člana samo sa
+  tokenom). Tabela `user_shares` u `registry.db` je indeks „mojih foldera“;
+  izvor istine je `members.user_id` u bazi foldera. Komande je održavaju, a
+  `shfd verify <share-id>` je proverava (oblast `user_shares`: `missing`,
+  `mismatch`, `untracked`) i sa `--repair` popravlja.
+
+### Prijava i ograničenje pokušaja
+
+`POST /v1/auth/login` je jedini poziv bez tokena (pored `/healthz` i
+paketa). Svaki pokušaj ide u `auth_log` (`ok`, `bad_password`,
+`unknown_user`, `disabled`, `locked`), sa adresom klijenta.
+
+- Pogrešna lozinka, nepoznat i ugašen nalog dobijaju **isti odgovor**,
+  `401 invalid_credentials`. Nepoznat nalog prolazi kroz istu proveru heša
+  (lažni heš), pa ni vreme odgovora ne otkriva da li nalog postoji.
+- Posle **5 neuspeha** za isti username, ili sa iste adrese, svaki sledeći
+  pokušaj čeka 1 s, 2 s, 4 s, … najviše **15 min** od poslednjeg neuspeha.
+  Za to vreme odgovor je `429 too_many_attempts` sa `Retry-After` (u
+  sekundama), i lozinka se ne proverava. Uspešna prijava briše brojanje za
+  taj username i tu adresu; neuspesi stariji od 24 h se ne broje. Pošto se
+  broji iz `auth_log`, ograničenje preživljava restart.
+- Adresa je `X-Forwarded-For` **samo** kad veza dolazi od pouzdanog
+  proxy-ja (`shfd serve --trusted-proxy`, `SHFD_TRUSTED_PROXIES`,
+  podrazumevano `127.0.0.1`): od desnog kraja zaglavlja preskaču se pouzdani
+  hop-ovi, a prvi drugi je klijent. Iza dva nginx-a vidi
+  [server-ssh.md](server-ssh.md#adresa-klijenta-x-forwarded-for).
+
+### Uređaji i sesije
+
+- Device token je `shd_` + 32 nasumična bajta (base64url); u bazi je samo
+  njegov SHA-256, kao kod tokena člana.
+- `kind=client` (shf) ne ističe. `kind=gui` (browser) ističe posle **12 h**
+  bez korišćenja, a najkasnije **7 dana** posle prijave.
+- `POST /v1/auth/logout` opoziva token kojim je pozvan;
+  `DELETE /v1/me/devices/{id}` opoziva bilo koji uređaj sopstvenog naloga;
+  `shfd user disable` sve odjednom.
+- **Device token na rutama foldera**: `admin/*`, `files`, `content`,
+  `thumbs`, `changes`, `uploads`, `ops` primaju i device token naloga koji
+  je aktivan član tog foldera; poziv radi u ime tog člana (`updated_by` je
+  član, ne uređaj). Za ne-člana, opozvanog člana, ugašen nalog ili istekao
+  token odgovor je `401`. WebSocket (`/ws`) i `PUT ssh-key` za sada traže
+  token člana: kredencijali uređaja za folder (SSH ključ po uređaju) dolaze
+  u sledećem koraku.
+
+### API naloga
+
+| Poziv | Token | Telo / parametri | Odgovor |
+|---|---|---|---|
+| `POST /v1/auth/login` | — | `{"username","password","device_name","kind":"client"\|"gui"}` | `{token, user, must_change}` |
+| `POST /v1/auth/logout` | device | — | `{status}` |
+| `GET /v1/me` | device | — | `{user, folders: [{share_id, name, role, member}], devices: [{id, name, kind, created_at, last_seen_at, expires_at?, current?}]}` |
+| `POST /v1/me/password` | device | `{"old","new"}` | `{status, user}` |
+| `DELETE /v1/me/devices/{id}` | device | — | `{status}` |
+| `GET /v1/users` | device admina foldera, ili token člana-admina | `?q=` (početak username-a ili deo imena) | `[{username, display_name}]`, najviše 20 |
+| `POST /v1/shares/{id}/admin/members` | admin foldera | `{"user": "bob", "admin": false}` | `{member, reactivated?}` (bez tokena) |
+
+`user` je `{id, username, display_name, must_change, created_at,
+disabled_at?, last_login_at?}`; heš lozinke i tokeni se ne vraćaju nigde
+osim novog tokena u odgovoru na prijavu. Greške: `invalid_credentials`
+(401), `too_many_attempts` (429), `password_change_required` (403),
+`wrong_password` (403, pogrešna stara lozinka; broji se kao neuspeh),
+`invalid_password` (400, nova lozinka krši pravila), `unknown_user` i
+`unknown_device` (404), `user_disabled` i `member_exists` (409).
+
+```sh
+TOKEN=$(curl -s -d '{"username":"bob","password":"…","device_name":"laptop","kind":"client"}' \
+  https://shf.example.com/v1/auth/login | jq -r .token)
+curl -s -H "Authorization: Bearer $TOKEN" https://shf.example.com/v1/me
+curl -s -H "Authorization: Bearer $TOKEN" -d '{"old":"…","new":"…"}' https://shf.example.com/v1/me/password
+curl -s -H "Authorization: Bearer $TOKEN" "https://shf.example.com/v1/shares/$SHARE/admin/files"
+```
+
 ## Trash
 
 Server čuva svaku obrisanu i pregaženu verziju u `<share-id>/trash/`, a
@@ -278,6 +395,12 @@ U `trash/` (oblast `trash`): fajl bez reda dobija red (originalno ime,
 razlog, član i vreme se čitaju iz imena kad ga je napravio server; putanja
 foldera se ne zna), red bez fajla se beleži kao očišćen (`purge` događaj, uz
 upozorenje), a red sa drugim hash-om preuzima hash i veličinu sa diska.
+
+U `registry.db` (oblast `user_shares`, [Nalozi](#nalozi)): član vezan za
+nalog bez reda u `user_shares` je `missing`, red koji pokazuje na drugog
+člana `mismatch`, a red naloga za koji u folderu nema vezanog člana
+`untracked`; `--repair` dodaje, ispravlja ili briše red (u dnevnik foldera ne
+ide ništa). Član vezan za nalog kog više nema se samo prijavljuje.
 
 Ne popravlja se, samo prijavljuje: ime koje folder ne sme da sadrži (npr.
 `CON`, nedozvoljen znak, ne-NFC oblik), ime koje se od postojećeg razlikuje
@@ -395,7 +518,8 @@ tek pošto se tamošnje stare kopije uklone.
 
 ## Admin API
 
-Autorizacija kao i ostatak API-ja (`Authorization: Bearer <token>`), ali
+Autorizacija kao i ostatak API-ja (`Authorization: Bearer <token>`: token
+člana, ili device token naloga koji je član, vidi [Nalozi](#nalozi)), ali
 samo za člana sa ulogom `admin`. Greške su
 `{"error": {"code": "...", "message": "..."}}`.
 
@@ -406,8 +530,9 @@ samo za člana sa ulogom `admin`. Greške su
 | `POST /v1/shares/{id}/admin/trash/purge` | `{"older_than": "30d"}` ili `{"ids": [1,2]}` ili `{"all": true}`, uz `"dry_run": true` | `{dry_run, entries, count, total_size, events, head}` |
 | `POST /v1/shares/{id}/admin/verify` | `{"repair": false}` | `{repair, issues, checked, events, head}` |
 | `GET /v1/shares/{id}/admin/stats` | — | `server.Stats` |
-| `GET /v1/shares/{id}/admin/members` | — | `{head, members: [{username, role, status, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, behind, ssh_fingerprint, connected}]}` |
+| `GET /v1/shares/{id}/admin/members` | — | `{head, members: [{username, role, status, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, behind, ssh_fingerprint, connected, user_id?, account?}]}` |
 | `POST /v1/shares/{id}/admin/members` | `{"username": "bob", "admin": false}` | `{member, token, reactivated?}` |
+| `POST /v1/shares/{id}/admin/members` | `{"user": "bob", "admin": false}` (nalog, [Nalozi](#nalozi)) | `{member, reactivated?}` |
 | `POST /v1/shares/{id}/admin/members/{username}/revoke` | — | `{member}` |
 | `POST /v1/shares/{id}/admin/members/{username}/role` | `{"role": "admin"}` ili `"member"` | `{member, old_role}` |
 | `POST /v1/shares/{id}/admin/members/{username}/reset-token` | — | `{member, token}` |
