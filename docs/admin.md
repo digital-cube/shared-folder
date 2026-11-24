@@ -413,6 +413,7 @@ samo za člana sa ulogom `admin`. Greške su
 | `POST /v1/shares/{id}/admin/members/{username}/reset-token` | — | `{member, token}` |
 | `GET /v1/shares/{id}/admin/log` | `?after=<bajt-offset>&limit=<n>` | `{offset, next_offset, size, lines}` |
 | `GET /v1/shares/{id}/admin/files` | `?dir=<putanja>` (prazno = koren) | `{dir, entries}` |
+| `GET /v1/shares/{id}/admin/files/content` | `?path=<putanja>` (obavezno), `&download=1` | sadržaj fajla ([Sadržaj fajla](#sadržaj-fajla)); `Range`, `If-None-Match` |
 | `GET /v1/shares/{id}/admin/thumbs/{hash}` | `?size=s\|m\|l` (podrazumevano `m`) | `image/jpeg` ([Thumbnails](#thumbnails)) |
 
 Uz njih postoji i `GET /v1/whoami`, koji **ne traži** ulogu admin: za
@@ -449,6 +450,41 @@ u fajlu i služi kao njegov id.
 folderi, pa po imenu. `thumb` je stanje sličice ([Thumbnails](#thumbnails)):
 `ready`, `pending`, `failed` ili `""`. Nepostojeći folder je `not_found` (404), fajl umesto
 foldera `kind_mismatch` (409).
+
+<a id="sadržaj-fajla"></a>
+**Sadržaj fajla.** `GET /v1/shares/{id}/admin/files/content?path=<putanja>`
+šalje sadržaj jednog fajla, samo adminu foldera (i preko `admin.sock`, kao
+ostale admin rute; ne osvežava `last_seen_at`). Pravila:
+
+- Putanja prolazi `pathx.Normalize` (`..`, apsolutna putanja, kontrolni
+  znaci → `invalid_path`, 400) i mora biti red tabele `files` sa
+  `kind=file`: fajl koji postoji samo na disku je `not_found` (404), folder
+  `kind_mismatch` (409). Fajl se otvara kroz `os.Root` nad `storage/`, pa
+  symlink koji vodi van `storage/` ne radi.
+- **Sadržaj mora imati hash iz baze.** Pre prvog bajta fajl se hešira
+  (SHA-256) i poredi sa `files.hash`; ako fajla nema, ako mu je druga
+  veličina ili drugi hash, odgovor je `409 file_changed` („pokreni shfd
+  verify“) i ništa se ne šalje. Proveren fajl se pamti po inode-u, veličini
+  i mtime-u (najviše 4096 putanja u memoriji), pa `Range` zahtevi istog
+  preuzimanja ne heširaju ga ponovo; fajl u `storage/` se uvek menja
+  rename-om, nikad na mestu, pa nova verzija ima drugi inode.
+- Šalje se kroz `http.ServeContent`: `Accept-Ranges: bytes`, `Range` (206),
+  `If-Range`, `If-None-Match` (304), `HEAD`. `ETag` je `"<hash>"`,
+  `Cache-Control: private, no-cache` (browser pita ponovo, dobija 304).
+- **Bezbednost.** Uvek `X-Content-Type-Options: nosniff` i
+  `Content-Security-Policy: sandbox`. Tip je iz bele liste po ekstenziji:
+  `jpg/jpeg/png/gif/webp` (slike), `pdf` i `txt/md/csv/log/json` (`md`,
+  `csv` i `log` kao `text/plain; charset=utf-8`) idu sa
+  `Content-Disposition: inline`; **sve ostalo**, i `html`, `htm`, `svg`,
+  `xml`, `js`, ide kao `application/octet-stream` sa `attachment`.
+  `download=1` uvek daje `attachment`. Ime je po RFC 6266/5987:
+  `filename="…"` sa ASCII zamenom (ne-ASCII, `"`, `\`, `%` → `_`) i
+  `filename*=UTF-8''…` sa tačnim imenom kad se razlikuju.
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -OJ \
+  "https://shf.example.com/v1/shares/$SHARE/admin/files/content?path=docs%2Fplan.pdf&download=1"
+```
 
 ```sh
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://shf.example.com/v1/whoami

@@ -25,6 +25,7 @@ import (
 //	POST /v1/shares/{id}/admin/members/{username}/reset-token
 //	GET  /v1/shares/{id}/admin/log?after=&limit=
 //	GET  /v1/shares/{id}/admin/files?dir=
+//	GET  /v1/shares/{id}/admin/files/content?path=&download=  (file content, see content.go)
 //
 // The member routes change members with the same functions as shfd
 // member add/revoke/set-role/reset-token. A token appears only in the
@@ -49,7 +50,7 @@ type VerifyRequest struct {
 	Repair bool `json:"repair"`
 }
 
-func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler) {
+func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler, raw func(rawHandler) http.Handler, a *api) {
 	mux.Handle("GET /v1/shares/{id}/admin/trash", wrap(trashList))
 	mux.Handle("POST /v1/shares/{id}/admin/trash/purge", wrap(trashPurge))
 	mux.Handle("POST /v1/shares/{id}/admin/trash/{trash}/restore", wrap(trashRestore))
@@ -62,6 +63,7 @@ func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler) {
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/reset-token", wrap(memberResetToken))
 	mux.Handle("GET /v1/shares/{id}/admin/log", wrap(logRead))
 	mux.Handle("GET /v1/shares/{id}/admin/files", wrap(filesList))
+	mux.Handle("GET /v1/shares/{id}/admin/files/content", raw(a.fileContent))
 }
 
 // admin is auth plus the admin role.
@@ -150,7 +152,7 @@ func NewLocal(srv *server.Server, log *slog.Logger) http.Handler {
 	}
 	a := &api{srv: srv, log: log}
 	mux := http.NewServeMux()
-	registerAdmin(mux, a.local)
+	registerAdmin(mux, a.local, a.localRaw, a)
 	registerThumbsLocal(mux, a)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, server.CodeNotFound, "no such endpoint")
@@ -160,20 +162,7 @@ func NewLocal(srv *server.Server, log *slog.Logger) http.Handler {
 
 func (a *api) local(h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sh, err := a.srv.Share(r.PathValue("id"))
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		var m *server.Member
-		if as := strings.TrimSpace(r.Header.Get(HeaderAs)); as != "" {
-			m, err = sh.MemberByName(as)
-		} else {
-			m, err = sh.DefaultAdmin()
-		}
-		if err == nil {
-			err = server.RequireAdmin(m)
-		}
+		sh, m, err := a.localMember(r)
 		if err != nil {
 			a.fail(w, r, err)
 			return
@@ -186,6 +175,28 @@ func (a *api) local(h handler) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
+}
+
+// localMember resolves the folder of a request on the admin socket and
+// the admin it runs as: the X-Shfd-As header, or the oldest active admin.
+func (a *api) localMember(r *http.Request) (*server.Share, *server.Member, error) {
+	sh, err := a.srv.Share(r.PathValue("id"))
+	if err != nil {
+		return nil, nil, err
+	}
+	var m *server.Member
+	if as := strings.TrimSpace(r.Header.Get(HeaderAs)); as != "" {
+		m, err = sh.MemberByName(as)
+	} else {
+		m, err = sh.DefaultAdmin()
+	}
+	if err == nil {
+		err = server.RequireAdmin(m)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return sh, m, nil
 }
 
 // AddMemberRequest is the body of POST /admin/members.

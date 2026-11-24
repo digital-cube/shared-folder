@@ -53,6 +53,8 @@ type Share struct {
 	thumbs   thumbIndex    // ready and failed thumbnails (thumbs.go)
 	thumbSvc *thumbService // the server's view of shfd thumbs; nil outside a Server
 
+	verified verifiedFiles // files whose content was checked against the database (content.go)
+
 	// crashAfterCommit, when set, is called after the database commit and
 	// before the disk steps run. Tests use it to simulate a crash there.
 	crashAfterCommit func() error

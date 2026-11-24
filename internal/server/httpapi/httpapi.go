@@ -16,6 +16,7 @@
 //	GET  /downloads/{name}             (no token)
 //	     /v1/shares/{id}/admin/...     (admin role only, see admin.go)
 //	GET  /v1/shares/{id}/admin/thumbs/{hash}  (admin role only; image/jpeg, see thumbs.go)
+//	GET  /v1/shares/{id}/admin/files/content  (admin role only; the file, see content.go)
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
@@ -106,7 +107,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	mux.Handle("PUT /v1/shares/{id}/ssh-key", a.auth(a.setSSHKey))
 	mux.HandleFunc("GET /v1/shares/{id}/ws", a.ws)
 	mux.HandleFunc("GET /v1/whoami", a.whoami)
-	registerAdmin(mux, a.admin)
+	registerAdmin(mux, a.admin, a.adminRaw, a)
 	registerDownloads(mux, a)
 	registerThumbs(mux, a)
 	// Without a method in the pattern: the catch-all "/" below matches
@@ -388,7 +389,8 @@ func status(c server.Code) int {
 		return http.StatusNotFound
 	case server.CodeStaleBase, server.CodeCaseConflict, server.CodeDestExists, server.CodeKindMismatch,
 		server.CodeParentNotDir, server.CodeIsDir, server.CodeDirNotEmpty, server.CodeUploadMissing,
-		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged, server.CodeLastAdmin:
+		server.CodeMemberExists, server.CodeKeyInUse, server.CodeTrashDamaged, server.CodeLastAdmin,
+		server.CodeFileChanged:
 		return http.StatusConflict
 	case server.CodeSSHNotConfigured:
 		return http.StatusNotImplemented

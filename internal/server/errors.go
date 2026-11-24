@@ -35,6 +35,7 @@ const (
 	CodeForbidden        Code = "forbidden"          // an admin operation called by a member without the admin role
 	CodeUnknownTrash     Code = "unknown_trash"      // no such trash entry (or it was purged)
 	CodeTrashDamaged     Code = "trash_damaged"      // the file of a trash entry is missing or has other content; run verify
+	CodeFileChanged      Code = "file_changed"       // the file on disk is missing or does not have the hash the database records; run verify
 )
 
 // Error is an operation refused by the rules. It never leaves the database
