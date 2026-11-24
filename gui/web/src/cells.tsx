@@ -22,6 +22,19 @@ function Member({ value, row }: CellProps) {
   );
 }
 
+/** The account of a member, or "bez naloga" for one that has only a token. */
+function AccountCell({ value, row }: CellProps) {
+  const v = str(value);
+  if (row.legacy) return <span className="badge warn" title={tr("Član radi starim tokenom, bez naloga.", "The member works with an old token, without an account.")}>{tr("bez naloga", "no account")}</span>;
+  return <span>{v}</span>;
+}
+
+function Devices({ value, row }: CellProps) {
+  if (row.legacy) return <span className="faint">—</span>;
+  const n = Number(value ?? 0);
+  return <span className={n > 0 ? "" : "faint"}>{n}</span>;
+}
+
 function Role({ value }: CellProps) {
   return <span className={`badge ${value === "admin" ? "brand" : ""}`}>{str(value)}</span>;
 }
@@ -177,6 +190,8 @@ function Reason({ value }: CellProps) {
 export const cells = createCellRegistry(
   { name: "member", component: Member },
   { name: "role", component: Role },
+  { name: "account", component: AccountCell },
+  { name: "devices", component: Devices },
   { name: "mstatus", component: MemberStatus },
   { name: "ago", component: Ago },
   { name: "behind", component: Behind },

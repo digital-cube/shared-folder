@@ -26,18 +26,38 @@ import type { ShfdClient } from "./shfd.js";
 import { toUdcError } from "./errors.js";
 import type { Lang } from "./lang.js";
 
-/** Who asks: the signed-in member of one folder. */
+/** Who asks: the signed-in account (or member token) in its chosen folder. */
 export interface Ctx {
   sessionId: string;
+  kind: "account" | "token";
+  /** The account's GUI device token, or the member token. */
   token: string;
   shareId: string;
+  /** The account's username (the member's for a token session). */
   username: string;
+  /** The member's name in this folder. */
+  member: string;
+  /** The role in this folder: "admin" or "member". */
+  role: string;
   /** The UI's language (x-shfd-lang): refusals are sentences in it. */
   lang: Lang;
 }
 
 function ctxOf(sctx?: SourceContext): Ctx {
   return sctx?.ctx as Ctx;
+}
+
+/**
+ * What a source does with a refusal of shfd before it becomes the
+ * UdcError of the answer: a 401 ends the sessions of the token, a 403
+ * makes the session a member of the folder (app.ts).
+ */
+export type OnRefused = (err: unknown, ctx: Ctx) => void;
+
+/** The refusal as the UdcError of the answer, after the hook has seen it. */
+function refuse(hook: OnRefused, e: unknown, c: Ctx): never {
+  hook(e, c);
+  throw toUdcError(e, c.lang);
 }
 
 function meta(id: string) {
@@ -53,14 +73,13 @@ class MembersSource extends ArraySource {
   constructor(
     private readonly shfd: ShfdClient,
     schema: ConstructorParameters<typeof ArraySource>[0]["schema"],
+    private readonly onRefused: OnRefused = () => {},
   ) {
     super({ schema });
   }
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
-    const l = await this.shfd.members(c.token, c.shareId).catch((e) => {
-      throw toUdcError(e, c.lang);
-    });
+    const l = await this.shfd.members(c.token, c.shareId).catch((e) => refuse(this.onRefused, e, c));
     return {
       rows: l.members.map((m) => ({
         __meta: meta(m.username),
@@ -75,7 +94,10 @@ class MembersSource extends ArraySource {
         ssh_fingerprint: m.ssh_fingerprint ? short(m.ssh_fingerprint) : "",
         ssh_fingerprint_full: m.ssh_fingerprint,
         connected: m.connected,
-        me: m.username === c.username,
+        account: m.account ?? "",
+        legacy: !m.account,
+        devices: (m.devices ?? []).filter((d) => !d.revoked).length,
+        me: m.username === c.member,
       })),
     };
   }
@@ -90,14 +112,13 @@ class LogsSource extends ArraySource {
   constructor(
     private readonly feed: LogFeed,
     schema: ConstructorParameters<typeof ArraySource>[0]["schema"],
+    private readonly onRefused: OnRefused = () => {},
   ) {
     super({ schema, pageSizeDefault: 100 });
   }
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
-    const lines = await this.feed.lines(c.shareId, c.token).catch((e) => {
-      throw toUdcError(e, c.lang);
-    });
+    const lines = await this.feed.lines(c.shareId, c.token).catch((e) => refuse(this.onRefused, e, c));
     return {
       rows: lines.map((l) => {
         const r = toRow(l);
@@ -151,15 +172,14 @@ class FilesSource extends ArraySource {
   constructor(
     private readonly shfd: ShfdClient,
     schema: ConstructorParameters<typeof ArraySource>[0]["schema"],
+    private readonly onRefused: OnRefused = () => {},
   ) {
     super({ schema, pageSizeDefault: 200 });
   }
   protected async load(req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
     const { dir, rest } = takePath(req.filter);
-    const l = await this.shfd.files(c.token, c.shareId, dir).catch((e) => {
-      throw toUdcError(e, c.lang);
-    });
+    const l = await this.shfd.files(c.token, c.shareId, dir).catch((e) => refuse(this.onRefused, e, c));
     const rows = l.entries.map((f) => ({
       __meta: meta(f.path),
       share_id: c.shareId,
@@ -207,14 +227,13 @@ class TrashSource extends ArraySource {
   constructor(
     private readonly shfd: ShfdClient,
     schema: ConstructorParameters<typeof ArraySource>[0]["schema"],
+    private readonly onRefused: OnRefused = () => {},
   ) {
     super({ schema });
   }
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
-    const l = await this.shfd.trash(c.token, c.shareId).catch((e) => {
-      throw toUdcError(e, c.lang);
-    });
+    const l = await this.shfd.trash(c.token, c.shareId).catch((e) => refuse(this.onRefused, e, c));
     return {
       rows: (l.entries ?? []).map((t) => ({
         __meta: meta(String(t.id)),
@@ -246,6 +265,9 @@ const membersSchema = SchemaDocSchema.parse({
     ssh_fingerprint: { type: "string" },
     ssh_fingerprint_full: { type: "string" },
     connected: { type: "integer" },
+    account: { type: "string" },
+    legacy: { type: "bool" },
+    devices: { type: "integer" },
     me: { type: "bool" },
   },
 });
@@ -256,18 +278,25 @@ const membersView = ViewConfigSchema.parse({
   page_size_default: 100,
   columns_mode: "listed",
   columns: [
-    { field: "username", render: "member", width: 220 },
-    { field: "role", render: "role", width: 110 },
+    { field: "username", render: "member", width: 200 },
+    { field: "account", render: "account", width: 150 },
+    { field: "role", render: "role", width: 100 },
     { field: "status", render: "mstatus", width: 120 },
     { field: "last_seen_at", render: "ago", width: 150 },
     { field: "last_push_at", render: "ago", width: 150 },
     { field: "behind", render: "behind", align: "right", width: 90 },
-    { field: "ssh_fingerprint", render: "fingerprint", width: "fill", min_width: 180 },
+    { field: "devices", render: "devices", align: "right", width: 100 },
+    { field: "ssh_fingerprint", render: "fingerprint", width: "fill", min_width: 160 },
   ],
-  search: { fields: ["username"] },
+  search: { fields: ["username", "account"] },
   row_actions_display: "menu",
   row_action_defs: [
-    { kind: "reset_token", label: "Nov token", when: { field: "status", op: "neq", value: "revoked" } },
+    { kind: "devices", label: "Uređaji", when: { field: "legacy", op: "eq", value: false } },
+    {
+      kind: "reset_token",
+      label: "Nov token",
+      when: { and: [{ field: "status", op: "neq", value: "revoked" }, { field: "legacy", op: "eq", value: true }] },
+    },
     {
       kind: "make_admin",
       label: "Učini adminom",
@@ -392,11 +421,11 @@ const trashView = ViewConfigSchema.parse({
   row_action_defs: [{ kind: "restore", label: "Vrati" }],
 });
 
-export function buildRegistry(shfd: ShfdClient, feed: LogFeed): CollectionRegistry {
+export function buildRegistry(shfd: ShfdClient, feed: LogFeed, onRefused: OnRefused = () => {}): CollectionRegistry {
   const registry = new CollectionRegistry();
-  registry.register({ name: "members", label: "Članovi", source: new MembersSource(shfd, membersSchema), view: membersView });
-  registry.register({ name: "logs", label: "Logovi", source: new LogsSource(feed, logsSchema), view: logsView });
-  registry.register({ name: "files", label: "Fajlovi", source: new FilesSource(shfd, filesSchema), view: filesView });
-  registry.register({ name: "trash", label: "Trash", source: new TrashSource(shfd, trashSchema), view: trashView });
+  registry.register({ name: "members", label: "Članovi", source: new MembersSource(shfd, membersSchema, onRefused), view: membersView });
+  registry.register({ name: "logs", label: "Logovi", source: new LogsSource(feed, logsSchema, onRefused), view: logsView });
+  registry.register({ name: "files", label: "Fajlovi", source: new FilesSource(shfd, filesSchema, onRefused), view: filesView });
+  registry.register({ name: "trash", label: "Trash", source: new TrashSource(shfd, trashSchema, onRefused), view: trashView });
   return registry;
 }

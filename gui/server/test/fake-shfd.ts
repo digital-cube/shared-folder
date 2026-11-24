@@ -1,9 +1,32 @@
 // A fake shfd for tests: just enough of the HTTP API, behind a fetch.
 
-import type { FileEntry, LogLine, MemberInfo } from "../src/shfd.js";
+import type { Device, FileEntry, LogLine, MemberDevice, MemberInfo } from "../src/shfd.js";
 
 export interface FakeMember extends MemberInfo {
   token: string;
+}
+
+/** An account of the fake server. */
+export interface FakeUser {
+  id: number;
+  username: string;
+  display_name: string;
+  password: string;
+  must_change: boolean;
+  disabled: boolean;
+}
+
+/** A signed-in device of an account. */
+export interface FakeDevice extends Device {
+  user: string;
+  token: string;
+}
+
+/** A second folder: the account is a member there with role. */
+export interface FakeFolder {
+  share_id: string;
+  name: string;
+  members: Record<string, "admin" | "member">;
 }
 
 export class FakeShfd {
@@ -25,6 +48,15 @@ export class FakeShfd {
   thumbs = new Map<string, Uint8Array>();
   /** File contents by path; a function makes the body (a stream, say). */
   contents = new Map<string, Uint8Array | (() => ReadableStream<Uint8Array>)>();
+  /** Accounts, their devices (sign-ins) and other folders. */
+  users: FakeUser[] = [];
+  devices: FakeDevice[] = [];
+  folders: FakeFolder[] = [];
+  /** Failed sign-ins per username; at failLimit the answer is 429. */
+  failures = new Map<string, number>();
+  failLimit = 5;
+  /** The device_name of the last sign-in. */
+  lastDeviceName = "";
   /** The headers of the last content request. */
   lastContentHeaders: Headers | null = null;
   /** The If-None-Match of the last thumbnail request. */
@@ -53,6 +85,152 @@ export class FakeShfd {
     };
     this.members.push(m);
     return m;
+  }
+
+  /** An account; mustChange makes its password temporary. */
+  user(username: string, password: string, opts: { mustChange?: boolean; displayName?: string } = {}): FakeUser {
+    const u: FakeUser = {
+      id: this.users.length + 1,
+      username,
+      display_name: opts.displayName ?? "",
+      password,
+      must_change: !!opts.mustChange,
+      disabled: false,
+    };
+    this.users.push(u);
+    return u;
+  }
+
+  /** A member of the main folder linked to an account (admin/members {user}). */
+  addAccountMember(username: string, role: "admin" | "member"): FakeMember {
+    const m = this.add(username, role);
+    m.token = "";
+    m.account = username;
+    m.user_id = this.users.find((u) => u.username === username)?.id;
+    m.devices = [];
+    return m;
+  }
+
+  /** A client device of an account that has a folder credential in the main folder. */
+  clientDevice(username: string, name: string): FakeDevice {
+    const d: FakeDevice = {
+      id: 100 + this.devices.length + 1,
+      name,
+      kind: "client",
+      created_at: "2026-11-24T09:00:00Z",
+      last_seen_at: "2026-11-24T11:00:00Z",
+      user: username,
+      token: `shd_${username}_${name}`,
+    };
+    this.devices.push(d);
+    const m = this.members.find((x) => x.account === username);
+    m?.devices?.push(this.memberDevice(d));
+    return d;
+  }
+
+  private memberDevice(d: FakeDevice): MemberDevice {
+    return {
+      id: d.id,
+      name: d.name,
+      kind: d.kind,
+      ssh_fingerprint: d.kind === "client" ? "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG" : "",
+      created_at: d.created_at,
+      last_seen_at: d.last_seen_at ?? null,
+      revoked: !!d.revoked_at,
+      connected: 0,
+    };
+  }
+
+  /** The folders of an account, as /v1/me lists them. */
+  foldersOf(username: string) {
+    const out: { share_id: string; name: string; role: string; member: string; last_change_at: string }[] = [];
+    const m = this.members.find((x) => x.account === username && x.status !== "revoked");
+    if (m) out.push({ share_id: this.share, name: "projekti", role: m.role, member: m.username, last_change_at: "2026-11-24T10:00:00Z" });
+    for (const f of this.folders) {
+      const role = f.members[username];
+      if (role) out.push({ share_id: f.share_id, name: f.name, role, member: username, last_change_at: "2026-11-20T08:00:00Z" });
+    }
+    return out;
+  }
+
+  /** The live device of a device token. */
+  private deviceOf(token: string): FakeDevice | undefined {
+    const d = this.devices.find((x) => x.token === token && !x.revoked_at);
+    if (!d) return undefined;
+    const u = this.users.find((x) => x.username === d.user);
+    return u && !u.disabled ? d : undefined;
+  }
+
+  /** The routes of accounts; undefined when the path is not one of them. */
+  private accounts(url: URL, method: string, token: string, init: RequestInit | undefined, json: (s: number, b: unknown) => Response, err: (s: number, c: string) => Response): Response | undefined {
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    if (url.pathname === "/v1/auth/login" && method === "POST") {
+      const fails = this.failures.get(body.username) ?? 0;
+      if (fails >= this.failLimit) {
+        return new Response(JSON.stringify({ error: { code: "too_many_attempts", message: "too many failed attempts; try again in 4s" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "4" },
+        });
+      }
+      const u = this.users.find((x) => x.username === body.username);
+      if (!u || u.disabled || u.password !== body.password) {
+        this.failures.set(body.username, fails + 1);
+        return err(401, "invalid_credentials");
+      }
+      this.lastDeviceName = body.device_name;
+      const d: FakeDevice = {
+        id: 100 + this.devices.length + 1,
+        name: body.device_name,
+        kind: body.kind,
+        created_at: "2026-11-24T12:00:00Z",
+        last_seen_at: "2026-11-24T12:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        user: u.username,
+        token: `shd_${u.username}_${this.devices.length + 1}`,
+      };
+      this.devices.push(d);
+      const { password: _p, disabled: _d, ...user } = u;
+      return json(200, { token: d.token, user, must_change: u.must_change });
+    }
+    const isAccount = ["/v1/auth/logout", "/v1/me", "/v1/me/password", "/v1/users"].includes(url.pathname) || url.pathname.startsWith("/v1/me/devices/");
+    if (!isAccount) return undefined;
+    const d = this.deviceOf(token);
+    if (!d) return err(401, "unauthorized");
+    const u = this.users.find((x) => x.username === d.user)!;
+    if (url.pathname === "/v1/auth/logout") {
+      d.revoked_at = "2026-11-24T13:00:00Z";
+      return json(200, { status: "ok" });
+    }
+    if (url.pathname === "/v1/me") {
+      const { password: _p, disabled: _d, ...user } = u;
+      return json(200, {
+        user,
+        folders: this.foldersOf(u.username),
+        devices: this.devices.filter((x) => x.user === u.username && !x.revoked_at).map(({ user: _u, token: t, ...dev }) => ({ ...dev, current: t === token })),
+        password_rules: { min_len: 12, max_len: 256, not_username: true, differ_from_old: true },
+      });
+    }
+    if (url.pathname === "/v1/me/password") {
+      if (body.old !== u.password) return err(403, "wrong_password");
+      if (String(body.new).length < 12) return json(400, { error: { code: "invalid_password", message: "the password must have at least 12 characters" } });
+      u.password = body.new;
+      u.must_change = false;
+      return json(200, { status: "ok" });
+    }
+    if (u.must_change) return err(403, "password_change_required");
+    const dm = /^\/v1\/me\/devices\/(\d+)$/.exec(url.pathname);
+    if (dm && method === "DELETE") {
+      const t = this.devices.find((x) => x.id === Number(dm[1]) && x.user === u.username && !x.revoked_at);
+      if (!t) return err(404, "unknown_device");
+      t.revoked_at = "2026-11-24T13:00:00Z";
+      return json(200, { status: "ok" });
+    }
+    if (url.pathname === "/v1/users") {
+      if (!this.foldersOf(u.username).some((f) => f.role === "admin")) return err(403, "forbidden");
+      const q = (url.searchParams.get("q") ?? "").toLowerCase();
+      return json(200, this.users.filter((x) => x.username.startsWith(q)).map((x) => ({ username: x.username, display_name: x.display_name })));
+    }
+    return err(404, "not_found");
   }
 
   /** Appends a line to the fake service.log; offsets grow like bytes. */
@@ -105,7 +283,7 @@ export class FakeShfd {
   ops: { op: string; path: string; new_path?: string; base_hash?: string }[] = [];
 
   fetch: typeof fetch = async (input, init) => {
-    const url = new URL(String(input));
+    let url = new URL(String(input));
     const auth = new Headers(init?.headers).get("authorization") ?? "";
     const token = auth.replace(/^Bearer /, "");
     const method = init?.method ?? "GET";
@@ -115,24 +293,71 @@ export class FakeShfd {
     const err = (status: number, code: string) => json(status, { error: { code, message: code } });
     if (url.pathname === "/healthz") return json(200, { service: "shfd", version: "abc1234", ok: true });
     // As shfd: the hash and the size are checked before the token.
-    const tm = new RegExp(`^/v1/shares/[^/]+/admin/thumbs/([^/]+)$`).exec(url.pathname);
+    const tm = new RegExp(`^/v1/shares/[^/]+/(?:admin/)?thumbs/([^/]+)$`).exec(url.pathname);
     if (tm) {
       const size = url.searchParams.get("size") ?? "m";
       if (!/^[0-9a-f]{64}$/.test(tm[1]) || !["s", "m", "l"].includes(size)) return err(400, "invalid_request");
     }
-    const me = this.members.find((m) => m.token === token && m.status !== "revoked");
+    const acct = this.accounts(url, method, token, init, json, err);
+    if (acct) return acct;
+    // A member token, or an account's device token acting as its member.
+    let me = token ? this.members.find((m) => m.token === token && m.status !== "revoked") : undefined;
+    const dev = this.deviceOf(token);
+    if (!me && dev) {
+      const u = this.users.find((x) => x.username === dev.user)!;
+      if (u.must_change) return err(403, "password_change_required");
+      const other = this.folders.find((f) => url.pathname.startsWith(`/v1/shares/${f.share_id}/`));
+      if (other) {
+        const role = other.members[u.username];
+        if (!role) return err(401, "unauthorized");
+        // Another folder: the same listing as the main one, as this member.
+        me = { ...this.members[0], username: u.username, role, token };
+        url = new URL(url.toString().replace(other.share_id, this.share));
+      } else {
+        me = this.members.find((m) => m.account === dev.user && m.status !== "revoked");
+      }
+    }
     if (!me) return err(401, "unauthorized");
     if (url.pathname === "/v1/whoami") {
       return json(200, { share_id: this.share, share_name: "projekti", username: me.username, role: me.role });
     }
     if (url.pathname === `/v1/shares/${this.share}/ops` && method === "POST") return this.op(init, json, err);
     const prefix = `/v1/shares/${this.share}/admin/`;
-    if (!url.pathname.startsWith(prefix)) return err(401, "unauthorized");
-    if (me.role !== "admin") return err(403, "forbidden");
-    const rest = url.pathname.slice(prefix.length);
+    const memberPrefix = `/v1/shares/${this.share}/`;
+    let rest: string;
+    if (url.pathname.startsWith(prefix)) {
+      if (me.role !== "admin") return err(403, "forbidden");
+      rest = url.pathname.slice(prefix.length);
+      // The member routes are the only way to files, content and thumbnails now.
+      if (rest === "files" || rest === "files/content" || rest.startsWith("thumbs/")) this.calls.push("ADMIN-FILE-ROUTE");
+    } else if (url.pathname.startsWith(memberPrefix)) {
+      rest = url.pathname.slice(memberPrefix.length);
+      if (rest !== "files" && rest !== "files/content" && !rest.startsWith("thumbs/")) return err(404, "not_found");
+    } else return err(401, "unauthorized");
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     if (rest === "members" && method === "GET") {
       return json(200, { head: 0, members: this.members.map(({ token: _t, ...m }) => m) });
+    }
+    if (rest === "members" && method === "POST" && body.user) {
+      const u = this.users.find((x) => x.username === body.user);
+      if (!u) return err(404, "unknown_user");
+      const old = this.members.find((m) => m.account === body.user);
+      if (old && old.status !== "revoked") return err(409, "member_exists");
+      if (old) {
+        old.status = "active";
+        return json(200, { member: old, reactivated: true });
+      }
+      const m = this.addAccountMember(body.user, body.admin ? "admin" : "member");
+      return json(200, { member: m });
+    }
+    const dv = /^members\/([^/]+)\/devices\/(\d+)$/.exec(rest);
+    if (dv && method === "DELETE") {
+      const t = this.members.find((m) => m.username === decodeURIComponent(dv[1]));
+      const d = t?.devices?.find((x) => x.id === Number(dv[2]) && !x.revoked);
+      if (!t || !d) return err(404, "unknown_device");
+      d.revoked = true;
+      d.revoked_at = "2026-11-24T13:00:00Z";
+      return json(200, { member: t });
     }
     if (rest === "members" && method === "POST") {
       if (this.members.some((m) => m.username === body.username && m.status !== "revoked")) return err(409, "member_exists");

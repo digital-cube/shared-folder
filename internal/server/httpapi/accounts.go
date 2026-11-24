@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digital-cube/shared-folder/internal/password"
 	"github.com/digital-cube/shared-folder/internal/server"
 )
 
@@ -206,7 +207,20 @@ type MeResponse struct {
 	User    *server.User        `json:"user"`
 	Folders []server.UserFolder `json:"folders"`
 	Devices []server.Device     `json:"devices"`
+	// PasswordRules are the rules of a new password, for a form to show.
+	PasswordRules PasswordRules `json:"password_rules"`
 }
+
+// PasswordRules: a new password has MinLen to MaxLen characters and is
+// not the username (password.Validate).
+type PasswordRules struct {
+	MinLen        int  `json:"min_len"`
+	MaxLen        int  `json:"max_len"`
+	NotUsername   bool `json:"not_username"`
+	DifferFromOld bool `json:"differ_from_old"`
+}
+
+var passwordRules = PasswordRules{MinLen: password.MinLen, MaxLen: password.MaxLen, NotUsername: true, DifferFromOld: true}
 
 func (a *api) me(w http.ResponseWriter, r *http.Request, sess *server.Session) (any, error) {
 	folders, err := a.srv.UserFolders(sess.User.ID)
@@ -220,7 +234,7 @@ func (a *api) me(w http.ResponseWriter, r *http.Request, sess *server.Session) (
 	for i := range devs {
 		devs[i].Current = devs[i].ID == sess.DeviceID
 	}
-	return MeResponse{User: sess.User, Folders: folders, Devices: devs}, nil
+	return MeResponse{User: sess.User, Folders: folders, Devices: devs, PasswordRules: passwordRules}, nil
 }
 
 // PasswordRequest is the body of POST /v1/me/password.

@@ -17,6 +17,7 @@
 //	     /v1/shares/{id}/admin/...     (admin role only, see admin.go)
 //	GET  /v1/shares/{id}/admin/thumbs/{hash}  (admin role only; image/jpeg, see thumbs.go)
 //	GET  /v1/shares/{id}/admin/files/content  (admin role only; the file, see content.go)
+//	GET  /v1/shares/{id}/files, files/content, thumbs/{hash}  (any member; read-only, see admin.go)
 //	     /v1/auth/..., /v1/me/..., /v1/users      (accounts and device tokens, see accounts.go)
 //	POST /v1/shares/{id}/devices       (account device token; the device's folder token, see accounts.go)
 //
@@ -120,6 +121,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	registerAdmin(mux, a.admin, a.adminRaw, a)
 	registerDownloads(mux, a)
 	registerThumbs(mux, a)
+	registerMemberFiles(mux, a)
 	registerAccounts(mux, a)
 	// Without a method in the pattern: the catch-all "/" below matches
 	// every method, so the mux would answer 404 instead of 405.

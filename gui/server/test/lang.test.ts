@@ -5,6 +5,7 @@ import { toUdcError } from "../src/errors.js";
 import { langOf } from "../src/lang.js";
 import { errorMessage, ShfdError } from "../src/shfd.js";
 import { FakeShfd } from "./fake-shfd.js";
+import { fromPage } from "./origin.js";
 
 let gui: GuiApp | undefined;
 afterEach(async () => {
@@ -15,7 +16,7 @@ afterEach(async () => {
 async function setup() {
   const fake = new FakeShfd();
   gui = await buildGui({ shfdUrl: "http://shfd", base: "/gui", secureCookie: true, fetchFn: fake.fetch, pollMs: 60_000 });
-  return { fake, app: gui.app };
+  return { fake, app: fromPage(gui.app) };
 }
 
 const login = (app: GuiApp["app"], token: string, lang?: string) =>

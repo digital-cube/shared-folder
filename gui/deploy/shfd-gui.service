@@ -12,6 +12,9 @@ Environment=SHFD_GUI_LISTEN=127.0.0.1:8444
 # The base path: empty for the root of the host (nginx-gui-root.conf),
 # /gui under a prefix (nginx-gui.conf). Same build for both.
 Environment=SHFD_GUI_BASE=/gui
+# The hidden sign-in with a member token ("Prijava tokenom"); 0 turns it
+# off once every member has an account (docs/gui.md, Nalozi u GUI-ju).
+#Environment=SHFD_GUI_TOKEN_LOGIN=0
 ExecStart=/opt/shfd-gui/current/bin/shfd-gui
 Restart=on-failure
 NoNewPrivileges=true

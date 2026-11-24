@@ -126,6 +126,9 @@ type UserFolder struct {
 	Name    string `json:"name"`
 	Role    string `json:"role"`
 	Member  string `json:"member"` // the member's username in that folder
+	// LastChangeAt is the time of the folder's newest event; absent while
+	// it has none.
+	LastChangeAt *time.Time `json:"last_change_at,omitempty"`
 }
 
 const userCols = `id, username, display_name, must_change, created_at, disabled_at, last_login_at`
@@ -798,7 +801,11 @@ func (s *Server) UserFolders(userID int64) ([]UserFolder, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, UserFolder{ShareID: r.id, Name: r.name, Role: m.Role, Member: m.Username})
+		last, err := sh.LastChangeAt()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, UserFolder{ShareID: r.id, Name: r.name, Role: m.Role, Member: m.Username, LastChangeAt: last})
 	}
 	return out, nil
 }

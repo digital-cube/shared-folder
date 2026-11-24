@@ -11,7 +11,9 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { UdcError, unauthenticatedError } from "@jsudc/core";
 import { createChangeFeed, createDispatcher, udcPlugin } from "@jsudc/server";
 import {
+  addAccountMember,
   addMember,
+  memberDevices,
   overview,
   reactivateMember,
   removeFile,
@@ -19,16 +21,23 @@ import {
   resetToken,
   restoreTrash,
   revokeMember,
+  revokeMemberDevice,
+  searchUsers,
   setRole,
+  type MemberDeviceRow,
 } from "../../shared/actions.js";
 import { BASE_META, isShfdPath, normalizeBase } from "../../shared/base.js";
 import { renameTarget } from "../../shared/rename.js";
+import { registerAccountRoutes } from "./account.js";
 import { buildRegistry, type Ctx } from "./collections.js";
+import { csrfHook } from "./csrf.js";
 import { toUdcError } from "./errors.js";
 import { langOf, tr, type Lang } from "./lang.js";
 import { FILE_OPS, LogFeed, summarize } from "./logs.js";
-import { COOKIE, readCookie, sessionCookie, SessionStore } from "./sessions.js";
-import { CONTENT_REQUEST_HEADERS, errorMessage, ShfdClient, ShfdError, type LogLine, type ThumbSize } from "./shfd.js";
+import { COOKIE, readCookie, SessionStore } from "./sessions.js";
+import { CONTENT_REQUEST_HEADERS, errorMessage, ShfdClient, ShfdError, type LogLine, type MemberInfo, type ThumbSize } from "./shfd.js";
+
+export { LOGIN_BAD_PASSWORD, LOGIN_BAD_PASSWORD_EN, LOGIN_INVALID, LOGIN_INVALID_EN, LOGIN_NOT_ADMIN, LOGIN_NOT_ADMIN_EN } from "./account.js";
 
 export interface AppOptions {
   shfdUrl: string;
@@ -36,19 +45,16 @@ export interface AppOptions {
   version?: string; // shown by <base>/api/healthz
   webDir?: string; // the built web app; none in tests
   secureCookie: boolean;
+  /** The hidden member-token sign-in ("Prijava tokenom"); SHFD_GUI_TOKEN_LOGIN=0 turns it off. Default on. */
+  tokenLogin?: boolean;
   pollMs?: number;
   logger?: boolean;
   fetchFn?: typeof fetch;
   now?: () => number;
 }
 
-export const LOGIN_INVALID = "Token nije ispravan ili je opozvan.";
-export const LOGIN_NOT_ADMIN = "Samo admin foldera može da koristi GUI.";
-export const LOGIN_INVALID_EN = "The token is not valid or has been revoked.";
-export const LOGIN_NOT_ADMIN_EN = "Only an admin of the folder can use the GUI.";
-
-const loginInvalid = (lang: Lang) => tr(lang, LOGIN_INVALID, LOGIN_INVALID_EN);
-const loginNotAdmin = (lang: Lang) => tr(lang, LOGIN_NOT_ADMIN, LOGIN_NOT_ADMIN_EN);
+const forbidden = (lang: Lang) => errorMessage("forbidden", undefined, lang);
+const noFolder = (lang: Lang) => tr(lang, "Izaberi folder.", "Choose a folder.");
 
 const THUMB_HASH = /^[0-9a-f]{64}$/;
 const THUMB_SIZES = new Set(["s", "m", "l"]);
@@ -108,7 +114,13 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     log: app.log,
   });
 
-  const registry = buildRegistry(shfd, feed);
+  const onRefused = (err: unknown, ctx: Ctx) => {
+    if (!(err instanceof ShfdError)) return;
+    if (err.status === 401) sessions.dropToken(ctx.token);
+    // Not an admin (any more): a token session ends, an account stays a member.
+    if (err.status === 403 && err.code === "forbidden") sessions.demote(ctx.token, ctx.shareId);
+  };
+  const registry = buildRegistry(shfd, feed, onRefused);
   const dispatcher = createDispatcher<Ctx>(registry, {
     log: app.log,
     changes,
@@ -124,12 +136,49 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     try {
       return await f();
     } catch (err) {
-      if (err instanceof ShfdError && err.status === 401) sessions.dropToken(ctx.token);
-      if (err instanceof ShfdError && err.status === 403) sessions.delete(ctx.sessionId);
+      onRefused(err, ctx);
       throw toUdcError(err, ctx.lang);
     }
   };
   const membersChanged = (ctx: Ctx) => changes.notify<Ctx>("members", { op: "update", ctx });
+  // The GUI's own rule on top of shfd's: a member who is not an admin
+  // browses and downloads, and changes nothing from here.
+  const requireAdmin = (ctx: Ctx) => {
+    if (ctx.role !== "admin") throw new UdcError("forbidden", forbidden(ctx.lang), { code: "forbidden" });
+  };
+  const devicesOf = (m: MemberInfo): MemberDeviceRow[] =>
+    (m.devices ?? []).map((d) => ({
+      id: d.id,
+      name: d.name,
+      kind: d.kind,
+      ssh_fingerprint: d.ssh_fingerprint ?? "",
+      created_at: d.created_at,
+      last_seen_at: d.last_seen_at ?? null,
+      revoked: !!d.revoked,
+      connected: d.connected ?? 0,
+    }));
+
+  dispatcher.register(addAccountMember, async ({ user, admin }, ctx: Ctx) => {
+    const r = await guard(ctx, () => shfd.addAccountMember(ctx.token, ctx.shareId, user.trim(), admin));
+    await membersChanged(ctx);
+    return { username: r.member.username, account: r.member.account ?? user.trim(), reactivated: !!r.reactivated };
+  });
+  dispatcher.register(searchUsers, async ({ q }, ctx: Ctx) => {
+    requireAdmin(ctx);
+    const users = await guard(ctx, () => shfd.searchUsers(ctx.token, q.trim()));
+    return { users: (users ?? []).map((u) => ({ username: u.username, display_name: u.display_name ?? "" })) };
+  });
+  dispatcher.register(memberDevices, async ({ username }, ctx: Ctx) => {
+    const list = await guard(ctx, () => shfd.members(ctx.token, ctx.shareId));
+    const m = list.members.find((x) => x.username === username);
+    if (!m) throw new UdcError("not_found", errorMessage("unknown_member", undefined, ctx.lang));
+    return { username, account: m.account ?? "", devices: devicesOf(m) };
+  });
+  dispatcher.register(revokeMemberDevice, async ({ username, device }, ctx: Ctx) => {
+    const r = await guard(ctx, () => shfd.revokeMemberDevice(ctx.token, ctx.shareId, username, device));
+    await membersChanged(ctx);
+    return { username, account: r.member.account ?? "", devices: devicesOf(r.member) };
+  });
 
   dispatcher.register(addMember, async ({ username, admin }, ctx: Ctx) => {
     const r = await guard(ctx, () => shfd.addMember(ctx.token, ctx.shareId, username.trim(), admin));
@@ -141,27 +190,33 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     const m = list.members.find((x) => x.username === username);
     if (!m) throw new UdcError("not_found", errorMessage("unknown_member", undefined, ctx.lang));
     if (m.status !== "revoked") throw new UdcError("validation_error", tr(ctx.lang, "Član nije opozvan.", "The member is not revoked."));
-    const r = await guard(ctx, () => shfd.addMember(ctx.token, ctx.shareId, username, m.role === "admin"));
+    // A member of an account comes back as that account (no token); one
+    // with only a token gets a new token.
+    const account = m.account;
+    const r = account
+      ? await guard(ctx, () => shfd.addAccountMember(ctx.token, ctx.shareId, account, m.role === "admin"))
+      : await guard(ctx, () => shfd.addMember(ctx.token, ctx.shareId, username, m.role === "admin"));
     await membersChanged(ctx);
-    return { username, token: r.token, reactivated: !!r.reactivated };
+    return { username, token: account ? "" : (r as unknown as { token: string }).token, reactivated: !!r.reactivated };
   });
   dispatcher.register(revokeMember, async ({ username }, ctx: Ctx) => {
     const r = await guard(ctx, () => shfd.revoke(ctx.token, ctx.shareId, username));
     await membersChanged(ctx);
-    if (username === ctx.username) sessions.delete(ctx.sessionId);
+    if (username === ctx.member) sessions.demote(ctx.token, ctx.shareId);
     return { username, status: r.member.status };
   });
   dispatcher.register(setRole, async ({ username, role }, ctx: Ctx) => {
     const r = await guard(ctx, () => shfd.setRole(ctx.token, ctx.shareId, username, role));
     await membersChanged(ctx);
-    // An admin who gave up the role can no longer use the GUI.
-    if (username === ctx.username && role !== "admin") sessions.delete(ctx.sessionId);
+    // An admin who gave up the role is a member of the folder from now on
+    // (a token session, admins only, ends).
+    if (username === ctx.member && role !== "admin") sessions.demote(ctx.token, ctx.shareId);
     return { username, role: r.member.role, old_role: r.old_role };
   });
   dispatcher.register(resetToken, async ({ username }, ctx: Ctx) => {
     const r = await guard(ctx, () => shfd.resetToken(ctx.token, ctx.shareId, username));
     await membersChanged(ctx);
-    if (username === ctx.username) sessions.dropToken(ctx.token);
+    if (username === ctx.member && ctx.kind === "token") sessions.dropToken(ctx.token);
     return { username, token: r.token };
   });
   dispatcher.register(restoreTrash, async ({ id }, ctx: Ctx) => {
@@ -187,6 +242,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     await changes.notify<Ctx>("trash", { op: "update", ctx });
   };
   dispatcher.register(renameFile, async ({ path, name, base_hash }, ctx: Ctx) => {
+    requireAdmin(ctx);
     const to = renameTarget(path, name, ctx.lang);
     if (typeof to !== "string") throw new UdcError("validation_error", to.error);
     if (to === path) return { path, status: "unchanged", message: tr(ctx.lang, "Ime je isto; ništa nije menjano.", "The name is the same; nothing was changed.") };
@@ -195,6 +251,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     return { path: r.path, status: r.status, message: tr(ctx.lang, `Preimenovano u ${r.path.split("/").pop()}.`, `Renamed to ${r.path.split("/").pop()}.`) };
   });
   dispatcher.register(removeFile, async ({ path, kind, base_hash }, ctx: Ctx) => {
+    requireAdmin(ctx);
     const req = kind === "dir" ? ({ op: "rmdir", path } as const) : ({ op: "delete", path, base_hash } as const);
     const r = await guard(ctx, () => shfd.op(ctx.token, ctx.shareId, req));
     await filesChanged(ctx);
@@ -207,6 +264,11 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     return { path: r.path, status: r.status, message };
   });
   dispatcher.register(overview, async (_p, ctx: Ctx) => {
+    if (ctx.role !== "admin") {
+      const health = await shfd.health().catch(() => ({ service: "shfd", version: "?", ok: false }));
+      const empty = { today: 0, last_hour: 0, transfers: 0, uploads: 0, downloads: 0, refused: 0, per_member: [] };
+      return { limited: true, version: health.version, server_ok: health.ok, head: 0, files: 0, files_size: 0, trash: 0, trash_size: 0, members: 0, connected: null, log: empty };
+    }
     const [st, health, members, lines] = await Promise.all([
       guard(ctx, () => shfd.stats(ctx.token, ctx.shareId)),
       shfd.health().catch(() => ({ service: "shfd", version: "?", ok: false })),
@@ -218,6 +280,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       ? members.members.reduce((n, m) => n + (m.connected ?? 0), 0)
       : null;
     return {
+      limited: false,
       version: health.version,
       server_ok: health.ok,
       head: st.head,
@@ -240,6 +303,10 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     });
   }
 
+  // Every POST, PUT, PATCH and DELETE to <base>/api and <base>/udc comes
+  // from a page of this host (csrf.ts).
+  app.addHook("onRequest", csrfHook(base, langOf));
+
   // The change stream must reach the browser unbuffered through every
   // reverse proxy on the way (nginx honours this header).
   app.addHook("onRequest", async (req, reply) => {
@@ -255,7 +322,9 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       const s = sessionOf(req);
       const lang = langOf(req);
       if (!s) throw unauthenticatedError(tr(lang, "Prijava je istekla.", "The sign-in has expired."));
-      return { sessionId: s.id, token: s.token, shareId: s.shareId, username: s.username, lang };
+      if (s.mustChange) throw new UdcError("forbidden", errorMessage("password_change_required", undefined, lang), { code: "password_change_required" });
+      if (!s.shareId) throw new UdcError("validation_error", noFolder(lang), { code: "no_folder" });
+      return { sessionId: s.id, kind: s.kind, token: s.token, shareId: s.shareId, username: s.username, member: s.member, role: s.role, lang };
     },
   });
 
@@ -266,44 +335,9 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     return { service: "shfd-gui", version: o.version ?? "dev", ok: true };
   });
 
-  // ---- sign-in -----------------------------------------------------------
+  // ---- sign-in, the folder choice and the account (account.ts) -----------
 
-  app.post(`${base}/api/login`, async (req, reply) => {
-    const lang = langOf(req);
-    const token = String((req.body as { token?: unknown } | undefined)?.token ?? "").trim();
-    if (!token) return reply.code(400).send({ error: loginInvalid(lang) });
-    let who;
-    try {
-      who = await shfd.whoami(token);
-    } catch (err) {
-      if (err instanceof ShfdError && err.status === 401) return reply.code(401).send({ error: loginInvalid(lang) });
-      req.log.warn({ err: (err as Error).message }, "whoami failed");
-      return reply.code(502).send({ error: errorMessage("unreachable", undefined, lang) });
-    }
-    if (who.role !== "admin") return reply.code(403).send({ error: loginNotAdmin(lang) });
-    const s = sessions.create({
-      token,
-      shareId: who.share_id,
-      shareName: who.share_name,
-      username: who.username,
-      role: who.role,
-    });
-    reply.header("set-cookie", sessionCookie(s.id, cookieOpts));
-    return publicSession(s);
-  });
-
-  app.post(`${base}/api/logout`, async (req, reply) => {
-    sessions.delete(readCookie(req.headers.cookie, COOKIE));
-    reply.header("set-cookie", sessionCookie("", { ...cookieOpts, maxAgeSec: 0 }));
-    return { ok: true };
-  });
-
-  app.get(`${base}/api/session`, async (req, reply) => {
-    reply.header("cache-control", "no-store");
-    const s = sessionOf(req);
-    if (!s) return reply.code(401).send({ error: "not signed in" });
-    return publicSession(s);
-  });
+  registerAccountRoutes(app, { base, shfd, sessions, cookieOpts, tokenLogin: o.tokenLogin ?? true });
 
   // ---- thumbnails --------------------------------------------------------
 
@@ -314,6 +348,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
   app.get(`${base}/api/thumb/:hash`, async (req, reply) => {
     const s = sessionOf(req);
     if (!s) return reply.code(401).send({ error: "not signed in" });
+    if (!s.shareId || s.mustChange) return reply.code(409).send({ error: noFolder(langOf(req)), code: "no_folder" });
     const hash = (req.params as { hash: string }).hash;
     const size = String((req.query as { size?: unknown }).size ?? "m");
     if (!THUMB_HASH.test(hash)) return reply.code(400).send({ error: "invalid hash" });
@@ -327,10 +362,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
         sessions.dropToken(s.token);
         return reply.code(401).send({ error: "not signed in" });
       }
-      if (err instanceof ShfdError && err.status === 403) {
-        sessions.delete(s.id);
-        return reply.code(403).send({ error: loginNotAdmin(langOf(req)) });
-      }
+      if (err instanceof ShfdError && err.status === 403) return reply.code(403).send({ error: forbidden(langOf(req)), code: err.code });
       req.log.warn({ err: (err as Error).message }, "thumbnail failed");
       return reply.code(502).send({ error: errorMessage("unreachable", undefined, langOf(req)) });
     }
@@ -363,6 +395,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
   app.get(`${base}/api/files/content`, async (req, reply) => {
     const s = sessionOf(req);
     if (!s) return reply.code(401).send({ error: "not signed in" });
+    if (!s.shareId || s.mustChange) return reply.code(409).send({ error: noFolder(langOf(req)), code: "no_folder" });
     const q = req.query as { path?: unknown; download?: unknown };
     const path = typeof q.path === "string" ? q.path : "";
     if (!path) return reply.code(400).send({ error: "path is required" });
@@ -387,10 +420,6 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       if (err instanceof ShfdError && err.status === 401) {
         sessions.dropToken(s.token);
         return reply.code(401).send({ error: "not signed in" });
-      }
-      if (err instanceof ShfdError && err.status === 403) {
-        sessions.delete(s.id);
-        return reply.code(403).send({ error: loginNotAdmin(langOf(req)) });
       }
       if (err instanceof ShfdError && err.code !== "unreachable" && err.code !== "internal") {
         return reply.code(err.status).send({ error: errorMessage(err.code, err.message, langOf(req)), code: err.code });
@@ -457,8 +486,4 @@ export function withBase(html: string, base: string): string {
 
 function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function publicSession(s: { shareId: string; shareName: string; username: string; role: string }) {
-  return { share_id: s.shareId, share_name: s.shareName, username: s.username, role: s.role };
 }

@@ -6,6 +6,8 @@
 //	                  root of the host; the same build serves either
 //	SHFD_GUI_WEB      the built web app (default: web/ next to this file)
 //	SHFD_GUI_COOKIE_SECURE=0   drop Secure from the cookie (plain-HTTP development only)
+//	SHFD_GUI_TOKEN_LOGIN=0     turn off the hidden sign-in with a member token
+//	                  ("Prijava tokenom"); the password sign-in stays
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,6 +32,7 @@ const { app } = await buildGui({
   version,
   webDir: process.env.SHFD_GUI_WEB ?? join(here, "web"),
   secureCookie: process.env.SHFD_GUI_COOKIE_SECURE !== "0",
+  tokenLogin: process.env.SHFD_GUI_TOKEN_LOGIN !== "0",
   logger: true,
 });
 

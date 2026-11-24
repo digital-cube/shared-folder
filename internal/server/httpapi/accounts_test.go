@@ -337,3 +337,54 @@ func openRegistry(t *testing.T, e *env) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	return db
 }
+
+// TestMemberFileRoutes: a member who is not an admin (the GUI's non-admin
+// view) reads the folder's files, content and thumbnails on the member
+// routes, and every admin route answers 403 to the same token.
+func TestMemberFileRoutes(t *testing.T) {
+	e := newAcctEnv(t)
+	sh, _ := e.srv.Share(e.share)
+	e.account("cid", "cidova-lozinka")
+	e.srv.AddUserMember(sh, "cid", false)
+	cid := e.loginOK("cid", "cidova-lozinka", "gui")
+	e.ana.mustPut("docs/a.txt", "", []byte("ana"))
+
+	base := "/v1/shares/" + e.share
+	if st, _, b := e.call("GET", base+"/files?dir=docs", cid, nil); st != 200 || !strings.Contains(string(b), "a.txt") {
+		t.Errorf("files: %d %s", st, b)
+	}
+	st, hdr, b := e.call("GET", base+"/files/content?path=docs/a.txt&download=1", cid, nil)
+	if st != 200 || string(b) != "ana" || !strings.HasPrefix(hdr.Get("Content-Disposition"), "attachment") {
+		t.Errorf("content: %d %s %v", st, b, hdr)
+	}
+	if st, _, b := e.call("GET", base+"/thumbs/"+strings.Repeat("ab", 32)+"?size=m", cid, nil); st != 404 {
+		t.Errorf("thumb of no file: %d %s", st, b)
+	}
+	for _, p := range []string{
+		"/admin/files", "/admin/files/content?path=docs/a.txt", "/admin/members", "/admin/log",
+		"/admin/stats", "/admin/trash", "/admin/thumbs/" + strings.Repeat("ab", 32),
+	} {
+		if st, _, b := e.call("GET", base+p, cid, nil); st != 403 || errCode(b) != server.CodeForbidden {
+			t.Errorf("GET %s as a member: %d %s", p, st, b)
+		}
+	}
+	if st, _, b := e.call("POST", base+"/admin/members", cid, httpapi.AddMemberRequest{User: "cid"}); st != 403 {
+		t.Errorf("add member as a member: %d %s", st, b)
+	}
+	// Not a member at all: 401, as on every route of the folder.
+	e.account("dan", "danova-lozinka")
+	dan := e.loginOK("dan", "danova-lozinka", "gui")
+	if st, _, _ := e.call("GET", base+"/files", dan, nil); st != 401 {
+		t.Errorf("non-member: %d", st)
+	}
+	// /v1/me: the folder's last change and the password rules.
+	_, _, b = e.call("GET", "/v1/me", cid, nil)
+	var me httpapi.MeResponse
+	json.Unmarshal(b, &me)
+	if len(me.Folders) != 1 || me.Folders[0].LastChangeAt == nil || me.Folders[0].Role != "member" {
+		t.Errorf("folders = %s", b)
+	}
+	if me.PasswordRules.MinLen != 12 || me.PasswordRules.MaxLen != 256 || !me.PasswordRules.NotUsername {
+		t.Errorf("password rules = %+v", me.PasswordRules)
+	}
+}

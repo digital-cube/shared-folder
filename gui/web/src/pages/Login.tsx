@@ -1,31 +1,54 @@
-import { useState } from "react";
-import { login, type Me } from "../api";
+import { useEffect, useState } from "react";
+import { getConfig, signIn, signInWithToken, type Me } from "../api";
 import { useTr } from "../i18n";
 import { Folder } from "../icons";
 import { Prefs } from "../Prefs";
 
+/**
+ * Sign-in with the account's username and password. "Prijava tokenom"
+ * (a folder admin's member token, as before accounts) is a link under the
+ * form while the server allows it (SHFD_GUI_TOKEN_LOGIN).
+ */
 export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boolean }) {
   const tr = useTr();
+  const [mode, setMode] = useState<"password" | "token">("password");
+  const [tokenLogin, setTokenLogin] = useState(false);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
   // The error of the last attempt, as the server said it; the expired note follows the language.
   const [error, setError] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(expired);
-  const shown =
-    error ?? (showExpired ? tr("Sesija je istekla ili je token opozvan. Prijavi se ponovo.", "The session expired or the token was revoked. Sign in again.") : null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void getConfig().then((c) => setTokenLogin(c.token_login));
+  }, []);
+
+  const shown = error ?? (showExpired ? tr("Sesija je istekla ili je opozvana. Prijavi se ponovo.", "The session expired or was revoked. Sign in again.") : null);
+  const ready = mode === "password" ? !!username.trim() && !!password : !!token.trim();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token.trim()) return;
+    if (!ready) return;
     setBusy(true);
     setError(null);
     setShowExpired(false);
-    const r = await login(token.trim());
+    const r = mode === "password" ? await signIn(username.trim(), password) : await signInWithToken(token.trim());
     setBusy(false);
     if (r.ok) {
+      setPassword("");
       setToken("");
-      onIn(r.me);
-    } else setError(r.error);
+      onIn(r.data);
+    } else {
+      setError(r.error);
+      if (mode === "password") setPassword("");
+    }
+  };
+
+  const switchTo = (m: "password" | "token") => {
+    setMode(m);
+    setError(null);
   };
 
   return (
@@ -33,7 +56,7 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
       <div className="login-prefs">
         <Prefs />
       </div>
-      <form className="login-card" onSubmit={submit} autoComplete="off">
+      <form className="login-card" onSubmit={submit} autoComplete={mode === "password" ? "on" : "off"} data-testid="login-form">
         <div className="logo">
           <div className="logo-mark">
             <Folder size={18} />
@@ -43,30 +66,78 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
             <small>{location.hostname}</small>
           </div>
         </div>
-        <h1>{tr("Prijava", "Sign in")}</h1>
-        <p className="sub">{tr("Za upravljanje folderom, logove i pregled fajlova.", "To manage the folder, read the logs and browse the files.")}</p>
-        <div className="field">
-          <label htmlFor="token">Token</label>
-          <input
-            id="token"
-            className="input mono"
-            type="password"
-            placeholder="shf_…"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            autoFocus
-          />
-          <span className="hint">
-            {tr("Token člana foldera. GUI mogu da koriste samo članovi sa ulogom", "The token of a folder member. Only members with the role")} <b>admin</b>
-            {tr(".", " can use the GUI.")}
-          </span>
-        </div>
-        {shown ? <div className="err-text" role="alert">{shown}</div> : null}
-        <button className="btn primary block" disabled={busy || !token.trim()}>
+        <h1>{mode === "password" ? tr("Prijava", "Sign in") : tr("Prijava tokenom", "Sign in with a token")}</h1>
+        {mode === "password" ? (
+          <>
+            <p className="sub">{tr("Nalogom servera: tvoji folderi, fajlovi i uređaji.", "With your account on the server: your folders, files and devices.")}</p>
+            <div className="field">
+              <label htmlFor="username">{tr("Korisničko ime", "Username")}</label>
+              <input
+                id="username"
+                name="username"
+                className="input"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="password">{tr("Lozinka", "Password")}</label>
+              <input
+                id="password"
+                name="password"
+                className="input"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <span className="hint">
+                {tr("Nalog i privremenu lozinku daje admin servera.", "The server's admin gives you the account and a temporary password.")}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="sub">{tr("Za stare članove bez naloga: token admina jednog foldera.", "For members without an account: the token of a folder admin.")}</p>
+            <div className="field">
+              <label htmlFor="token">Token</label>
+              <input id="token" className="input mono" type="password" placeholder="shf_…" value={token} onChange={(e) => setToken(e.target.value)} autoFocus />
+              <span className="hint">
+                {tr("Token člana foldera sa ulogom", "The token of a folder member with the role")} <b>admin</b>.
+              </span>
+            </div>
+          </>
+        )}
+        {shown ? (
+          <div className="err-text" role="alert">
+            {shown}
+          </div>
+        ) : null}
+        <button className="btn primary block" disabled={busy || !ready}>
           {busy ? tr("Proveravam…", "Checking…") : tr("Prijavi se", "Sign in")}
         </button>
         <div className="foot">
           <a href="#install">{tr("Kako se instalira klijent ili server", "How to install the client or the server")}</a>
+          {tokenLogin || mode === "token" ? (
+            <>
+              {" · "}
+              <a
+                href="#"
+                className="faint"
+                data-testid="token-login-link"
+                onClick={(e) => {
+                  e.preventDefault();
+                  switchTo(mode === "password" ? "token" : "password");
+                }}
+              >
+                {mode === "password" ? tr("Prijava tokenom", "Sign in with a token") : tr("Prijava lozinkom", "Sign in with a password")}
+              </a>
+            </>
+          ) : null}
         </div>
       </form>
     </section>

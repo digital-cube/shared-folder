@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildGui, LOGIN_INVALID, LOGIN_NOT_ADMIN, type GuiApp } from "../src/app.js";
 import { FakeShfd } from "./fake-shfd.js";
+import { fromPage } from "./origin.js";
 
 let gui: GuiApp | undefined;
 afterEach(async () => {
@@ -11,7 +12,7 @@ afterEach(async () => {
 async function setup() {
   const fake = new FakeShfd();
   gui = await buildGui({ shfdUrl: "http://shfd", base: "/gui", secureCookie: true, fetchFn: fake.fetch, pollMs: 60_000 });
-  return { fake, app: gui.app };
+  return { fake, app: fromPage(gui.app) };
 }
 
 async function login(app: GuiApp["app"], token: string) {
@@ -30,7 +31,7 @@ describe("sign-in", () => {
     const { fake, app } = await setup();
     const { res, cookie } = await login(app, fake.members[0].token);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ share_id: fake.share, share_name: "projekti", username: "ana", role: "admin" });
+    expect(res.json()).toMatchObject({ kind: "token", share_id: fake.share, share_name: "projekti", username: "ana", role: "admin" });
     const set = String(res.headers["set-cookie"]);
     expect(set).toMatch(/HttpOnly/);
     expect(set).toMatch(/SameSite=Strict/);
@@ -269,7 +270,7 @@ describe("thumbnails", () => {
     expect(ok.headers["etag"]).toBe(`"${H}.l"`);
     expect(ok.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
     expect(new Uint8Array(ok.rawPayload)).toEqual(JPEG);
-    expect(fake.calls).toContain(`GET /v1/shares/${fake.share}/admin/thumbs/${H}?size=l`);
+    expect(fake.calls).toContain(`GET /v1/shares/${fake.share}/thumbs/${H}?size=l`);
 
     const again = await app.inject({ method: "GET", url: `/gui/api/thumb/${H}?size=l`, headers: { cookie, "if-none-match": `"${H}.l"` } });
     expect(fake.lastIfNoneMatch).toBe(`"${H}.l"`);
@@ -327,7 +328,7 @@ describe("file content", () => {
     });
     expect(res.headers["x-internal"]).toBeUndefined();
     expect(new Uint8Array(res.rawPayload)).toEqual(TEXT);
-    expect(fake.calls).toContain(`GET /v1/shares/${fake.share}/admin/files/content?path=docs%2Fa+b.txt`);
+    expect(fake.calls).toContain(`GET /v1/shares/${fake.share}/files/content?path=docs%2Fa+b.txt`);
     expect(fake.lastContentHeaders?.get("authorization")).toBe(`Bearer ${fake.members[0].token}`);
     // The browser's cookie never reaches shfd.
     expect(fake.lastContentHeaders?.get("cookie")).toBeNull();
@@ -340,7 +341,7 @@ describe("file content", () => {
     const { cookie } = await login(app, fake.members[0].token);
     const dl = await app.inject({ method: "GET", url: url("a.txt", "&download=1"), headers: { cookie } });
     expect(dl.headers["content-disposition"]).toBe('attachment; filename="a.txt"');
-    expect(fake.calls.at(-1)).toBe(`GET /v1/shares/${fake.share}/admin/files/content?path=a.txt&download=1`);
+    expect(fake.calls.at(-1)).toBe(`GET /v1/shares/${fake.share}/files/content?path=a.txt&download=1`);
     const html = await app.inject({ method: "GET", url: url("noi.html"), headers: { cookie } });
     expect(html.headers["content-type"]).toBe("application/octet-stream");
     expect(html.headers["content-disposition"]).toBe('attachment; filename="noi.html"');

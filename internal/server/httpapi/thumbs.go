@@ -126,7 +126,12 @@ func (a *api) thumbsUnreferenced(w http.ResponseWriter, r *http.Request) {
 // checked before anything else, the token and admin role next; the file
 // is read only from this folder's thumbnails/. It does not refresh the
 // member's last_seen_at: a directory of images asks for hundreds.
-func (a *api) thumb(w http.ResponseWriter, r *http.Request) {
+func (a *api) thumb(w http.ResponseWriter, r *http.Request) { a.serveThumb(w, r, true) }
+
+// memberThumb is thumb for any active member of the folder.
+func (a *api) memberThumb(w http.ResponseWriter, r *http.Request) { a.serveThumb(w, r, false) }
+
+func (a *api) serveThumb(w http.ResponseWriter, r *http.Request, admin bool) {
 	hash := r.PathValue("hash")
 	size := r.URL.Query().Get("size")
 	if size == "" {
@@ -144,9 +149,11 @@ func (a *api) thumb(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := server.RequireAdmin(m); err != nil {
-		a.fail(w, r, err)
-		return
+	if admin {
+		if err := server.RequireAdmin(m); err != nil {
+			a.fail(w, r, err)
+			return
+		}
 	}
 	f, _, err := sh.OpenThumb(hash, size)
 	if err != nil {

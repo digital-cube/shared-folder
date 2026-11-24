@@ -49,6 +49,8 @@ export const overview = defineHostAction({
   name: "shfd.overview",
   request: z.object({}),
   response: z.object({
+    /** A member who is not an admin gets the server's state only; the numbers are 0. */
+    limited: z.boolean(),
     version: z.string(),
     server_ok: z.boolean(),
     head: z.number(),
@@ -89,4 +91,44 @@ export const removeFile = defineHostAction({
   name: "shfd.file_remove",
   request: z.object({ path: z.string().min(1), kind: z.enum(["file", "dir"]), base_hash: z.string() }),
   response: z.object({ path: z.string(), status: z.string(), message: z.string() }),
+});
+
+/** An account added to the folder as a member (admin/members {user, admin}); no token. */
+export const addAccountMember = defineHostAction({
+  name: "shfd.member_add_account",
+  request: z.object({ user: z.string().min(1).max(64), admin: z.boolean() }),
+  response: z.object({ username: z.string(), account: z.string(), reactivated: z.boolean() }),
+});
+
+/** Accounts whose username starts with q (or whose display name has it), for "Dodaj člana". */
+export const searchUsers = defineHostAction({
+  name: "shfd.users_search",
+  request: z.object({ q: z.string().max(64) }),
+  response: z.object({ users: z.array(z.object({ username: z.string(), display_name: z.string() })) }),
+});
+
+const memberDevice = z.object({
+  id: z.number(),
+  name: z.string(),
+  kind: z.string(),
+  ssh_fingerprint: z.string(),
+  created_at: z.string(),
+  last_seen_at: z.string().nullable(),
+  revoked: z.boolean(),
+  connected: z.number(),
+});
+export type MemberDeviceRow = z.infer<typeof memberDevice>;
+
+/** The devices of a member in this folder: an account's devices, each with its own credentials. */
+export const memberDevices = defineHostAction({
+  name: "shfd.member_devices",
+  request: member,
+  response: z.object({ username: z.string(), account: z.string(), devices: z.array(memberDevice) }),
+});
+
+/** Revokes one device's credentials in this folder; the member's other devices keep working. */
+export const revokeMemberDevice = defineHostAction({
+  name: "shfd.member_device_revoke",
+  request: z.object({ username: z.string().min(1), device: z.number().int().positive() }),
+  response: z.object({ username: z.string(), account: z.string(), devices: z.array(memberDevice) }),
 });

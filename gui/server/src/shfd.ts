@@ -1,5 +1,6 @@
-// The shfd HTTP API, always called with the token of the signed-in member,
-// so shfd itself decides what that member may do (401 / 403).
+// The shfd HTTP API, always called with the credential of the session (the
+// account's GUI device token, or a member token), so shfd itself decides
+// what that member may do (401 / 403).
 
 import { tr, type Lang } from "./lang.js";
 
@@ -8,6 +9,19 @@ export interface Whoami {
   share_name: string;
   username: string;
   role: string;
+}
+
+/** One device of an account in a folder (admin/members, shfd 008dcc6). */
+export interface MemberDevice {
+  id: number;
+  name: string;
+  kind: "client" | "gui" | string;
+  ssh_fingerprint: string;
+  created_at: string;
+  last_seen_at: string | null;
+  revoked: boolean;
+  revoked_at?: string | null;
+  connected: number;
 }
 
 export interface MemberInfo {
@@ -22,6 +36,10 @@ export interface MemberInfo {
   behind: number;
   ssh_fingerprint: string;
   connected: number;
+  /** The account the member is linked to; absent for a member with only a token. */
+  user_id?: number;
+  account?: string;
+  devices?: MemberDevice[];
 }
 
 export interface MemberList {
@@ -33,6 +51,63 @@ export interface TokenResponse {
   member: MemberInfo;
   token: string;
   reactivated?: boolean;
+}
+
+/** An account (GET /v1/me, POST /v1/auth/login). */
+export interface User {
+  id: number;
+  username: string;
+  display_name: string;
+  must_change: boolean;
+  created_at: string;
+  disabled_at?: string | null;
+  last_login_at?: string | null;
+}
+
+export interface LoginResult {
+  token: string;
+  user: User;
+  must_change: boolean;
+}
+
+/** A folder of the account (GET /v1/me). */
+export interface UserFolder {
+  share_id: string;
+  name: string;
+  role: string;
+  member: string;
+  last_change_at?: string | null;
+}
+
+/** A signed-in device or GUI session of the account (GET /v1/me). */
+export interface Device {
+  id: number;
+  name: string;
+  kind: "client" | "gui" | string;
+  created_at: string;
+  last_seen_at?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  current?: boolean;
+}
+
+export interface PasswordRules {
+  min_len: number;
+  max_len: number;
+  not_username: boolean;
+  differ_from_old?: boolean;
+}
+
+export interface MeResponse {
+  user: User;
+  folders: UserFolder[];
+  devices: Device[];
+  password_rules?: PasswordRules;
+}
+
+export interface UserRef {
+  username: string;
+  display_name: string;
 }
 
 export interface LogLine {
@@ -158,6 +233,8 @@ export class ShfdError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Seconds from Retry-After (too_many_attempts). */
+    readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "ShfdError";
@@ -195,7 +272,8 @@ export class ShfdClient {
     }
     if (!res.ok) {
       const e = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
-      throw new ShfdError(res.status, e?.code ?? "internal", e?.message ?? `shfd answered ${res.status}`);
+      const ra = Number(res.headers.get("retry-after"));
+      throw new ShfdError(res.status, e?.code ?? "internal", e?.message ?? `shfd answered ${res.status}`, Number.isFinite(ra) && ra > 0 ? ra : undefined);
     }
     return json as T;
   }
@@ -206,6 +284,32 @@ export class ShfdClient {
 
   whoami(token: string): Promise<Whoami> {
     return this.call("GET", "/v1/whoami", token);
+  }
+
+  // ---- accounts (the device token of a password sign-in) ----
+  login(username: string, password: string, deviceName: string): Promise<LoginResult> {
+    return this.call("POST", "/v1/auth/login", undefined, { username, password, device_name: deviceName, kind: "gui" });
+  }
+  logout(token: string): Promise<unknown> {
+    return this.call("POST", "/v1/auth/logout", token, {});
+  }
+  me(token: string): Promise<MeResponse> {
+    return this.call("GET", "/v1/me", token);
+  }
+  changePassword(token: string, oldPw: string, newPw: string): Promise<{ status: string; user: User }> {
+    return this.call("POST", "/v1/me/password", token, { old: oldPw, new: newPw });
+  }
+  revokeMyDevice(token: string, id: number): Promise<unknown> {
+    return this.call("DELETE", `/v1/me/devices/${id}`, token);
+  }
+  searchUsers(token: string, q: string): Promise<UserRef[]> {
+    return this.call("GET", `/v1/users?q=${encodeURIComponent(q)}`, token);
+  }
+  addAccountMember(token: string, share: string, user: string, admin: boolean): Promise<{ member: MemberInfo; reactivated?: boolean }> {
+    return this.call("POST", `${this.share(share)}/admin/members`, token, { user, admin });
+  }
+  revokeMemberDevice(token: string, share: string, username: string, device: number): Promise<{ member: MemberInfo }> {
+    return this.call("DELETE", `${this.share(share)}/admin/members/${encodeURIComponent(username)}/devices/${device}`, token);
   }
   health(): Promise<Health> {
     return this.call("GET", "/healthz", undefined);
@@ -234,7 +338,7 @@ export class ShfdClient {
     return this.call("GET", `${this.share(share)}/admin/log?${q}`, token);
   }
   files(token: string, share: string, dir: string): Promise<DirListing> {
-    return this.call("GET", `${this.share(share)}/admin/files?dir=${encodeURIComponent(dir)}`, token);
+    return this.call("GET", `${this.share(share)}/files?dir=${encodeURIComponent(dir)}`, token);
   }
   trash(token: string, share: string): Promise<TrashList> {
     return this.call("GET", `${this.share(share)}/admin/trash`, token);
@@ -255,7 +359,7 @@ export class ShfdClient {
   async thumb(token: string, share: string, hash: string, size: ThumbSize, ifNoneMatch?: string): Promise<ThumbResponse> {
     const headers: Record<string, string> = { accept: "image/jpeg", authorization: `Bearer ${token}` };
     if (ifNoneMatch) headers["if-none-match"] = ifNoneMatch;
-    const url = `${this.baseUrl.replace(/\/$/, "")}${this.share(share)}/admin/thumbs/${encodeURIComponent(hash)}?size=${size}`;
+    const url = `${this.baseUrl.replace(/\/$/, "")}${this.share(share)}/thumbs/${encodeURIComponent(hash)}?size=${size}`;
     let res: Response;
     try {
       res = await this.fetchFn(url, { method: "GET", headers, signal: AbortSignal.timeout(this.timeoutMs) });
@@ -276,7 +380,7 @@ export class ShfdClient {
   }
 
   /**
-   * Opens the content of one file (GET /admin/files/content). The answer is
+   * Opens the content of one file (GET /files/content, any member). The answer is
    * shfd's Response with its body not read, so the caller streams it; signal
    * aborts the download (the browser went away). Any refusal of shfd
    * (except 416) is a ShfdError with its code. Only the headers have a deadline
@@ -290,7 +394,7 @@ export class ShfdClient {
   ): Promise<Response> {
     const q = new URLSearchParams({ path });
     if (opts.download) q.set("download", "1");
-    const url = `${this.baseUrl.replace(/\/$/, "")}/v1/shares/${encodeURIComponent(share)}/admin/files/content?${q}`;
+    const url = `${this.baseUrl.replace(/\/$/, "")}/v1/shares/${encodeURIComponent(share)}/files/content?${q}`;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(new Error("no answer from shfd in time")), opts.headersTimeoutMs ?? CONTENT_HEADERS_TIMEOUT_MS);
     const onAbort = () => ctl.abort(opts.signal?.reason);
@@ -327,7 +431,13 @@ const ERROR_MESSAGES: Record<string, [sr: string, en: string]> = {
   ],
   unknown_member: ["Taj član ne postoji ili je opozvan.", "That member does not exist or has been revoked."],
   unauthorized: ["Token nije ispravan ili je opozvan.", "The token is not valid or has been revoked."],
-  forbidden: ["Samo admin foldera može da koristi GUI.", "Only an admin of the folder can use the GUI."],
+  forbidden: ["To može samo admin foldera.", "Only an admin of the folder can do that."],
+  password_change_required: ["Prvo promeni privremenu lozinku.", "Change the temporary password first."],
+  unknown_user: ["Taj nalog ne postoji.", "That account does not exist."],
+  user_disabled: ["Taj nalog je ugašen.", "That account is disabled."],
+  unknown_device: ["Taj uređaj ne postoji ili je već opozvan.", "That device does not exist or is already revoked."],
+  wrong_password: ["Stara lozinka nije tačna.", "The old password is wrong."],
+  invalid_credentials: ["Pogrešno korisničko ime ili lozinka.", "Wrong username or password."],
   unknown_trash: ["Taj unos više nije u trash-u.", "That entry is no longer in the trash."],
   trash_damaged: [
     "Fajl ovog unosa nedostaje ili je izmenjen; pokreni shfd verify.",

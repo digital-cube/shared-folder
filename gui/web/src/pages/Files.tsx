@@ -9,6 +9,8 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { restoreTrash } from "../../../shared/actions";
+import { isAdmin } from "../access";
+import { useApp } from "../App";
 import { useTr } from "../i18n";
 import { Folder, Trash2, X } from "../icons";
 import { messageOf } from "./Members";
@@ -46,6 +48,9 @@ export function Files() {
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
   const filesState = useMemo(filesUrlState, []);
   const tr = useTr();
+  const { me } = useApp();
+  // A member who is not an admin browses and downloads: no Trash, no rename or delete.
+  const admin = isAdmin(me);
 
   const actions = {
     restore: async ({ row }: BulkActionContext) => {
@@ -67,13 +72,19 @@ export function Files() {
           <h2>{tr("Fajlovi", "Files")}</h2>
           <p>
             {tr("Sadržaj foldera kako ga server vidi", "The folder's content as the server sees it")} (<code>storage/</code>).{" "}
-            {tr(
-              "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled, preuzimanje, preimenovanje i brisanje.",
-              "A click on a file opens its preview; a right-click (or the menu key) gives info, view, download, rename and delete.",
-            )}
+            {admin
+              ? tr(
+                  "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled, preuzimanje, preimenovanje i brisanje.",
+                  "A click on a file opens its preview; a right-click (or the menu key) gives info, view, download, rename and delete.",
+                )
+              : tr(
+                  "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled i preuzimanje. Menjaš ih na svom uređaju (shf).",
+                  "A click on a file opens its preview; a right-click (or the menu key) gives info, view and download. You change files on your device (shf).",
+                )}
           </p>
         </div>
         <div className="spacer" />
+        {admin ? (
         <div className="tabs">
           <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>
             <Folder size={15} /> {tr("Fajlovi", "Files")}
@@ -82,6 +93,7 @@ export function Files() {
             <Trash2 size={15} /> Trash
           </button>
         </div>
+        ) : null}
       </div>
       {banner ? (
         <div className={`banner ${banner.ok ? "ok" : "err"}`} role="status">
@@ -92,9 +104,9 @@ export function Files() {
           </button>
         </div>
       ) : null}
-      {tab === "files" ? (
+      {tab === "files" || !admin ? (
         <div className="view-card files-view">
-          <FileActionsProvider>
+          <FileActionsProvider canEdit={admin}>
             <UdcDataView
               key="files"
               collection="files"

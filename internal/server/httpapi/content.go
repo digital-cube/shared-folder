@@ -133,6 +133,17 @@ func (a *api) adminRaw(h rawHandler) http.Handler {
 	})
 }
 
+// memberRaw is auth without a role, for a rawHandler: any active member.
+func (a *api) memberRaw(h rawHandler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sh, m, ok := a.authenticate(w, r)
+		if !ok {
+			return
+		}
+		h(w, r, sh, m)
+	})
+}
+
 // localRaw is the admin socket's version of adminRaw (see local).
 func (a *api) localRaw(h rawHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

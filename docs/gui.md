@@ -87,6 +87,10 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
 
 ### Prijava (`<base>/`)
 
+Od TCKJHR5PHM prijava je **nalogom** (username i lozinka); vidi
+[Nalozi u GUI-ju](#nalozi-u-gui-ju). Prijava tokenom iz v1, opisana
+ispod, ostala je kao skrivena opcija.
+
 - Jedno polje, **token**. GUI zove `GET /v1/whoami`. Na `401` ispisuje
   „Token nije ispravan ili je opozvan“. Ako je `role != admin`, ispisuje
   „Samo admin foldera može da koristi GUI“ i ne pravi sesiju.
@@ -269,7 +273,7 @@ foldera = nova prijava), upload i preuzimanje fajlova, `install.sh`.
 gui/
   shared/actions.ts       host akcije (jsudc defineHostAction), dele ih server i browser
   server/src/
-    main.ts               ulaz; okruženje SHFD_URL, SHFD_GUI_LISTEN, SHFD_GUI_BASE, SHFD_GUI_WEB
+    main.ts               ulaz; okruženje SHFD_URL, SHFD_GUI_LISTEN, SHFD_GUI_BASE, SHFD_GUI_WEB, SHFD_GUI_TOKEN_LOGIN
     app.ts                Fastify: <base>/api/login|logout|session|healthz, jsudc plugin (prefix <base>),
                           statički web (index.html dobija <base href> i <meta name="shfd-gui-base">)
     sessions.ts           sesije u memoriji (cookie shfd_gui_sid, 12 h neaktivnosti)
@@ -511,3 +515,142 @@ ide u `server { }` vhost-a koji već prosleđuje na `127.0.0.1:8443`, pa
 shfd-gui mora da radi uz shfd koji ima nove admin rute (`/v1/whoami`,
 `admin/members`, `admin/log`, `admin/files`), dakle shfd iz istog commita ili
 novijeg. Restart shfd-gui odjavljuje sve.
+
+## Nalozi u GUI-ju
+
+Urađeno u TCKJHR5PHM (2026-11-24), po specifikaciji naloga §7. Gradi na
+nalozima u shfd-u (`docs/admin.md`, [Nalozi](admin.md#nalozi)).
+
+### Prijava
+
+- Forma ima **korisničko ime i lozinku**. shfd-gui zove
+  `POST /v1/auth/login {username, password, kind: "gui", device_name}`, gde
+  je `device_name` oblika „gui · Firefox (Linux)“ (iz `User-Agent`). Tako
+  se svaka prijava vidi kao poseban uređaj u „Moj nalog“.
+- Sesija GUI-ja čuva **device token naloga**, a ne token foldera. Token je
+  samo u memoriji shfd-gui procesa. Browser dobija kolačić
+  `shfd_gui_sid` sa `HttpOnly; Secure; SameSite=Strict; Path=<base>/`.
+- Istek prati shfd: posle **12 h** neaktivnosti, a najkasnije **7 dana**
+  posle prijave (`IDLE_MS`/`MAX_AGE_MS` u `server/src/sessions.ts`, isto
+  kao `GUIIdle`/`GUIMaxAge` u shfd-u). Svaki `401` od shfd-a (opozvan
+  uređaj, ugašen nalog) gasi sesiju odmah, a browser prikazuje prijavu sa
+  porukom da je sesija istekla ili opozvana.
+- Poruke: pogrešna lozinka, nepoznat nalog i **ugašen nalog** imaju isti
+  tekst („Pogrešno korisničko ime ili lozinka.“), kao što i shfd vraća isti
+  `invalid_credentials`. Posle više neuspeha shfd vraća `429` sa
+  `Retry-After`, a GUI ispisuje „Previše neuspelih pokušaja. Pokušaj ponovo
+  za N s.“
+- **`must_change`** (privremena lozinka od `shfd user add` ili
+  `shfd user passwd`): posle prijave se prikazuje samo ekran „Nova lozinka“.
+  Pravila (najmanje 12 znakova, ne username, različita od stare) dolaze iz
+  `password_rules` u `/v1/me`, a server ih proverava ponovo. Do promene
+  lozinke GUI ne daje izbor foldera ni kolekcije (`403
+  password_change_required`).
+- **Odjava** zove `POST /v1/auth/logout`, pa je GUI uređaj opozvan i na
+  shfd-u, ne samo u GUI-ju.
+- Registracije nema. Naloge pravi admin servera (`shfd user add`).
+
+#### Prijava tokenom (skrivena)
+
+Ispod forme stoji link „Prijava tokenom“: stari način, gde se admin foldera
+prijavljuje tokenom člana (`/v1/whoami`, samo uloga admin, jedan folder,
+bez „Moj nalog“). Podešavanje u `shfd-gui.service`:
+
+| Promenljiva | Podrazumevano | Značenje |
+|---|---|---|
+| `SHFD_GUI_TOKEN_LOGIN` | uključeno | `0` gasi prijavu tokenom: link nestaje, a `POST <base>/api/login` vraća `404 token_login_off`. Prijava lozinkom radi i dalje. |
+
+Kad svi članovi pređu na naloge (spec §8, korak 5), postavi
+`SHFD_GUI_TOKEN_LOGIN=0`.
+
+### Izbor foldera
+
+- Posle prijave GUI čita `/v1/me` i prikazuje listu **„Moji folderi“** sa
+  imenom, ulogom i poslednjom promenom (`last_change_at`, vreme
+  najnovijeg događaja foldera).
+- Ako nalog ima **samo jedan folder**, on se otvara odmah. Izbor se pamti
+  **po nalogu** u `localStorage` (`shfd-gui-folder:<username>`). Pri
+  sledećoj prijavi u istom browseru odmah se otvara zapamćeni folder, ako je
+  nalog i dalje njegov član. Inače se prikazuje lista.
+- Izabrani folder stoji u zaglavlju („Folder stp-assets“) sa padajućim
+  menijem za promenu i stavkom „Svi moji folderi…“.
+- Izbor čuva server (`POST <base>/api/folder {share_id}`, posle provere u
+  `/v1/me`). Sve rute foldera, i to Članovi, Logovi, Fajlovi, Trash, sadržaj
+  i sličice fajlova i SSE change feed, idu u izabrani `share_id` sa device
+  tokenom. Kad se folder promeni, browser ponovo otvara change feed.
+
+### Prava po ulozi
+
+| Ekran | admin foldera | član koji nije admin | bez izabranog foldera |
+|---|---|---|---|
+| Članovi, Logovi, Trash | da | ne | ne |
+| Fajlovi: pregled, preuzimanje, sličice | da | da | ne |
+| Fajlovi: preimenovanje i brisanje | da | ne | ne |
+| Moji folderi, Moj nalog | da | da | da |
+| Instalacija | da | da | da |
+
+- Meni nudi samo dozvoljene stranice. Ako se `#members` ili `#logs` upiše
+  ručno, otvara se podrazumevana stranica uloge.
+- Server drži istu granicu. shfd na svakoj `admin/*` ruti vraća `403
+  forbidden` članu bez uloge admin (test `TestMemberFileRoutes`), a
+  shfd-gui ga prenosi kao „To može samo admin foldera.“. Preimenovanje i
+  brisanje shfd-gui odbija sam, iako bi ih shfd preko `/ops` dozvolio
+  članu: u GUI-ju član samo gleda i preuzima.
+- Za pregled i preuzimanje GUI koristi rute za člana
+  (`/v1/shares/{id}/files`, `files/content`, `thumbs/{hash}`; vidi
+  `docs/admin.md`).
+- Ako adminu oduzmu ulogu dok je prijavljen, sesija ostaje, ali kao član
+  tog foldera. Sesija prijavljena tokenom se u tom slučaju završava, kao i
+  ranije.
+
+### Članovi
+
+- **„Dodaj člana“** bira **nalog**. Pretraga ide preko
+  `/v1/users?q=` (početak username-a ili deo imena), a zatim
+  `POST admin/members {user, admin}`. Token se ne pravi.
+- Stari način, „član sa tokenom (bez naloga)“, ostaje pod **„Napredno“** u
+  istom dijalogu (`{username, admin}`, token se prikaže jednom).
+- U tabeli su kolone **Nalog** i **Uređaji** (broj aktivnih). Član bez
+  naloga ima oznaku **„bez naloga“**. „Nov token“ se nudi samo njemu.
+- Akcija reda **„Uređaji“** otvara listu uređaja člana u ovom folderu: ime,
+  tip (klijent / GUI sesija), SSH otisak i poslednji put viđen. Odatle se
+  opoziva jedan uređaj
+  (`DELETE admin/members/{član}/devices/{id}`), a ostali uređaji rade dalje.
+
+### Moj nalog
+
+- **Promena lozinke**: stara i nova lozinka i ponovljena nova, uz pravila
+  sa servera.
+- **Moji uređaji**: klijenti (`shf login`) i GUI sesije naloga, sa imenom,
+  tipom, vremenom prijave, istekom i poslednjim viđenjem. Trenutna sesija
+  ima oznaku „ova sesija“. **Opoziv** (`DELETE /v1/me/devices/{id}`) gasi
+  uređaj u svim folderima. Opoziv trenutne sesije odjavljuje browser.
+
+### CSRF
+
+Kolačić je `SameSite=Strict`, pa ga browser ne šalje na zahtev koji
+pokrene drugi sajt. Pored toga, shfd-gui za **svaki POST, PUT, PATCH i
+DELETE** ka `<base>/api/…` i `<base>/udc/…` proverava `Origin`. Ako ga
+nema, proverava `Referer`. Ime hosta iz tog zaglavlja mora biti isto kao
+host zahteva (`Host`, ili `X-Forwarded-Host` od proxy-ja kome se veruje).
+Port se ne poredi, jer nginx prosleđuje `Host $host` bez porta. Zahtev
+koji nema ni `Origin` ni `Referer` takođe se odbija. Svi browseri šalju
+`Origin` uz POST iz `fetch`-a. Odbijanje je `403 {code: "csrf"}`. Kod je
+u `server/src/csrf.ts`, a testovi su u `server/test/accounts.test.ts`.
+
+### Rute shfd-gui servera (pod `<base>`)
+
+| Ruta | Šta radi |
+|---|---|
+| `GET /api/config` | `{token_login}` |
+| `POST /api/auth/login` | `{username, password}` → sesija naloga |
+| `POST /api/login` | `{token}` → sesija tokenom (samo kad je uključena) |
+| `POST /api/logout` | odjava (`/v1/auth/logout` za nalog) |
+| `GET /api/session` | `{kind, username, display_name, must_change, share_id, share_name, role, member}` |
+| `GET /api/me` | `/v1/me` (folderi, uređaji, pravila lozinke) i `session` |
+| `POST /api/folder` | `{share_id}` → izbor foldera |
+| `POST /api/me/password` | `{old, new}` |
+| `DELETE /api/me/devices/:id` | opoziv svog uređaja; `{signed_out}` kad je to ova sesija |
+
+Nove jsudc akcije: `shfd.member_add_account`, `shfd.users_search`,
+`shfd.member_devices`, `shfd.member_device_revoke`.

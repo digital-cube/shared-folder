@@ -1,23 +1,56 @@
-// Sessions of shfd-gui: a random id in an httpOnly cookie, the member's
-// token only here, in the memory of the process. A restart signs everyone
-// out; a session unused for IDLE_MS expires.
+// Sessions of shfd-gui: a random id in an httpOnly cookie; the credential
+// only here, in the memory of the process. A restart signs everyone out.
+//
+// A session is either an account's (kind "account": the GUI device token
+// of a password sign-in, POST /v1/auth/login kind gui) or a member token's
+// (kind "token": the hidden "Prijava tokenom", one folder). An account
+// session picks its folder after the sign-in (shareId "" until then) and
+// may switch it; its expiry follows shfd's for a GUI device: IDLE_MS
+// without use, MAX_AGE_MS at most. shfd ends the token at the same moments,
+// and a 401 from shfd ends the session sooner.
 
 import { randomBytes } from "node:crypto";
 
 export const COOKIE = "shfd_gui_sid";
+/** shfd's GUIIdle: 12 h without use. */
 export const IDLE_MS = 12 * 60 * 60 * 1000;
+/** shfd's GUIMaxAge: 7 days from the sign-in, used or not. */
+export const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type SessionKind = "account" | "token";
 
 export interface Session {
   id: string;
+  kind: SessionKind;
+  /** The account's GUI device token, or the member token. */
   token: string;
+  /** The account's username, or the member's for a token session. */
+  username: string;
+  displayName: string;
+  /** The account has a temporary password: only the password change is open. */
+  mustChange: boolean;
+  /** The chosen folder; "" while an account has not chosen one. */
   shareId: string;
   shareName: string;
-  username: string;
+  /** The role in the chosen folder ("admin" | "member"), "" without one. */
   role: string;
+  /** The member's name in the chosen folder. */
+  member: string;
+  createdAt: number;
   lastUsed: number;
 }
 
-export type NewSession = Omit<Session, "id" | "lastUsed">;
+export interface NewSession {
+  kind?: SessionKind;
+  token: string;
+  username: string;
+  displayName?: string;
+  mustChange?: boolean;
+  shareId?: string;
+  shareName?: string;
+  role?: string;
+  member?: string;
+}
 
 export class SessionStore {
   private readonly byId = new Map<string, Session>();
@@ -25,13 +58,33 @@ export class SessionStore {
   constructor(
     private readonly now: () => number = Date.now,
     private readonly idleMs: number = IDLE_MS,
+    private readonly maxAgeMs: number = MAX_AGE_MS,
   ) {}
 
   create(s: NewSession): Session {
     const id = randomBytes(32).toString("base64url");
-    const session: Session = { ...s, id, lastUsed: this.now() };
+    const t = this.now();
+    const session: Session = {
+      kind: s.kind ?? "token",
+      token: s.token,
+      username: s.username,
+      displayName: s.displayName ?? "",
+      mustChange: s.mustChange ?? false,
+      shareId: s.shareId ?? "",
+      shareName: s.shareName ?? "",
+      role: s.role ?? "",
+      member: s.member ?? s.username,
+      id,
+      createdAt: t,
+      lastUsed: t,
+    };
     this.byId.set(id, session);
     return session;
+  }
+
+  private expired(s: Session, now: number): boolean {
+    if (now - s.lastUsed > this.idleMs) return true;
+    return s.kind === "account" && now - s.createdAt > this.maxAgeMs;
   }
 
   /** The live session of id, refreshed; undefined when unknown or expired. */
@@ -40,7 +93,7 @@ export class SessionStore {
     const s = this.byId.get(id);
     if (!s) return undefined;
     const now = this.now();
-    if (now - s.lastUsed > this.idleMs) {
+    if (this.expired(s, now)) {
       this.byId.delete(id);
       return undefined;
     }
@@ -52,23 +105,35 @@ export class SessionStore {
     if (id) this.byId.delete(id);
   }
 
-  /** Ends every session that uses token (shfd refused it: revoked or reset). */
+  /** Ends every session that uses token (shfd refused it: revoked, reset or expired). */
   dropToken(token: string): void {
     for (const [id, s] of this.byId) if (s.token === token) this.byId.delete(id);
   }
 
-  /** Live sessions of a folder, newest use first. */
+  /**
+   * shfd answered 403 to token in a folder: a token session (admins only)
+   * ends, an account session stays, as a member of that folder.
+   */
+  demote(token: string, shareId: string): void {
+    for (const [id, s] of this.byId) {
+      if (s.token !== token || s.shareId !== shareId) continue;
+      if (s.kind === "token") this.byId.delete(id);
+      else s.role = "member";
+    }
+  }
+
+  /** Live sessions of a folder with the admin role, newest use first. */
   forShare(shareId: string): Session[] {
     this.sweep();
     return [...this.byId.values()]
-      .filter((s) => s.shareId === shareId)
+      .filter((s) => s.shareId === shareId && s.role === "admin")
       .sort((a, b) => b.lastUsed - a.lastUsed);
   }
 
-  /** Folders with at least one live session. */
+  /** Folders with at least one live admin session (whose logs the GUI follows). */
   shares(): string[] {
     this.sweep();
-    return [...new Set([...this.byId.values()].map((s) => s.shareId))];
+    return [...new Set([...this.byId.values()].filter((s) => s.shareId && s.role === "admin").map((s) => s.shareId))];
   }
 
   size(): number {
@@ -78,7 +143,7 @@ export class SessionStore {
 
   sweep(): void {
     const now = this.now();
-    for (const [id, s] of this.byId) if (now - s.lastUsed > this.idleMs) this.byId.delete(id);
+    for (const [id, s] of this.byId) if (this.expired(s, now)) this.byId.delete(id);
   }
 }
 

@@ -68,6 +68,21 @@ func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler, raw func
 	mux.Handle("GET /v1/shares/{id}/admin/files/content", raw(a.fileContent))
 }
 
+// registerMemberFiles adds the read-only file routes for any active member
+// of the folder (the same handlers as admin/files, admin/files/content and
+// admin/thumbs): a member already has the whole folder through sync, so
+// browsing and downloading it in the GUI gives nothing new. Changes go
+// through POST /ops as from a device.
+//
+//	GET /v1/shares/{id}/files?dir=
+//	GET /v1/shares/{id}/files/content?path=&download=
+//	GET /v1/shares/{id}/thumbs/{hash}?size=
+func registerMemberFiles(mux *http.ServeMux, a *api) {
+	mux.Handle("GET /v1/shares/{id}/files", a.auth(filesList))
+	mux.Handle("GET /v1/shares/{id}/files/content", a.memberRaw(a.fileContent))
+	mux.HandleFunc("GET /v1/shares/{id}/thumbs/{hash}", a.memberThumb)
+}
+
 // admin is auth plus the admin role.
 func (a *api) admin(h handler) http.Handler {
 	return a.auth(func(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {

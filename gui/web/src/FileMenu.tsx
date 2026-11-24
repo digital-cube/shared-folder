@@ -77,13 +77,14 @@ function download(row: Row) {
   a.remove();
 }
 
-export function FileActionsProvider({ children }: { children: ReactNode }) {
+/** canEdit: Preimenuj and Obriši in the menu (an admin of the folder); without it only reading. */
+export function FileActionsProvider({ children, canEdit = true }: { children: ReactNode; canEdit?: boolean }) {
   const [menu, setMenu] = useState<OpenMenuState | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const preview = useCallback((row: Row) => setDialog({ type: "preview", row }), []);
 
   const openMenu = useCallback<OpenMenu>((row, at, opts) => {
-    if (menuItems(row).length === 0) return;
+    if (menuItems(row, canEdit).length === 0) return;
     const el = at.target instanceof HTMLElement ? at.target : null;
     let { clientX: x, clientY: y } = at;
     // The menu key has no pointer: open under the focused element.
@@ -93,7 +94,7 @@ export function FileActionsProvider({ children }: { children: ReactNode }) {
       y = r.bottom;
     }
     setMenu({ row, x, y, openFolder: opts?.openFolder, returnTo: el?.closest<HTMLElement>("[tabindex], a, button") ?? el });
-  }, []);
+  }, [canEdit]);
 
   const choose = (m: OpenMenuState, action: MenuAction) => {
     setMenu(null);
@@ -111,6 +112,7 @@ export function FileActionsProvider({ children }: { children: ReactNode }) {
         {menu ? (
           <ContextMenu
             state={menu}
+            canEdit={canEdit}
             onChoose={(a) => choose(menu, a)}
             onClose={() => {
               setMenu(null);
@@ -136,9 +138,9 @@ const ICONS: Record<MenuAction, typeof Info> = {
   remove: Trash2,
 };
 
-function ContextMenu({ state, onChoose, onClose }: { state: OpenMenuState; onChoose: (a: MenuAction) => void; onClose: () => void }) {
+function ContextMenu({ state, canEdit, onChoose, onClose }: { state: OpenMenuState; canEdit: boolean; onChoose: (a: MenuAction) => void; onClose: () => void }) {
   useTr(); // the labels of menuItems follow the language
-  const items = menuItems(state.row);
+  const items = menuItems(state.row, canEdit);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: state.x, top: state.y, ready: false });
 

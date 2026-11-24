@@ -129,3 +129,39 @@
 .login-prefs { position: absolute; top: 16px; right: 16px; }
 /* the dark code blocks of the install guide stand apart from a dark page by a hairline */
 .dark pre { border: 1px solid var(--g-line); }
+
+/* Accounts (TCKJHR5PHM): the folder switch, Moji folderi, Moj nalog, Dodaj člana. */
+.folder-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+.pill-btn { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font: inherit; }
+.pill-btn svg { color: var(--g-muted); }
+.folder-menu { position: absolute; top: calc(100% + 6px); left: 0; min-width: 260px; }
+.folder-menu .ctx-item.on { font-weight: 600; }
+.folder-menu .grow, .user-results .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-slot { width: 14px; display: inline-flex; }
+.err-text.inline { margin: 0; font-size: 12px; }
+.user-btn { border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; border-radius: 8px; padding: 4px 6px; }
+.user-btn:hover { background: var(--g-bg-sunk); }
+table.plain { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.plain th { text-align: left; font-size: 12px; font-weight: 600; color: var(--g-muted); padding: 8px 10px; border-bottom: 1px solid var(--g-line); }
+table.plain td { padding: 9px 10px; border-bottom: 1px solid var(--g-line); vertical-align: middle; }
+table.plain tr:last-child td { border-bottom: 0; }
+table.plain td.right { text-align: right; white-space: nowrap; }
+table.plain tr.current td { background: var(--g-brand-soft); }
+table.plain tr.revoked td { color: var(--g-faint); }
+table.plain .badge { margin-left: 6px; }
+table.plain td > .badge:first-child { margin-left: 0; }
+.table-card { padding: 4px 6px; }
+.empty-card { padding: 22px; }
+.small { font-size: 12px; }
+.account-grid { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.account-grid .card { padding: 18px; }
+.account-grid h4 { margin: 0 0 12px; font-size: 15px; }
+@media (max-width: 1000px) { .account-grid { grid-template-columns: 1fr; } }
+.pw-form .btn.primary:not(.block) { margin-top: 4px; }
+.modal.wide { width: min(760px, calc(100vw - 48px)); }
+.user-results { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 2px; padding: 4px; border: 1px solid var(--g-line); border-radius: 8px; max-height: 200px; overflow: auto; }
+.user-results .ctx-item { height: 34px; }
+.avatar.sm { width: 22px; height: 22px; font-size: 11px; }
+details.advanced { margin-top: 12px; font-size: 13px; }
+details.advanced summary { cursor: pointer; color: var(--g-muted); }
+.login-card .foot a svg { vertical-align: -2px; }

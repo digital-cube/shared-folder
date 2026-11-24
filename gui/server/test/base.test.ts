@@ -6,6 +6,7 @@ import { isShfdPath, normalizeBase } from "../../shared/base.js";
 import { buildGui, withBase, type GuiApp } from "../src/app.js";
 import { COOKIE } from "../src/sessions.js";
 import { FakeShfd } from "./fake-shfd.js";
+import { fromPage } from "./origin.js";
 
 // One build of the web app, served at the root of the host and under /gui.
 
@@ -46,7 +47,7 @@ async function setup(base: string, now?: () => number) {
     pollMs: 60_000,
     now,
   });
-  return { fake, app: gui.app };
+  return { fake, app: fromPage(gui.app) };
 }
 
 describe("normalizeBase", () => {

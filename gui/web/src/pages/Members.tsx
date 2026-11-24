@@ -2,14 +2,26 @@ import type { FilterNode, Row } from "@jsudc/core";
 import { UdcDataView, useUdcClient, type BulkActionContext } from "@jsudc/react";
 import { useToast } from "@jsudc/react/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { addMember, reactivateMember, resetToken, revokeMember, setRole } from "../../../shared/actions";
+import { useEffect, useState } from "react";
+import {
+  addAccountMember,
+  addMember,
+  memberDevices,
+  reactivateMember,
+  resetToken,
+  revokeMember,
+  revokeMemberDevice,
+  searchUsers,
+  setRole,
+  type MemberDeviceRow,
+} from "../../../shared/actions";
 import { useApp } from "../App";
-import { Confirm, NewMember } from "../dialogs";
-import { joinCommand } from "../format";
+import { AddMember, Confirm, Modal } from "../dialogs";
+import { ago, joinCommand, stamp } from "../format";
 import { useTr } from "../i18n";
 import { tr as trNow } from "../lang";
 import { AlertTriangle, Plus } from "../icons";
+import { kindLabel } from "./Account";
 
 type Tab = "all" | "active" | "revoked" | "admins";
 const TABS: [Tab, string, string][] = [
@@ -48,6 +60,7 @@ export function Members() {
   const [revealed, setRevealed] = useState<Revealed | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirm, setConfirm] = useState<null | { row: Row; kind: "revoke" | "make_member" }>(null);
+  const [devicesOf, setDevicesOf] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   // Counts of the filter chips.
@@ -84,6 +97,7 @@ export function Members() {
   const nameOf = (row?: Row) => String(row?.username ?? "");
 
   const actions = {
+    devices: ({ row }: BulkActionContext) => setDevicesOf(nameOf(row)),
     reset_token: ({ row }: BulkActionContext) =>
       run(async () => {
         const r = await client.call(resetToken, { username: nameOf(row) });
@@ -102,7 +116,9 @@ export function Members() {
     reactivate: ({ row }: BulkActionContext) =>
       run(async () => {
         const r = await client.call(reactivateMember, { username: nameOf(row) });
-        setRevealed({ username: r.username, token: r.token, what: tr("Član je vraćen. Nov token za", "Member restored. New token for") });
+        // A member of an account comes back without a token: its devices sign in.
+        if (r.token) setRevealed({ username: r.username, token: r.token, what: tr("Član je vraćen. Nov token za", "Member restored. New token for") });
+        else toast({ title: tr(`${r.username} je vraćen.`, `${r.username} was restored.`), variant: "success" });
       }),
   };
 
@@ -122,12 +138,17 @@ export function Members() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h2>{tr("Članovi i tokeni", "Members and tokens")}</h2>
-          <p>{tr("Jedan član = jedan uređaj. Token se vidi samo kad se napravi.", "One member = one device. A token is shown only when it is created.")}</p>
+          <h2>{tr("Članovi", "Members")}</h2>
+          <p>
+            {tr(
+              "Član je nalog; svaki njegov uređaj ima svoje kredencijale i opoziva se posebno. Članovi „bez naloga“ rade starim tokenom (jedan član = jedan uređaj).",
+              "A member is an account; each of its devices has its own credentials and is revoked on its own. Members “without an account” work with an old token (one member = one device).",
+            )}
+          </p>
         </div>
         <div className="spacer" />
         <button className="btn primary" onClick={() => setAdding(true)}>
-          <Plus size={16} /> {tr("Nov član", "New member")}
+          <Plus size={16} /> {tr("Dodaj člana", "Add a member")}
         </button>
       </div>
 
@@ -175,9 +196,25 @@ export function Members() {
       </div>
 
       {adding ? (
-        <NewMember
+        <AddMember
           onClose={() => setAdding(false)}
-          onAdd={async (username, admin) => {
+          search={async (q) => (await client.call(searchUsers, { q })).users}
+          onAddAccount={async (user, admin) => {
+            try {
+              const r = await client.call(addAccountMember, { user, admin });
+              toast({
+                title: r.reactivated
+                  ? tr(`${r.username} je ponovo član.`, `${r.username} is a member again.`)
+                  : tr(`${r.username} je dodat u folder.`, `${r.username} was added to the folder.`),
+                variant: "success",
+              });
+              refresh();
+              return null;
+            } catch (err) {
+              return messageOf(err);
+            }
+          }}
+          onAddToken={async (username, admin) => {
             try {
               const r = await client.call(addMember, { username, admin });
               setRevealed({
@@ -195,6 +232,8 @@ export function Members() {
           }}
         />
       ) : null}
+
+      {devicesOf ? <MemberDevices username={devicesOf} onClose={() => setDevicesOf(null)} onChanged={refresh} /> : null}
 
       {confirm ? (
         <Confirm
@@ -232,5 +271,107 @@ export function Members() {
         />
       ) : null}
     </div>
+  );
+}
+
+/** The devices of a member of an account in this folder, each with its own credentials, and their revoke. */
+function MemberDevices({ username, onClose, onChanged }: { username: string; onClose: () => void; onChanged: () => void }) {
+  const tr = useTr();
+  const client = useUdcClient();
+  const [data, setData] = useState<{ account: string; devices: MemberDeviceRow[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [asking, setAsking] = useState<MemberDeviceRow | null>(null);
+
+  useEffect(() => {
+    client.call(memberDevices, { username }).then(setData, (err) => setError(messageOf(err)));
+  }, [client, username]);
+
+  const revoke = async (d: MemberDeviceRow) => {
+    setAsking(null);
+    try {
+      setData(await client.call(revokeMemberDevice, { username, device: d.id }));
+      onChanged();
+    } catch (err) {
+      setError(messageOf(err));
+    }
+  };
+
+  return (
+    <Modal title={tr(`Uređaji: ${username}`, `Devices: ${username}`)} onClose={onClose} wide>
+      <p>
+        {tr("Nalog", "Account")} <b>{data?.account ?? "…"}</b>.{" "}
+        {tr(
+          "Opoziv gasi kredencijale tog uređaja u ovom folderu (API i rsync); ostali uređaji rade dalje.",
+          "Revoking ends that device's credentials in this folder (API and rsync); the other devices keep working.",
+        )}
+      </p>
+      {error ? (
+        <div className="err-text" role="alert">
+          {error}
+        </div>
+      ) : null}
+      <table className="plain" data-testid="member-devices">
+        <thead>
+          <tr>
+            <th>{tr("Ime", "Name")}</th>
+            <th>{tr("Tip", "Type")}</th>
+            <th>{tr("Otisak", "Fingerprint")}</th>
+            <th>{tr("Poslednji put viđen", "Last seen")}</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {(data?.devices ?? []).map((d) => (
+            <tr key={d.id} className={d.revoked ? "revoked" : ""}>
+              <td>
+                <b>{d.name}</b>
+                {d.connected > 0 ? <span className="badge ok">{tr("povezan", "connected")}</span> : null}
+              </td>
+              <td>
+                <span className={`badge ${d.kind === "gui" ? "info" : ""}`}>{kindLabel(d.kind)}</span>
+              </td>
+              <td className="mono muted small" title={d.ssh_fingerprint}>
+                {d.ssh_fingerprint ? `${d.ssh_fingerprint.slice(0, 19)}…` : <span className="faint">{tr("nema ključa", "no key")}</span>}
+              </td>
+              <td title={stamp(d.last_seen_at)}>{ago(d.last_seen_at)}</td>
+              <td className="right">
+                {d.revoked ? (
+                  <span className="badge err">{tr("opozvan", "revoked")}</span>
+                ) : (
+                  <button className="btn sm danger" onClick={() => setAsking(d)} data-testid={`revoke-member-device-${d.id}`}>
+                    {tr("Opozovi", "Revoke")}
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+          {data && data.devices.length === 0 ? (
+            <tr>
+              <td colSpan={5} className="muted">
+                {tr("Nijedan uređaj se još nije priključio ovom folderu.", "No device has joined this folder yet.")}
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+      <div className="row">
+        <button className="btn" onClick={onClose}>
+          {tr("Zatvori", "Close")}
+        </button>
+      </div>
+      {asking ? (
+        <Confirm
+          title={tr(`Opozovi uređaj ${asking.name}?`, `Revoke the device ${asking.name}?`)}
+          text={tr(
+            "Uređaj odmah gubi pristup ovom folderu. Da bi se vratio, korisnik ga ponovo priključuje (shf join).",
+            "The device loses access to this folder at once. To come back, the user joins it again (shf join).",
+          )}
+          confirm={tr("Opozovi", "Revoke")}
+          danger
+          onClose={() => setAsking(null)}
+          onYes={() => void revoke(asking)}
+        />
+      ) : null}
+    </Modal>
   );
 }

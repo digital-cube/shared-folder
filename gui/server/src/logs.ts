@@ -169,9 +169,12 @@ export class LogFeed {
           }
           await this.poll(shareId, s, session.token);
         } catch (err) {
-          if (err instanceof ShfdError && (err.status === 401 || err.status === 403)) {
-            // The token was revoked, reset or lost the admin role.
+          if (err instanceof ShfdError && err.status === 401) {
+            // The token was revoked, reset or expired.
             this.o.sessions.dropToken(session.token);
+          } else if (err instanceof ShfdError && err.status === 403) {
+            // It lost the admin role of this folder.
+            this.o.sessions.demote(session.token, shareId);
           } else {
             this.o.log?.warn({ err, shareId }, "log poll failed");
           }

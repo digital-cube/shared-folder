@@ -1,6 +1,8 @@
 export {
   Activity,
   AlertTriangle,
+  Check,
+  ChevronDown,
   Copy,
   Download,
   ExternalLink,
@@ -19,6 +21,7 @@ export {
   Server,
   Sun,
   Trash2,
+  User,
   Users,
   X,
 } from "lucide-react";

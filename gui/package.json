@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Web GUI for shfd, at the root of the host or under /gui: sign-in with a member token, members and tokens, live logs, files and trash, install guide.",
+  "description": "Web GUI for shfd, at the root of the host or under /gui: sign-in with an account (or a member token), folder choice, members and devices, live logs, files and trash, my account, install guide.",
   "scripts": {
     "dev:server": "SHFD_GUI_COOKIE_SECURE=0 tsx watch server/src/main.ts",
     "dev:web": "vite --config web/vite.config.ts",

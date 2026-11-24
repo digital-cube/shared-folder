@@ -324,7 +324,7 @@ Za rsync preko SSH-a svaki uređaj treba **svoj** ključ, pa uređaj naloga
 |---|---|---|---|
 | `POST /v1/auth/login` | — | `{"username","password","device_name","kind":"client"\|"gui"}` | `{token, user, must_change}` |
 | `POST /v1/auth/logout` | device | — | `{status}` |
-| `GET /v1/me` | device | — | `{user, folders: [{share_id, name, role, member}], devices: [{id, name, kind, created_at, last_seen_at, expires_at?, current?}]}` |
+| `GET /v1/me` | device | — | `{user, folders: [{share_id, name, role, member, last_change_at?}], devices: [{id, name, kind, created_at, last_seen_at, expires_at?, current?}], password_rules: {min_len, max_len, not_username, differ_from_old}}` |
 | `POST /v1/me/password` | device | `{"old","new"}` | `{status, user}` |
 | `DELETE /v1/me/devices/{id}` | device | — | `{status}` |
 | `GET /v1/users` | device admina foldera, ili token člana-admina | `?q=` (početak username-a ili deo imena) | `[{username, display_name}]`, najviše 20 |
@@ -608,6 +608,18 @@ samo za člana sa ulogom `admin`. Greške su
 | `GET /v1/shares/{id}/admin/files` | `?dir=<putanja>` (prazno = koren) | `{dir, entries}` |
 | `GET /v1/shares/{id}/admin/files/content` | `?path=<putanja>` (obavezno), `&download=1` | sadržaj fajla ([Sadržaj fajla](#sadržaj-fajla)); `Range`, `If-None-Match` |
 | `GET /v1/shares/{id}/admin/thumbs/{hash}` | `?size=s\|m\|l` (podrazumevano `m`) | `image/jpeg` ([Thumbnails](#thumbnails)) |
+
+**Fajlovi za svakog člana.** Pregled i preuzimanje ne traže ulogu admin:
+iste rute bez `admin/` važe za svakog aktivnog člana foldera (član ionako
+ima ceo folder kroz sinhronizaciju). Odgovori su isti kao gore; sve ostale
+`admin/*` rute članu bez uloge admin i dalje vraćaju `403 forbidden`. Njih
+koristi shfd-gui za člana koji nije admin ([docs/gui.md](gui.md#nalozi-u-gui-ju)).
+
+| Poziv | Parametri | Odgovor |
+|---|---|---|
+| `GET /v1/shares/{id}/files` | `?dir=<putanja>` | kao `admin/files` |
+| `GET /v1/shares/{id}/files/content` | `?path=<putanja>`, `&download=1` | kao `admin/files/content` |
+| `GET /v1/shares/{id}/thumbs/{hash}` | `?size=s\|m\|l` | kao `admin/thumbs/{hash}` |
 
 Uz njih postoji i `GET /v1/whoami`, koji **ne traži** ulogu admin: za
 `Authorization: Bearer shf_…` vraća `{share_id, share_name, username, role}`.

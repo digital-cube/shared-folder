@@ -155,6 +155,19 @@ func (s *Share) Head() (int64, error) {
 	return head, err
 }
 
+// LastChangeAt is the time of the newest event, nil when there is none.
+func (s *Share) LastChangeAt() (*time.Time, error) {
+	var ts sql.NullString
+	err := s.db.QueryRow(`SELECT ts FROM events ORDER BY seq DESC LIMIT 1`).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseTime(ts), nil
+}
+
 // Changes returns up to limit events after since, oldest first, the HEAD
 // at the time of the call and whether events after the returned ones exist
 // up to that HEAD.

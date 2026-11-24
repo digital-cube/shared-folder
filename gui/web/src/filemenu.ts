@@ -24,9 +24,15 @@ const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 /**
  * The menu of a row: a file gets Informacije, Prikaži, Preuzmi, Preimenuj
  * and Obriši; a folder Otvori, Informacije and Obriši (shfd removes only an
- * empty folder, and renames only files); ".." gets none.
+ * empty folder, and renames only files); ".." gets none. Without canEdit
+ * (a member who is not an admin) only the reading ones: no Preimenuj, no Obriši.
  */
-export function menuItems(row: Row): MenuItem[] {
+export function menuItems(row: Row, canEdit = true): MenuItem[] {
+  const all = allItems(row);
+  return canEdit ? all : all.filter((i) => i.action !== "rename" && i.action !== "remove");
+}
+
+function allItems(row: Row): MenuItem[] {
   const name = str(row.name);
   if (row.kind === "dir") {
     if (name === "..") return [];

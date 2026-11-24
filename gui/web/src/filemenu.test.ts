@@ -22,6 +22,10 @@ describe("menuItems", () => {
     expect(actions(row("123", "dir"))).toEqual(["open", "info", "remove"]);
     expect(menuItems(row("..", "dir"))).toEqual([]);
   });
+  it("a member who is not an admin only reads: no rename, no remove", () => {
+    expect(menuItems(row("a.txt"), false).map((i) => i.action)).toEqual(["info", "view", "download"]);
+    expect(menuItems(row("123", "dir"), false).map((i) => i.action)).toEqual(["open", "info"]);
+  });
   it("remove is the dangerous one", () => {
     expect(menuItems(row("a.txt")).filter((i) => i.danger).map((i) => i.action)).toEqual(["remove"]);
   });
