@@ -23,6 +23,10 @@ export class FakeShfd {
   };
   /** Thumbnails by content hash; every size gets the same bytes. */
   thumbs = new Map<string, Uint8Array>();
+  /** File contents by path; a function makes the body (a stream, say). */
+  contents = new Map<string, Uint8Array | (() => ReadableStream<Uint8Array>)>();
+  /** The headers of the last content request. */
+  lastContentHeaders: Headers | null = null;
   /** The If-None-Match of the last thumbnail request. */
   lastIfNoneMatch: string | null = null;
   private n = 0;
@@ -140,6 +144,41 @@ export class FakeShfd {
       this.lastIfNoneMatch = new Headers(init?.headers).get("if-none-match");
       if (this.lastIfNoneMatch === etag) return new Response(null, { status: 304, headers });
       return new Response(bytes, { status: 200, headers: { ...headers, "content-type": "image/jpeg" } });
+    }
+    if (rest === "files/content") {
+      // Enough of shfd: the whitelist, download=1, the ETag, one range.
+      this.lastContentHeaders = new Headers(init?.headers);
+      const path = url.searchParams.get("path") ?? "";
+      if (path.includes("..")) return err(400, "invalid_path");
+      if (path === "changed.txt") return err(409, "file_changed");
+      const c = this.contents.get(path);
+      if (c === undefined) return err(404, "not_found");
+      const name = path.split("/").pop()!;
+      const ext = name.split(".").pop()!.toLowerCase();
+      const inline = ({ txt: "text/plain; charset=utf-8", png: "image/png", jpg: "image/jpeg" } as Record<string, string>)[ext];
+      const attach = !inline || url.searchParams.get("download") === "1";
+      const headers: Record<string, string> = {
+        "content-type": inline ?? "application/octet-stream",
+        "content-disposition": `${attach ? "attachment" : "inline"}; filename="${name}"`,
+        etag: `"${"cc".repeat(32)}"`,
+        "cache-control": "private, no-cache",
+        "content-security-policy": "sandbox",
+        "x-content-type-options": "nosniff",
+        "accept-ranges": "bytes",
+        "x-internal": "not for the browser",
+      };
+      if (this.lastContentHeaders.get("if-none-match") === headers.etag) return new Response(null, { status: 304, headers });
+      if (typeof c === "function") return new Response(c(), { status: 200, headers });
+      const range = /^bytes=(\d+)-(\d+)$/.exec(this.lastContentHeaders.get("range") ?? "");
+      if (range) {
+        const [a, b] = [Number(range[1]), Math.min(Number(range[2]), c.length - 1)];
+        const part = c.slice(a, b + 1);
+        return new Response(part, {
+          status: 206,
+          headers: { ...headers, "content-range": `bytes ${a}-${b}/${c.length}`, "content-length": String(part.length) },
+        });
+      }
+      return new Response(c, { status: 200, headers: { ...headers, "content-length": String(c.length) } });
     }
     if (rest === "trash") return json(200, { entries: [], count: 0, total_size: 0 });
     return err(404, "not_found");

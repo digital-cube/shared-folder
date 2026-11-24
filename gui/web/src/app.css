@@ -37,9 +37,9 @@
 .thumb-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .thumb-img.loading { opacity: 0; pointer-events: none; }
 
-/* the table's name cell: the 28 px picture, then the name; rows keep their height */
+/* the table's name cell: the 32 px picture, then the name; rows keep their height */
 .filename { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.filename .thumb { width: 28px; height: 28px; }
+.filename .thumb { width: 32px; height: 32px; }
 .filename .thumb-img { border-radius: 3px; }
 .filename-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* jsudc's folder link draws a small icon of its own before the cell: ours stands in for it */
@@ -52,7 +52,7 @@
 .tile { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 9px 9px 8px; border-radius: 10px; outline: none; cursor: default; }
 .tile:hover { background: var(--g-bg-soft); }
 .tile:focus-visible { background: var(--g-brand-soft); box-shadow: inset 0 0 0 2px var(--g-brand); }
-.tile.dir { cursor: pointer; }
+.tile.dir, .tile[data-testid="tile-file"] { cursor: pointer; }
 .tile .thumb { width: var(--thumb); height: var(--thumb); }
 .tile .thumb > .file-icon { width: 80%; height: 80%; }
 .tile .thumb-img { filter: drop-shadow(0 1px 2px rgba(17, 24, 39, .18)); }
@@ -69,3 +69,25 @@
 .tgrid-sentinel { height: 1px; }
 .thumb-size { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--g-muted); white-space: nowrap; }
 .thumb-size input { width: 130px; accent-color: var(--g-brand); }
+
+/* ---------- Files: the preview of a file ---------- */
+.modal.preview { width: min(920px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; gap: 12px; }
+.preview-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.preview-head h3 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-head .spacer { flex: 1; }
+.preview-head a.btn { text-decoration: none; }
+.preview-body { min-height: 120px; overflow: auto; }
+.preview-image { position: relative; display: grid; place-items: center; min-height: 200px; border-radius: 8px; background: repeating-conic-gradient(var(--g-bg-sunk) 0 25%, transparent 0 50%) 0 0 / 16px 16px; padding: 12px; }
+.preview-image img { grid-area: 1 / 1; max-width: 100%; max-height: 62vh; object-fit: contain; }
+.preview-image img.quick { width: min(512px, 100%); height: auto; filter: blur(1px); }
+.preview-image img.loading { opacity: 0; }
+.preview-text { color: var(--g-text); margin: 0; max-height: 62vh; overflow: auto; padding: 12px; border-radius: 8px; background: var(--g-bg-sunk); font-family: var(--g-mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.modal p.preview-note { margin: 8px 0 0; font-size: 13px; }
+.preview-none { display: flex; align-items: center; gap: 16px; }
+.preview-none .thumb { width: 72px; height: 72px; }
+.preview-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; font-size: 12.5px; border-top: 1px solid var(--g-line); padding-top: 10px; }
+.preview-meta dt { color: var(--g-muted); }
+.preview-meta dd { margin: 0; min-width: 0; }
+.filename-open { all: unset; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filename-open:hover { text-decoration: underline; }
+.filename-open:focus-visible { outline: 2px solid var(--g-brand); outline-offset: 2px; border-radius: 2px; }

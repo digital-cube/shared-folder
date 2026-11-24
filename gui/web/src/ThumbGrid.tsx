@@ -24,6 +24,7 @@ import { useEffect, useRef, type CSSProperties, type KeyboardEvent } from "react
 import { useAppMaybe } from "./App";
 import { bytes } from "./format";
 import { gridOrder, usePendingThumbs } from "./liveThumbs";
+import { usePreview } from "./FilePreview";
 import { Thumb } from "./Thumb";
 import {
   setThumbSize,
@@ -146,12 +147,13 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
   const name = String(row.name ?? "");
   const up = dir && name === "..";
   const path = folder ? String(row[folder.options.path_field] ?? "") : String(row.path ?? "");
-  const open = dir && folder ? () => folder.open(path) : undefined;
+  const preview = usePreview();
+  const open = dir && folder ? () => folder.open(path) : !dir && preview ? () => preview(row) : undefined;
   const onKeyDown = open
     ? (e: KeyboardEvent) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          focusAfterOpen = true;
+          focusAfterOpen = dir;
           open();
         }
       }

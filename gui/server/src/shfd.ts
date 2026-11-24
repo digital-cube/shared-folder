@@ -78,6 +78,13 @@ export interface ThumbResponse {
   body: Uint8Array;
 }
 
+/** Headers of a request for a file's content that shfd answers itself. */
+export const CONTENT_REQUEST_HEADERS = ["range", "if-range", "if-none-match"] as const;
+
+/** How long shfd may take to start answering for a file's content: it
+ * hashes a file it has not checked yet before the first byte. */
+export const CONTENT_HEADERS_TIMEOUT_MS = 120_000;
+
 export interface DirListing {
   dir: string;
   entries: FileEntry[];
@@ -246,6 +253,48 @@ export class ShfdClient {
     }
     return { status: res.status, headers: res.headers, body };
   }
+
+  /**
+   * Opens the content of one file (GET /admin/files/content). The answer is
+   * shfd's Response with its body not read, so the caller streams it; signal
+   * aborts the download (the browser went away). Any refusal of shfd
+   * (except 416) is a ShfdError with its code. Only the headers have a deadline
+   * (CONTENT_HEADERS_TIMEOUT_MS); the body takes as long as it takes.
+   */
+  async content(
+    token: string,
+    share: string,
+    path: string,
+    opts: { download?: boolean; headers?: Record<string, string>; signal?: AbortSignal; headersTimeoutMs?: number } = {},
+  ): Promise<Response> {
+    const q = new URLSearchParams({ path });
+    if (opts.download) q.set("download", "1");
+    const url = `${this.baseUrl.replace(/\/$/, "")}/v1/shares/${encodeURIComponent(share)}/admin/files/content?${q}`;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(new Error("no answer from shfd in time")), opts.headersTimeoutMs ?? CONTENT_HEADERS_TIMEOUT_MS);
+    const onAbort = () => ctl.abort(opts.signal?.reason);
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, { method: "GET", headers: { ...opts.headers, authorization: `Bearer ${token}` }, signal: ctl.signal });
+    } catch (err) {
+      opts.signal?.removeEventListener("abort", onAbort);
+      throw new ShfdError(502, "unreachable", `shfd is not reachable: ${(err as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status >= 400 && res.status !== 416) {
+      opts.signal?.removeEventListener("abort", onAbort);
+      let e: { code?: string; message?: string } | undefined;
+      try {
+        e = JSON.parse(await res.text())?.error;
+      } catch {
+        e = undefined;
+      }
+      throw new ShfdError(res.status, e?.code ?? (res.status === 401 ? "unauthorized" : res.status === 403 ? "forbidden" : "internal"), e?.message ?? `shfd answered ${res.status}`);
+    }
+    return res;
+  }
 }
 
 /** Serbian sentences for shfd's error codes; the UI never shows a bare code. */
@@ -275,6 +324,8 @@ export function errorMessage(code: string, fallback?: string): string {
       return "To je fajl, a ne folder.";
     case "invalid_path":
       return "Neispravna putanja.";
+    case "file_changed":
+      return "Fajl na disku nije verzija koju baza beleži (nedostaje ili je izmenjen); pokreni shfd verify.";
     case "unreachable":
       return "shfd ne odgovara.";
     default:

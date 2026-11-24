@@ -243,3 +243,130 @@ describe("thumbnails", () => {
     expect(s.statusCode).toBe(401);
   });
 });
+
+describe("file content", () => {
+  const TEXT = new TextEncoder().encode("zdravo, svete\n");
+  const url = (path: string, extra = "") => `/gui/api/files/content?path=${encodeURIComponent(path)}${extra}`;
+
+  it("needs a session and a path", async () => {
+    const { fake, app } = await setup();
+    fake.contents.set("a.txt", TEXT);
+    const res = await app.inject({ method: "GET", url: url("a.txt") });
+    expect(res.statusCode).toBe(401);
+    expect(fake.calls.some((c) => c.includes("/files/content"))).toBe(false);
+    const { cookie } = await login(app, fake.members[0].token);
+    const none = await app.inject({ method: "GET", url: "/gui/api/files/content", headers: { cookie } });
+    expect(none.statusCode).toBe(400);
+  });
+
+  it("passes shfd's headers and only those, and the bytes", async () => {
+    const { fake, app } = await setup();
+    fake.contents.set("docs/a b.txt", TEXT);
+    const { cookie } = await login(app, fake.members[0].token);
+    const res = await app.inject({ method: "GET", url: url("docs/a b.txt"), headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers).toMatchObject({
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": 'inline; filename="a b.txt"',
+      "content-length": String(TEXT.length),
+      "accept-ranges": "bytes",
+      etag: `"${"cc".repeat(32)}"`,
+      "cache-control": "private, no-cache",
+      "content-security-policy": "sandbox",
+      "x-content-type-options": "nosniff",
+    });
+    expect(res.headers["x-internal"]).toBeUndefined();
+    expect(new Uint8Array(res.rawPayload)).toEqual(TEXT);
+    expect(fake.calls).toContain(`GET /v1/shares/${fake.share}/admin/files/content?path=docs%2Fa+b.txt`);
+    expect(fake.lastContentHeaders?.get("authorization")).toBe(`Bearer ${fake.members[0].token}`);
+    // The browser's cookie never reaches shfd.
+    expect(fake.lastContentHeaders?.get("cookie")).toBeNull();
+  });
+
+  it("download=1, Range and If-None-Match reach shfd", async () => {
+    const { fake, app } = await setup();
+    fake.contents.set("a.txt", TEXT);
+    fake.contents.set("noi.html", new TextEncoder().encode("<script>x</script>"));
+    const { cookie } = await login(app, fake.members[0].token);
+    const dl = await app.inject({ method: "GET", url: url("a.txt", "&download=1"), headers: { cookie } });
+    expect(dl.headers["content-disposition"]).toBe('attachment; filename="a.txt"');
+    expect(fake.calls.at(-1)).toBe(`GET /v1/shares/${fake.share}/admin/files/content?path=a.txt&download=1`);
+    const html = await app.inject({ method: "GET", url: url("noi.html"), headers: { cookie } });
+    expect(html.headers["content-type"]).toBe("application/octet-stream");
+    expect(html.headers["content-disposition"]).toBe('attachment; filename="noi.html"');
+
+    const part = await app.inject({ method: "GET", url: url("a.txt"), headers: { cookie, range: "bytes=0-6" } });
+    expect(part.statusCode).toBe(206);
+    expect(part.headers["content-range"]).toBe(`bytes 0-6/${TEXT.length}`);
+    expect(part.payload).toBe("zdravo,");
+
+    const same = await app.inject({ method: "GET", url: url("a.txt"), headers: { cookie, "if-none-match": `"${"cc".repeat(32)}"` } });
+    expect(same.statusCode).toBe(304);
+    expect(same.rawPayload.length).toBe(0);
+  });
+
+  it("shfd's refusals come back with their status and a sentence", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const changed = await app.inject({ method: "GET", url: url("changed.txt"), headers: { cookie } });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json()).toMatchObject({ code: "file_changed" });
+    expect(changed.json().error).toMatch(/verify/);
+    const missing = await app.inject({ method: "GET", url: url("nema.txt"), headers: { cookie } });
+    expect(missing.statusCode).toBe(404);
+    const bad = await app.inject({ method: "GET", url: url("../x"), headers: { cookie } });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it("a 401 of shfd ends the session", async () => {
+    const { fake, app } = await setup();
+    fake.contents.set("a.txt", TEXT);
+    const { cookie } = await login(app, fake.members[0].token);
+    fake.members[0].status = "revoked";
+    const res = await app.inject({ method: "GET", url: url("a.txt"), headers: { cookie } });
+    expect(res.statusCode).toBe(401);
+    const s = await app.inject({ method: "GET", url: "/gui/api/session", headers: { cookie } });
+    expect(s.statusCode).toBe(401);
+  });
+
+  it("streams: the first bytes arrive before shfd has sent the rest, and leaving stops shfd", async () => {
+    const { fake, app } = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let canceled = false;
+    const chunk = new Uint8Array(64 * 1024).fill(65);
+    fake.contents.set("big.bin", () =>
+      new ReadableStream<Uint8Array>({
+        async start(c) {
+          c.enqueue(chunk);
+          await held; // the rest only once the test says so
+          if (!canceled) c.enqueue(chunk);
+          if (!canceled) c.close();
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+    );
+    const { cookie } = await login(app, fake.members[0].token);
+    const addr = await app.listen({ port: 0, host: "127.0.0.1" });
+
+    const res = await fetch(`${addr}${url("big.bin")}`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="big.bin"');
+    const reader = res.body!.getReader();
+    let got = 0;
+    while (got < chunk.length) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      got += value.length;
+    }
+    expect(got).toBe(chunk.length); // all of the first chunk, while shfd still holds the second
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 100));
+    release();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(canceled).toBe(true);
+    app.server.closeAllConnections(); // fetch keeps the socket alive
+  });
+});

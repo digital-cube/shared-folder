@@ -2,6 +2,7 @@
 
 import { createCellRegistry, type CellProps } from "@jsudc/react";
 import { ago, stamp } from "./format";
+import { usePreview } from "./FilePreview";
 import { Thumb } from "./Thumb";
 
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
@@ -137,16 +138,25 @@ function Hash({ value, row }: CellProps) {
  * The name column of Files: the thumbnail or the type icon, then the name.
  * jsudc wraps this column (folder_options.label_field) in its folder link,
  * so a click on a folder still opens it; its own small icon is hidden in
- * CSS (.files-view), this one stands in for it.
+ * CSS (.files-view), this one stands in for it. A file's name is a button
+ * that opens its preview (FilePreview.tsx).
  */
 function FileName({ value, row }: CellProps) {
   const name = str(value);
+  const open = usePreview();
+  const file = row.kind === "file" && open;
   return (
     <span className="filename">
-      <Thumb row={row} px={28} />
-      <span className="filename-text" title={name}>
-        {name}
-      </span>
+      <Thumb row={row} px={32} />
+      {file ? (
+        <button type="button" className="filename-text filename-open" title={name} onClick={() => open(row)} data-testid="file-open">
+          {name}
+        </button>
+      ) : (
+        <span className="filename-text" title={name}>
+          {name}
+        </span>
+      )}
     </span>
   );
 }

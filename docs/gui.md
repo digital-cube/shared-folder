@@ -154,7 +154,7 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
   proizvođača. Dok sličica nije napravljena stoji ikonica tipa; kad stigne,
   sama je zameni, bez osvežavanja strane.
 - **Tabela i Mreža.** Dva jezička iznad trake alata. U Tabeli je sličica
-  28 px pored imena (redovi iste visine kao ranije). Mreža su pločice:
+  32 px pored imena (redovi iste visine kao ranije). Mreža su pločice:
   kvadrat sa sličicom ili ikonicom, ispod ime (do dva reda, celo ime na
   prelaz mišem), veličina i datum; folderi su prvi, `..` je pločica. Klik
   ili Enter na folder ulazi u njega (fokus prelazi na prvu pločicu, pa se
@@ -174,7 +174,16 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
   stiže sama.
 - Filter **Ekstenzija** nudi ekstenzije iz tabele tipova (jpg, pdf, docx,
   xlsx, zip, txt, …); jsudc select čip ne čita vrednosti iz podataka.
-- Samo čitanje: nema upload-a, brisanja ni preuzimanja sadržaja u v1.
+- **Pregled i preuzimanje.** Klik na ime fajla (Tabela) ili na pločicu
+  (Mreža; i Enter) otvara pregled: slika u većoj veličini (prvo sličica
+  `m` od 256 px ako je ima, pa original preko nje), tekst
+  (`txt/md/csv/log/json`) kao tekst, prvih 200 KB (zahtev sa `Range`), PDF
+  kao dugme **Otvori** (nov tab), a sve ostalo podaci fajla (putanja,
+  veličina, izmenjen, poslao, hash) i dugme **Preuzmi**. **Preuzmi** je u
+  svakom pregledu (`?download=1`, uvek attachment). `html`, `svg`, `xml`,
+  `js` i ostali tipovi van bele liste se nikad ne prikazuju u browseru,
+  samo preuzimaju — i kad se link otvori direktno.
+- Samo čitanje: nema upload-a ni brisanja.
 - Kartica **Trash**: lista iz postojećeg `GET …/admin/trash` (putanja, razlog,
   ko, kad, veličina) i akcija **Vrati** (`POST …/trash/{id}/restore`), uz
   poruku koju API vrati (npr. `.restored-…` ime). **Purge nije u v1**, jer
@@ -297,7 +306,7 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
   renderera kad view ima `folder_options`, isto kao primer
   `examples.jsudc.dev/udc/files`. Izvor `files` iz filtera vadi
   `path eq <folder>` i zove `admin/files?dir=`. Pretraga po imenu, filter po
-  ekstenziji. Bez preview-a i preuzimanja (v1). Red ima i `thumb`
+  ekstenziji. Red ima i `thumb`
   (`ready`/`pending`/`failed`/`""`, iz `admin/files`) i `hash_full`, ključ
   sličice.
 - **Sličice: `GET /gui/api/thumb/{hash}?size=s|m|l`.** Ruta shfd-gui-ja (nije
@@ -310,6 +319,30 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
   `401` od shfd-a gasi sesije tog tokena, kao kod ostalih poziva, a sve
   ostalo je `502`. Ključ je hash sadržaja, pa browser jednom učitanu sličicu
   više ne traži.
+- **Sadržaj fajla: `GET /gui/api/files/content?path=<putanja>[&download=1]`.**
+  Ruta shfd-gui-ja (kao sličice, van `/gui/udc`). Bez sesije `401`, bez
+  `path` `400`; inače zove `GET …/admin/files/content` tokenom i folderom
+  sesije i prosleđuje `range`, `if-range` i `if-none-match`. Odgovor se
+  **strimuje** (`Readable.fromWeb`, fajl se nikad ne učitava ceo u
+  memoriju) sa zaglavljima shfd-a: `content-type`, `content-disposition`,
+  `content-length`, `content-range`, `accept-ranges`, `etag`,
+  `cache-control`, `content-security-policy`, `x-content-type-options`
+  (ostala se ne prosleđuju). Status je shfd-ov (`200`, `206`, `304`,
+  `416`); odbijanje (`404`, `409 file_changed`, `400`) dolazi sa porukom na
+  srpskom i `code`; `401` gasi sesije tog tokena, `403` sesiju. Ako browser
+  prekine preuzimanje, prekida se i zahtev ka shfd-u. Zaglavlja shfd mora da
+  pošalje u roku od 120 s (prvo heširanje velikog fajla), telo nema rok.
+- **Pregled (FilePreview.tsx).** jsudc-ov `folder_options.preview` ostaje
+  isključen: njegov pregled čita `/udc/files/blob` filesystem izvora, koji
+  ova kolekcija nema, i sliku SVG bi prikazao. Umesto njega ćelija imena
+  (`filename`) i pločica Mreže otvaraju sopstveni modal preko React
+  konteksta (`PreviewProvider` oko `UdcDataView`). Odluka šta se prikazuje
+  (`preview.ts`, `previewKind`) je ista bela lista kao u shfd-u.
+- **Keš.** Sličice drži shfd u `<data-root>/<share-id>/thumbnails/` (pravi
+  ih `shfd thumbs`, po hash-u sadržaja; nisu u `storage/`, sync ih ne vidi i
+  `verify` ih preskače; mogu se obrisati, napraviće se ponovo), a browser ih
+  čuva zauvek (`immutable`, URL nosi hash). Sadržaj fajla browser čuva uz
+  `private, no-cache`: svaki put pita, a isti `ETag` (hash) daje `304`.
 - **Renderer „thumbs“ (Mreža).** Sopstveni `RendererDefinition`
   (`paging: true`, `editMode: false`, `toolbar`: klizač), registrovan samo za
   `UdcDataView` Fajlova (`renderers={…}`) zajedno sa tabelom koja osvežava

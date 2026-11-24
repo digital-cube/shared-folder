@@ -343,6 +343,8 @@ const filesView = ViewConfigSchema.parse({
   available_renderers: ["table", "thumbs"],
   page_size_default: 200,
   columns_mode: "listed",
+  // jsudc's preview reads a filesystem source's /udc/files/blob, which this
+  // collection has not: the name cell opens the GUI's own (FilePreview.tsx).
   folder_options: { preview: false },
   columns: [
     { field: "name", render: "filename", width: "fill", min_width: 260 },

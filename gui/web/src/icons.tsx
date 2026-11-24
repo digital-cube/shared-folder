@@ -3,6 +3,7 @@ export {
   AlertTriangle,
   Copy,
   Download,
+  ExternalLink,
   File,
   Folder,
   FolderOpen,
