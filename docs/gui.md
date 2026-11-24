@@ -276,6 +276,10 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
 - `admin/log` vraća i `size` i, po redu, `offset` (id reda). Za `transfer`
   je `op` = `dir` (`upload`/`download`/`-`), za `key-replaced` je `detail`
   `old=… new=…`.
+- `service.log` ima i četvrtu vrstu reda, izveštaj klijenta posle ciklusa
+  (`sync member=… from= to= sent= received= conflicts= took= [error=]`);
+  `admin/log` ga vraća kao `type: "sync"`, a GUI kao tip „sync“ (neuspeli
+  sync je „odbijeno“ i ulazi u Greške).
 - `admin/members` vraća `{head, members}`; član ima i `status`
   (`active`/`pending`/`revoked`) i `connected`.
 - Na strani Instalacija klijent se pravi iz izvornog koda (`make build`),
@@ -300,6 +304,12 @@ sudo cp gui/deploy/shfd-gui.service /etc/systemd/system/     # jednom
 sudo systemctl daemon-reload && sudo systemctl enable --now shfd-gui
 sudo systemctl restart shfd-gui                               # posle svakog novog current
 ```
+
+Stream promena (`/gui/udc/changes`, SSE) ne sme da se baferuje ni na jednom
+proxy-ju: shfd-gui šalje `X-Accel-Buffering: no`, a `nginx-gui.conf` taj
+header ponovo dodaje (`add_header`), jer ga nginx inače ne prosleđuje dalje.
+Bez toga, kad je ispred VM-a još jedan nginx (TLS na hipervizoru, kao na test
+serveru), logovi stižu tek kad se bafer napuni.
 
 nginx: sadržaj `gui/deploy/nginx-gui.conf` ide u `server { }` vhost-a koji
 već prosleđuje na `127.0.0.1:8443`, pa `sudo nginx -t && sudo systemctl
