@@ -1,6 +1,10 @@
 // Package shfcli holds the commands of the shf client (docs/specifikacija.md,
 // section 8.5):
 //
+//	shf login <url> [--user U] [--device-name N] [--password-stdin] [--migrate|--no-migrate]
+//	shf logout <url> [--local]
+//	shf folders [<url>]
+//	shf join <url> <folder-name-or-id> <folder> [--ssh USER@HOST[:PORT]]
 //	shf join <url> <share-id> <token> <folder> [--ssh USER@HOST[:PORT]]
 //	shf sync [<folder>]
 //	shf daemon
@@ -38,6 +42,10 @@ import (
 const usage = `shf — shared folder client
 
 Usage:
+  shf login <url> [--user U] [--device-name N] [--password-stdin] [--migrate|--no-migrate]
+  shf logout <url> [--local]
+  shf folders [<url>]
+  shf join <url> <folder-name-or-id> <folder> [--ssh USER@HOST[:PORT]]
   shf join <url> <share-id> <token> <folder> [--ssh USER@HOST[:PORT]]
   shf sync [<folder>]
   shf daemon
@@ -50,12 +58,25 @@ Usage:
   shf version [--short]
   shf help
 
+login signs this device in to a server with your account (username and
+password; the password is read without echo, or from stdin with
+--password-stdin) and keeps the device's token in
+$SHF_STATE_HOME/accounts/<host>.json. A temporary password is replaced
+right away. Folders of that server joined earlier with a member's token
+can then move to the account (asked, or --migrate): this device gets its
+own token and SSH key for them, without joining or fetching again.
+logout revokes the device on the server and forgets the sign-in; its
+folders stay on disk but are not synchronized until you sign in again.
+folders lists the folders of your account and where they are joined.
+
 join connects a local folder (created if missing; existing files are
 merged, nothing is deleted) to a shared folder and runs the first sync.
-The SSH endpoint for file transfer comes from the server; --ssh overrides
-it. Joining the same folder again (with the member's own token) registers
-this device's SSH key again, keeping the folder's state: the remedy when
-status says "key refused". sync runs one full two-way cycle and exits
+Signed in (shf login), name the folder by its name or id: the device gets
+credentials of its own. Without an account, give the share id and a
+member's token (the old way). The SSH endpoint for file transfer comes
+from the server; --ssh overrides it. Joining the same folder again
+registers this device's SSH key again, keeping the folder's state: the
+remedy when status says "key refused". sync runs one full two-way cycle and exits
 non-zero if anything was
 not synchronized. status and log read the local state; <folder> defaults
 to the current directory (or any folder inside a joined one).
@@ -109,6 +130,9 @@ type Env struct {
 	// Exec starts the updated shf daemon in place of this process (nil:
 	// execve).
 	Exec func(exe string, argv []string) error
+	// ReadPassword reads a password without echo (nil: from the
+	// terminal).
+	ReadPassword func(prompt string) (string, error)
 }
 
 // Main runs with the process environment.
@@ -149,6 +173,12 @@ func Run(args []string, env Env) int {
 		return 0
 	case "join":
 		err = join(ctx, args[1:], env)
+	case "login":
+		err = login(ctx, args[1:], env)
+	case "logout":
+		err = logout(ctx, args[1:], env)
+	case "folders":
+		err = folders(ctx, args[1:], env)
 	case "sync":
 		err = syncCmd(ctx, args[1:], env)
 	case "status":
@@ -235,7 +265,7 @@ func parseSSH(s string) (client.SSH, error) {
 func join(ctx context.Context, args []string, env Env) error {
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	sshFlag := fs.String("ssh", "", "USER@HOST[:PORT] of the server's sshd (default: what the server says)")
-	pos, err := parse(fs, args, 4, 4)
+	pos, err := parse(fs, args, 3, 4)
 	if err != nil {
 		return err
 	}
@@ -247,11 +277,28 @@ func join(ctx context.Context, args []string, env Env) error {
 	if err != nil {
 		return err
 	}
-	c, res, err := client.Join(ctx, client.JoinRequest{Home: home, URL: pos[0], ShareID: pos[1], Token: pos[2], Folder: pos[3], SSH: ep,
-		Warn: func(msg string) { fmt.Fprintf(env.Stderr, "shf: warning: %s\n", msg) }}, env.Options)
+	req := client.JoinRequest{Home: home, URL: pos[0], ShareID: pos[1], SSH: ep,
+		Warn: func(msg string) { fmt.Fprintf(env.Stderr, "shf: warning: %s\n", msg) }}
+	if len(pos) == 4 {
+		req.Token, req.Folder = pos[2], pos[3]
+	} else {
+		req.Folder = pos[2]
+		if req.Account, err = client.LoadAccount(home, pos[0]); err != nil {
+			if errors.Is(err, client.ErrNoAccount) {
+				return fmt.Errorf("%w: shf login %s first (or join with a member's token: shf join <url> <share-id> <token> <folder>)", err, pos[0])
+			}
+			return err
+		}
+	}
+	c, res, err := client.Join(ctx, req, env.Options)
 	if c != nil {
 		defer c.Close()
-		fmt.Fprintf(env.Stdout, "joined %s to share %s\nstate: %s\n", c.Config().Folder, c.Config().ShareID, c.Config().Dir)
+		cfg := c.Config()
+		fmt.Fprintf(env.Stdout, "joined %s to share %s\n", cfg.Folder, cfg.ShareID)
+		if cfg.Account != "" {
+			fmt.Fprintf(env.Stdout, "account: %s (member %s, device %s)\n", cfg.Account, cfg.Member, cfg.Device)
+		}
+		fmt.Fprintf(env.Stdout, "state: %s\n", cfg.Dir)
 	}
 	if res != nil {
 		printResult(env.Stdout, res)
@@ -353,6 +400,11 @@ func status(ctx context.Context, args []string, env Env) error {
 	w := env.Stdout
 	fmt.Fprintf(w, "folder:     %s\nshare:      %s\nserver:     %s\n", s.Config.Folder, s.Config.ShareID, s.Config.URL)
 	fmt.Fprintf(w, "version:    %s\n", statusVersion(ctx, env, s.Config.URL))
+	if s.Config.Account != "" {
+		fmt.Fprintf(w, "account:    %s, member %s, device %s (id %d)\n", s.Config.Account, s.Config.Member, s.Config.Device, s.Config.DeviceID)
+	} else {
+		fmt.Fprintf(w, "account:    none: joined with a member's token (shf login %s offers to move it to your account)\n", s.Config.URL)
+	}
 	switch {
 	case s.Last == nil:
 		fmt.Fprintln(w, "last sync:  never")
@@ -382,6 +434,13 @@ func status(ctx context.Context, args []string, env Env) error {
 		}
 	}
 	switch {
+	case s.SignedOut:
+		since := ""
+		if !s.SignedOutSince.IsZero() {
+			since = " (since " + s.SignedOutSince.Local().Format(time.DateTime) + ")"
+		}
+		fmt.Fprintf(w, "state:      signed out%s: nothing is synchronized\n", since)
+		fmt.Fprintf(w, "            %s\n", client.SignedOutHint(s.Config))
 	case !s.KeyRefusedSince.IsZero():
 		fmt.Fprintf(w, "state:      key refused (since %s): nothing is synchronized\n", s.KeyRefusedSince.Local().Format(time.DateTime))
 		fmt.Fprintf(w, "            %s\n", client.KeyRefusedHint)

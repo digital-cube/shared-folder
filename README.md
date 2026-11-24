@@ -35,7 +35,7 @@ preko SSH-a.
 | `internal/authkeys` | blok članova u `authorized_keys` (dodavanje, opoziv, `keys sync`) | 5 |
 | `internal/thumbs` | sličice slika i PDF-ova: dekodiranje u čistom Go-u (EXIF orijentacija), `pdftoppm` sa rokom, veličine `s`/`m`/`l` (96/256/512 px, JPEG), skladište `thumbnails/` po hash-u sadržaja, markeri `.fail` i `.work` | 3 „Thumbnails“ |
 | `internal/shfdcli` | komande `shfd`; admin komande idu kroz `admin.sock` pokrenutog servera ili, bez njega, kroz isti handler u procesu | 8.5 |
-| `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
+| `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, nalozi (`login`, prelazak foldera na nalog), `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
 | `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad, automatsko ažuriranje između ciklusa | 8.3 |
 | `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent; pamti putanje `rsync`-a i `ssh`-a i postavlja `PATH`, odbija star rsync | 8.3 |
 | `internal/update` | `shf update` i automatsko ažuriranje u `shf daemon`-u: paket verzije servera (`/healthz`) za `GOOS/GOARCH` sa `/v1/downloads`, provera prema `SHA256SUMS`, raspakivanje pored binarnog fajla, `version --short`, `os.Rename` | 8.5 |
@@ -150,13 +150,57 @@ xattr -l "$(command -v shf)"        # ne sme da ispiše com.apple.quarantine
 ```
 
 ```sh
-shf join https://shf.example.org <share-id> <token> ~/Tim   # pridruživanje i prvi sync
+shf login  https://shf.example.org --user marko   # prijava nalogom (lozinka bez eha)
+shf folders                                       # folderi naloga, i gde su priključeni
+shf join   https://shf.example.org tim ~/Tim      # folder po imenu ili id-ju, i prvi sync
+shf join   https://shf.example.org <share-id> <token> ~/Tim   # stari način: token člana
+shf logout https://shf.example.org                # opoziv ovog uređaja na serveru
 shf sync   [<folder>]    # jedan ciklus; izlazni kod 1 ako nešto nije uspelo
 shf status [<folder>]    # poslednji sync, seq i HEAD, promene koje čekaju, problemi
 shf log    [<folder>]    # poslednji ciklusi i šta je u njima urađeno
 shf update [--check]     # verzija koju server koristi, i njena instalacija
 shf version              # verzija ovog shf-a, servera, i da li ima ažuriranja
 ```
+
+### Nalog (`shf login`)
+
+Admin servera pravi nalog (`shfd user add marko`, privremena lozinka) i
+dodaje ga u folder (`shfd member add <share> marko --user`). Na svakom
+uređaju:
+
+- `shf login <url> [--user U] [--device-name N]` pita lozinku sa terminala,
+  bez eha (za skripte `--password-stdin`: lozinka u prvom redu stdin-a, nova
+  umesto privremene u drugom). Privremena lozinka se menja odmah. Uređaj se
+  zove po hostname-u, ako `--device-name` ne kaže drugačije. Nalog se čuva u
+  `$SHF_STATE_HOME/accounts/<host>.json` (0600): `url`, `username`,
+  `device_id` i token uređaja. Pogrešna lozinka daje
+  `wrong username or password`; posle više neuspeha server pravi pauzu i
+  `shf` kaže koliko treba čekati.
+- `shf folders [<url>]` pokazuje foldere naloga: ime, ulogu, id i gde je
+  folder već priključen.
+- `shf join <url> <ime-ili-id> <folder>` (bez tokena) nalazi folder među
+  folderima naloga; uređaj dobija **svoj** token za folder i **svoj** SSH
+  ključ, pa dva uređaja istog naloga jedan drugom ništa ne otimaju. Bez
+  naloga za taj server poruka kaže `shf login <url>`.
+- `shf logout <url>` opoziva uređaj na serveru i briše lokalni nalog.
+  Priključeni folderi ostaju na disku, ali se ne sinhronizuju dok se ponovo
+  ne prijavite: `shf status` kaže `state: signed out` i `shf login <url>`;
+  sledeći `shf login` im sam daje kredencijale novog uređaja. (Kad server
+  nije dostupan, `logout` ništa ne menja; `--local` ipak briše lokalni nalog.)
+- Uređaj ili nalog opozvan na serveru (GUI, `shfd user disable`) je isto
+  stanje `signed out`: pozadinski klijent to upiše u log jednom i folder
+  stoji (ne pokušava ponovo) dok `shf login` ne da nove kredencijale.
+- `shf status` pokazuje nalog, člana i uređaj foldera, ili da je folder
+  priključen tokenom člana.
+
+**Prelazak postojećih foldera na nalog.** Posle `shf login` se, za svaki
+folder na tom serveru priključen tokenom člana u kom je nalog član, pita
+„Move it to your account?“ (`--migrate`: bez pitanja, `--no-migrate`:
+ostavi). Prelazak izda token uređaja i nov SSH ključ i zameni ih u
+konfiguraciji foldera: bez ponovnog `join`-a i bez ponovnog preuzimanja
+fajlova; pokrenut `shf daemon` ih preuzme sam. Stari ključ i token se brišu
+lokalno, a na serveru legacy kredencijal radi dok ga admin ne opozove
+(`shfd member reset-token`).
 
 `join` u folder koji već ima fajlove samo spaja (ništa se ne briše). Stanje
 foldera je van njega, u `$XDG_STATE_HOME/shf/<share-id>/` (na macOS-u
@@ -181,7 +225,8 @@ uređaja se ponovo registruje, a stanje foldera ostaje. Svaki uređaj treba
 da ima svog člana (token); jedan token na dva uređaja znači da radi samo
 poslednji koji se pridružio.
 
-**Jedan član = jedan uređaj.** Server čuva jedan SSH ključ po članu. Kad se
+**Jedan član = jedan uređaj** (važi za token člana; sa nalogom svaki uređaj
+ima svoje kredencijale). Server čuva jedan SSH ključ po članu. Kad se
 član pridruži sa drugog uređaja, `shf join` tamo upozorava:
 
 ```

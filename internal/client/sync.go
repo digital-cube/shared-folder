@@ -219,6 +219,11 @@ func (c *Client) checkRoot() error {
 }
 
 func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error) {
+	if c.cfg.SignedOutLocally() {
+		// shf logout: the server revoked the credentials already, asking
+		// it again would only be refused
+		return nil, fmt.Errorf("%w: %s", ErrSignedOut, SignedOutHint(c.cfg))
+	}
 	if err := c.checkRoot(); err != nil {
 		return nil, err
 	}
@@ -249,7 +254,7 @@ func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error
 	if cycleErr == nil {
 		r.Pending = 0
 	}
-	cycleErr = explain(cycleErr)
+	cycleErr = c.signedOutErr(explain(cycleErr))
 	r.ToSeq, _ = c.st.metaInt(metaRemoteSeq)
 	r.ToSeq = max(r.ToSeq, r.FromSeq)
 	r.Head, _ = c.st.metaInt(metaHead)
@@ -266,6 +271,16 @@ func (c *Client) syncLocked(ctx context.Context, so SyncOptions) (*Result, error
 	}
 	if err := c.st.finishCycle(&r.Cycle, r.Problems, cycleErr == nil, keyState(cycleErr, cs.transferred)); err != nil {
 		return r, errors.Join(cycleErr, err)
+	}
+	switch {
+	case errors.Is(cycleErr, ErrSignedOut):
+		if err := c.st.markSignedOut(c.cfg.Token, r.FinishedAt); err != nil {
+			return r, errors.Join(cycleErr, err)
+		}
+	case cycleErr == nil:
+		if err := c.st.clearSignedOut(); err != nil {
+			return r, err
+		}
 	}
 	return r, cycleErr
 }

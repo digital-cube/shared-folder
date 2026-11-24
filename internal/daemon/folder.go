@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"os"
@@ -21,6 +22,12 @@ type folder struct {
 	set  client.Settings
 	log  *slog.Logger
 	wake chan struct{} // cap 1: something changed, look again
+
+	// creds names the credentials the folder runs with (credKey); the
+	// daemon restarts it when they change on disk.
+	creds string
+	quit  chan struct{} // closed: stop, the credentials changed
+	done  chan struct{} // closed when run returned
 
 	mu        sync.Mutex
 	head      int64                // newest HEAD heard (WebSocket or poll)
@@ -44,6 +51,7 @@ func newFolder(cfg Config, fc *client.Config) *folder {
 		cfg: cfg, fc: fc, set: cfg.Settings,
 		log:   cfg.Log.With("folder", fc.Folder, "share", fc.ShareID),
 		wake:  make(chan struct{}, 1),
+		creds: credKey(fc), quit: make(chan struct{}), done: make(chan struct{}),
 		dirty: map[string]time.Time{}, selfw: map[string]selfWrite{},
 	}
 }
@@ -163,8 +171,33 @@ func (f *folder) clearDirty() {
 	f.mu.Unlock()
 }
 
-// run is the folder's loop: the only place its cycles run.
-func (f *folder) run(hard context.Context, stop <-chan struct{}) {
+// credKey names a folder's credentials: its token, and whether this
+// device is still signed in with the account they belong to.
+func credKey(fc *client.Config) string {
+	return fmt.Sprintf("%s\x00%t", fc.Token, fc.SignedOutLocally())
+}
+
+// finished reports whether run returned.
+func (f *folder) finished() bool {
+	select {
+	case <-f.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// signedOut logs that the folder is signed out; the folder then stops
+// until shf login gives it new credentials: every further attempt would
+// only be refused again (as with a refused key, no loop).
+func (f *folder) signedOut(err error) {
+	f.log.Error("signed out: "+client.SignedOutHint(f.fc)+"; nothing is sent or received until then", "err", err)
+}
+
+// run is the folder's loop: the only place its cycles run. It returns
+// parked when the folder is signed out: it stays stopped until its
+// credentials change (shf login).
+func (f *folder) run(hard context.Context, stop <-chan struct{}) (parked bool) {
 	opts := f.cfg.Options
 	opts.Settle = time.Duration(f.set.Settle)
 	if opts.MassDelete == nil {
@@ -181,12 +214,20 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 				"sent", st.Literal, "matched", st.Matched)
 		}
 	}
+	if f.fc.SignedOutLocally() {
+		f.signedOut(errors.New("shf logout"))
+		return true
+	}
 	c, err := client.Open(f.fc, opts)
 	if err != nil {
 		f.log.Error("cannot open the folder's state; not synchronizing it", "err", err)
-		return
+		return false
 	}
 	defer c.Close()
+	if since, _ := c.State().SignedOutSince(f.fc.Token); !since.IsZero() {
+		f.signedOut(fmt.Errorf("refused by the server since %s", since.Local().Format(time.DateTime)))
+		return true
+	}
 
 	ctx, cancel := context.WithCancel(hard)
 	defer cancel()
@@ -202,7 +243,10 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 	go func() { defer bg.Done(); f.watch(ctx) }()
 	go func() { defer bg.Done(); f.websocket(ctx) }()
 	go func() { defer bg.Done(); f.poll(ctx, c) }()
-	defer bg.Wait()
+	defer func() {
+		cancel() // a folder that stops by itself (signed out) ends them too
+		bg.Wait()
+	}()
 
 	f.log.Info("serving folder")
 	clk := f.cfg.Clock
@@ -251,12 +295,12 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 		if reason != "" {
 			select {
 			case <-stop:
-				return
+				return false
 			default:
 			}
 			// an update being installed holds the cycle back
 			if !f.cfg.gate.enter(stop) {
-				return
+				return false
 			}
 			full := reason == ReasonFull || reason == ReasonStart
 			f.clearDirty() // changes from now on call for the next cycle
@@ -269,7 +313,10 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 			now = clk.Now()
 			switch {
 			case errors.Is(err, client.ErrStopped):
-				return
+				return false
+			case client.Classify(err) == client.FailSignedOut:
+				f.signedOut(err)
+				return true
 			case errors.Is(err, client.ErrBusy):
 				// shf sync, confirm or restore-local holds the folder
 				retryAt = now.Add(time.Second)
@@ -361,7 +408,7 @@ func (f *folder) run(hard context.Context, stop <-chan struct{}) {
 		select {
 		case <-stop:
 			release()
-			return
+			return false
 		case <-f.wake:
 		case <-at:
 		}

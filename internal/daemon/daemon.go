@@ -23,6 +23,10 @@
 //     local change only for a failure other than a refused key, and not
 //     before the schedule's first pause. A refused key is logged once,
 //     when it starts;
+//   - stops a folder that is signed out (shf logout, or its account
+//     device revoked on the server: client.ErrSignedOut) after logging it
+//     once, and starts it again when its credentials change on disk
+//     (shf login, shf join again), as it notices within Settings.Poll;
 //   - ignores the changes its own cycles make on disk (downloads), so they
 //     are not sent back;
 //   - with Config.Updater (settings auto_update), checks at start and every
@@ -140,6 +144,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer cancelHard()
 	var wg sync.WaitGroup
 	running := map[string]*folder{}
+	kick := make(chan struct{}, 1) // a folder stopped for new credentials
 	rescan := func() {
 		cfgs, err := client.Joined(cfg.Home)
 		if err != nil {
@@ -147,15 +152,41 @@ func Run(ctx context.Context, cfg Config) error {
 			return
 		}
 		for _, fc := range cfgs {
-			if running[fc.ShareID] != nil {
-				continue
+			if f := running[fc.ShareID]; f != nil {
+				if f.creds == credKey(fc) {
+					continue // running, or stopped for good (signed out)
+				}
+				if !f.finished() {
+					// shf login, shf logout or shf join again changed
+					// them: the folder starts over with the new ones
+					cfg.Log.Info("the folder's credentials changed; starting it again", "folder", fc.Folder, "share", fc.ShareID)
+					select {
+					case <-f.quit:
+					default:
+						close(f.quit)
+					}
+					continue // started again once it stopped
+				}
 			}
 			f := newFolder(cfg, fc)
 			running[fc.ShareID] = f
+			fstop := make(chan struct{})
+			go func() {
+				select {
+				case <-stop:
+				case <-f.quit:
+				}
+				close(fstop)
+			}()
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				f.run(hard, stop)
+				f.run(hard, fstop)
+				close(f.done)
+				select {
+				case kick <- struct{}{}:
+				default:
+				}
 			}()
 		}
 	}
@@ -169,6 +200,9 @@ func Run(ctx context.Context, cfg Config) error {
 	for {
 		select {
 		case <-t.C:
+			rescan()
+			continue
+		case <-kick:
 			rescan()
 			continue
 		case <-ctx.Done():

@@ -24,10 +24,18 @@ const DefaultSSHUser = "shfd"
 
 // JoinRequest are the arguments of shf join.
 type JoinRequest struct {
-	Home    string // the state home (StateHome)
-	URL     string // the server's API, https://host[:port]
+	Home string // the state home (StateHome)
+	URL  string // the server's API, https://host[:port]
+	// ShareID is the folder's id; with Account (and no Token) it may also
+	// be the folder's name among the account's folders.
 	ShareID string
-	Token   string
+	// Token is the member's own token (the old way). Empty with Account.
+	Token string
+	// Account, when set and Token is empty, is this device's sign-in to
+	// the server (shf login): the folder is found among the account's
+	// and the device gets credentials of its own in it
+	// (POST /v1/shares/{id}/devices) and a new SSH key.
+	Account *Account
 	Folder  string
 	// SSH overrides the endpoint for rsync over SSH. Unset fields come from
 	// the server (shfd serve --ssh-endpoint), then from defaults: the host
@@ -58,15 +66,30 @@ func KeyReplacedWarning(fingerprint string) string {
 // When the first cycle fails the folder stays joined; Join returns the
 // open client together with the error, and shf sync continues.
 func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result, error) {
-	if !shareIDRE.MatchString(req.ShareID) {
-		return nil, nil, fmt.Errorf("invalid share id %q: want a UUID as printed by shfd share create", req.ShareID)
-	}
 	u, err := url.Parse(req.URL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return nil, nil, fmt.Errorf("invalid server URL %q: want https://host[:port]", req.URL)
 	}
-	if strings.TrimSpace(req.Token) == "" {
+	byAccount := strings.TrimSpace(req.Token) == "" && req.Account != nil
+	var acctFolder *AccountFolder
+	switch {
+	case byAccount:
+		if !sameServer(req.Account.URL, req.URL) {
+			return nil, nil, fmt.Errorf("the account is of %s, not of %s", req.Account.URL, req.URL)
+		}
+		me, err := req.Account.Me(ctx, opts.HTTPClient)
+		if err != nil {
+			return nil, nil, fmt.Errorf("asking %s for your folders: %w", u.Redacted(), err)
+		}
+		if acctFolder, err = me.FindFolder(req.ShareID); err != nil {
+			return nil, nil, err
+		}
+		req.ShareID = acctFolder.ShareID
+	case strings.TrimSpace(req.Token) == "":
 		return nil, nil, errors.New("empty token")
+	}
+	if !shareIDRE.MatchString(req.ShareID) {
+		return nil, nil, fmt.Errorf("invalid share id %q: want a UUID as printed by shfd share create", req.ShareID)
 	}
 	if err := os.MkdirAll(req.Folder, 0o755); err != nil {
 		return nil, nil, err
@@ -98,6 +121,13 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 		return nil, nil, fmt.Errorf("the client's state directory %s must not be inside the shared folder", req.Home)
 	}
 
+	var fd *folderDevice
+	if byAccount {
+		if fd, err = req.Account.issueFolderDevice(ctx, opts.HTTPClient, req.ShareID); err != nil {
+			return nil, nil, err
+		}
+		req.Token = fd.Token
+	}
 	a := newAPI(u.String(), req.ShareID, req.Token, opts.HTTPClient)
 	if _, err := a.head(ctx); err != nil {
 		if codeOf(err) == "unauthorized" {
@@ -108,11 +138,17 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 
 	cfg := &Config{URL: strings.TrimRight(u.String(), "/"), ShareID: req.ShareID, Folder: folder, Token: req.Token,
 		Dir: filepath.Join(req.Home, req.ShareID)}
+	if fd != nil {
+		cfg.setDevice(req.Account, fd)
+	}
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, nil, err
 	}
 	if opts.Transport == nil {
-		if cfg.SSH, err = setupSSH(ctx, a, cfg, u, req.SSH, req.Warn); err != nil {
+		// a device of an account gets a key of its own, never one a
+		// member's token registered before (the server would refuse it
+		// as another line's)
+		if cfg.SSH, err = setupSSH(ctx, a, cfg, u, req.SSH, req.Warn, fd != nil); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -136,17 +172,31 @@ func Join(ctx context.Context, req JoinRequest, opts Options) (*Client, *Result,
 // setupSSH creates the member's key (or reuses the one an interrupted
 // join left), registers it, settles the endpoint and connects once, which
 // remembers the server's host key and proves the key is accepted.
-func setupSSH(ctx context.Context, a *api, cfg *Config, u *url.URL, over SSH, warn func(string)) (*SSH, error) {
+//
+// With fresh a new key is made beside the folder's key and takes its
+// place only once the server accepted it: the device credentials of an
+// account (shf join by account, shf login moving a folder over).
+func setupSSH(ctx context.Context, a *api, cfg *Config, u *url.URL, over SSH, warn func(string), fresh bool) (*SSH, error) {
+	keyFile := cfg.KeyFile()
 	var pub string
-	if b, err := os.ReadFile(cfg.KeyFile() + ".pub"); err == nil {
+	if fresh {
+		keyFile += ".new"
+		os.Remove(keyFile)
+		os.Remove(keyFile + ".pub")
+	}
+	if b, err := os.ReadFile(keyFile + ".pub"); err == nil && !fresh {
 		pub = strings.TrimSpace(string(b))
 	} else {
 		host, _ := os.Hostname()
-		if pub, err = rsyncssh.GenerateKey(ctx, cfg.KeyFile(), "shf@"+host+" "+cfg.ShareID); err != nil {
+		comment := "shf@" + host + " " + cfg.ShareID
+		if cfg.Account != "" {
+			comment = "shf@" + host + " " + cfg.Account + "/" + cfg.Device + " " + cfg.ShareID
+		}
+		if pub, err = rsyncssh.GenerateKey(ctx, keyFile, comment); err != nil {
 			return nil, fmt.Errorf("creating the SSH key: %w", err)
 		}
 	}
-	os.Chmod(cfg.KeyFile(), 0o600)
+	os.Chmod(keyFile, 0o600)
 	res, err := a.setSSHKey(ctx, pub)
 	if err != nil {
 		return nil, fmt.Errorf("registering the SSH key: %w", err)
@@ -174,14 +224,37 @@ func setupSSH(ctx context.Context, a *api, cfg *Config, u *url.URL, over SSH, wa
 		ep.Port = 22
 	}
 	tr, err := rsyncssh.New(rsyncssh.Config{ShareID: cfg.ShareID, Host: ep.Host, Port: ep.Port, User: ep.User,
-		KeyFile: cfg.KeyFile(), StateDir: cfg.Dir})
+		KeyFile: keyFile, StateDir: cfg.Dir})
 	if err != nil {
 		return nil, err
 	}
-	if err := tr.Probe(ctx); err != nil {
+	err = tr.Probe(ctx)
+	if fresh {
+		tr.Close() // its control socket is named after the temporary key file
+	}
+	if err != nil {
 		return nil, fmt.Errorf("SSH to %s@%s: %w", ep.User, net.JoinHostPort(ep.Host, fmt.Sprint(ep.Port)), err)
 	}
+	if fresh {
+		// the old key goes: the public half first, so that a crash in
+		// between leaves no pair that does not belong together
+		if err := os.Rename(keyFile+".pub", cfg.KeyFile()+".pub"); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(keyFile, cfg.KeyFile()); err != nil {
+			return nil, err
+		}
+	}
 	return ep, nil
+}
+
+// setDevice records that the folder's credentials are those of the
+// account's device.
+func (c *Config) setDevice(a *Account, fd *folderDevice) {
+	c.Token, c.Account, c.DeviceID, c.Device, c.Member = fd.Token, a.Username, a.DeviceID, a.DeviceName, fd.Member
+	if fd.DeviceID != 0 {
+		c.DeviceID = fd.DeviceID
+	}
 }
 
 // Status is what shf status shows.
@@ -205,6 +278,12 @@ type Status struct {
 	// KeyRefusedSince is set while the server refuses this device's SSH
 	// key (the last cycles failed with it; KeyRefusedHint says what to do).
 	KeyRefusedSince time.Time
+	// SignedOut: the folder's credentials belong to an account device
+	// that is signed out (SignedOutHint says what to do). SignedOutSince
+	// is when the server started refusing them; zero after shf logout
+	// here, which the server was not asked about.
+	SignedOut      bool
+	SignedOutSince time.Time
 }
 
 // Status reports the folder's state without changing anything: it asks
@@ -238,6 +317,10 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if s.KeyRefusedSince, err = c.st.KeyRefusedSince(); err != nil {
 		return nil, err
 	}
+	if s.SignedOutSince, err = c.st.SignedOutSince(c.cfg.Token); err != nil {
+		return nil, err
+	}
+	s.SignedOut = !s.SignedOutSince.IsZero() || c.cfg.SignedOutLocally()
 	for _, h := range s.Held {
 		s.Blocked = s.Blocked || !h.Confirmed
 	}
@@ -251,8 +334,16 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.cfg.SignedOutLocally() {
+		s.HeadErr = fmt.Errorf("%w: %s", ErrSignedOut, SignedOutHint(c.cfg))
+		s.PendingErr = s.HeadErr
+		return s, nil
+	}
 	evs, head, err := c.api.changes(ctx, s.RemoteSeq)
 	if err != nil {
+		if err = c.signedOutErr(err); errors.Is(err, ErrSignedOut) {
+			s.SignedOut = true
+		}
 		s.HeadErr = err
 		s.PendingErr = fmt.Errorf("server not reachable: %w", err)
 		return s, nil

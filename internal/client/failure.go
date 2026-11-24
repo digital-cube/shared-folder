@@ -25,6 +25,10 @@ const (
 	// member joined from another device and that device's key replaced
 	// this one. Every retry is another refused login at the server's sshd.
 	FailKeyRefused
+	// FailSignedOut: the folder's credentials belong to an account
+	// device that is signed out (shf logout, or the device or account
+	// revoked on the server). It does not pass by itself: shf login.
+	FailSignedOut
 )
 
 // ErrKeyRefused is in the chain of a cycle's error when the server
@@ -41,6 +45,8 @@ func Classify(err error) Failure {
 	switch {
 	case err == nil, errors.Is(err, context.Canceled):
 		return FailOther
+	case errors.Is(err, ErrSignedOut):
+		return FailSignedOut
 	case errors.Is(err, rsyncssh.ErrAuth), errors.Is(err, ErrKeyRefused):
 		return FailKeyRefused
 	case errors.Is(err, rsyncssh.ErrUnreachable):
@@ -58,7 +64,7 @@ func Classify(err error) Failure {
 // cycle can succeed: each would be one more refused or failing SSH login.
 func transportDown(err error) bool {
 	f := Classify(err)
-	return f == FailKeyRefused || f == FailUnreachable
+	return f == FailKeyRefused || f == FailUnreachable || f == FailSignedOut
 }
 
 // explain adds KeyRefusedHint to an error that is a refused key.

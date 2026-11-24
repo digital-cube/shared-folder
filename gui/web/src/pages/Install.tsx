@@ -183,6 +183,7 @@ export function Install({ standalone }: { standalone?: boolean }) {
   const app = useAppMaybe();
   const shareId = app?.me.share_id ?? "<share-id>";
   const folder = app ? `~/${app.me.share_name}` : "~/Tim";
+  const shareName = app ? (/[\s"'$`\\]/.test(app.me.share_name) ? `"${app.me.share_name.replace(/["$`\\]/g, "\\$&")}"` : app.me.share_name) : "<ime-foldera>";
 
   const body = (
     <div className="page install-wrap">
@@ -282,16 +283,37 @@ export function Install({ standalone }: { standalone?: boolean }) {
               </div>
             ) : null}
           </Step>
-          <Step n={2} title={tr("Pridruži se folderu", "Join the folder")}>
+          <Step n={2} title={tr("Prijavi se i priključi folder", "Sign in and join the folder")}>
             <p>
-              {tr("Admin pravi člana za ovaj uređaj (strana ", "An admin creates a member for this device (page ")}
+              {tr(
+                "Sa nalogom (korisničko ime i privremenu lozinku daje admin servera): prijavi se jednom na svakom uređaju, pa folder priključi po imenu. Lozinka se kuca bez eha; privremenu odmah menjaš svojom.",
+                "With an account (the server's admin gives you the username and a temporary password): sign in once on every device, then join the folder by its name. The password is typed without echo; a temporary one is replaced by your own right away.",
+              )}
+            </p>
+            <Code>{`shf login ${origin} --user <${tr("korisnik", "username")}>
+shf folders              # ${tr("tvoji folderi, i gde su već priključeni", "your folders, and where they are joined")}
+shf join ${origin} ${shareName} ${folder}`}</Code>
+            <p className="side-note" style={{ marginTop: 6 }}>
+              <code>join</code>{" "}
+              {tr("u folder koji već ima fajlove samo spaja; ništa se ne briše.", "into a folder that already has files only merges; nothing is deleted.")}{" "}
+              {tr("Bez naloga (stari način) admin pravi člana (strana ", "Without an account (the old way) an admin creates a member (page ")}
               <b>{tr("Članovi i tokeni", "Members and tokens")}</b> → <b>{tr("Nov član", "New member")}</b>
-              {tr(") i daje ti token. Zatim:", ") and gives you the token. Then:")}
+              {tr(") i daje ti token:", ") and gives you the token:")}
             </p>
             <Code>{`shf join ${origin} ${shareId} <token> ${folder}`}</Code>
             <p className="side-note" style={{ marginTop: 6 }}>
-              <code>join</code>{" "}
-              {tr("u folder koji već ima fajlove samo spaja; ništa se ne briše.", "into a folder that already has files only merges; nothing is deleted.")}
+              {tr(
+                "Folder priključen tokenom prelazi na nalog bez ponovnog priključivanja: ",
+                "A folder joined with a token moves to the account without joining again: ",
+              )}
+              <code>shf login {origin} --migrate</code>
+              {tr(". ", ". ")}
+              <code>shf logout {origin}</code>{" "}
+              {tr(
+                "opoziva uređaj; folderi ostaju na disku, ali se ne sinhronizuju do sledećeg ",
+                "revokes the device; the folders stay on disk but are not synchronized until the next ",
+              )}
+              <code>shf login</code>.
             </p>
           </Step>
           <Step n={3} title={tr("Pokreni pozadinski klijent", "Start the background client")}>
@@ -303,15 +325,20 @@ shf service status       # ${tr("da li radi, poslednje linije loga", "whether it
           </Step>
           <div className="callout">
             <span>
-              <b>{tr("Jedan član = jedan uređaj.", "One member = one device.")}</b>{" "}
+              <b>{tr("Svaki uređaj svoje kredencijale.", "Every device its own credentials.")}</b>{" "}
               {tr(
-                "Server čuva jedan SSH ključ po članu. Ako se isti token iskoristi na drugom uređaju, prvi uređaj dobija ",
-                "The server keeps one SSH key per member. If the same token is used on a second device, the first device gets ",
+                "Sa nalogom svaki uređaj dobija svoj token i SSH ključ, pa uređaji jedan drugom ništa ne otimaju. Sa tokenom člana server čuva jedan SSH ključ po članu: ako se isti token iskoristi na drugom uređaju, prvi uređaj dobija ",
+                "With an account every device gets a token and SSH key of its own, so devices take nothing from each other. With a member's token the server keeps one SSH key per member: if the same token is used on a second device, the first device gets ",
               )}
               <code>state: key refused</code> {tr("u", "in")} <code>shf status</code>
               {tr(
-                ". Rešenje: za svaki uređaj poseban član i token; na uređaju koji je izgubio ključ ponovo ",
-                ". The fix: a separate member and token for every device; on the device that lost its key, run ",
+                ". Rešenje: prijava nalogom (",
+                ". The fix: signing in with an account (",
+              )}
+              <code>shf login</code>
+              {tr(
+                "), ili za svaki uređaj poseban član i token; na uređaju koji je izgubio ključ ponovo ",
+                "), or a separate member and token for every device; on the device that lost its key, run ",
               )}
               <code>shf join</code> {tr("sa sopstvenim tokenom.", "again with its own token.")}
             </span>

@@ -100,6 +100,9 @@ type APIError struct {
 	Status  int
 	Code    string
 	Message string
+	// RetryAfter is the server's Retry-After (too_many_attempts), 0 when
+	// it sent none.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -131,6 +134,13 @@ func newAPI(base, shareID, token string, hc *http.Client) *api {
 }
 
 func (a *api) do(ctx context.Context, method, path string, in, out any) error {
+	return doJSON(ctx, a.hc, method, a.base+"/v1/shares/"+url.PathEscape(a.shareID)+path, a.token, in, out)
+}
+
+// doJSON sends in (when not nil) as JSON with the bearer token (when not
+// empty) and decodes a 2xx answer into out (when not nil). Any other
+// answer is an *APIError.
+func doJSON(ctx context.Context, hc *http.Client, method, u, token string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -139,15 +149,17 @@ func (a *api) do(ctx context.Context, method, path string, in, out any) error {
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, a.base+"/v1/shares/"+url.PathEscape(a.shareID)+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := a.hc.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -157,6 +169,10 @@ func (a *api) do(ctx context.Context, method, path string, in, out any) error {
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
+		ae := &APIError{Status: resp.StatusCode}
+		if n, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && n > 0 {
+			ae.RetryAfter = time.Duration(n) * time.Second
+		}
 		var eb struct {
 			Error struct {
 				Code    string `json:"code"`
@@ -164,19 +180,21 @@ func (a *api) do(ctx context.Context, method, path string, in, out any) error {
 			} `json:"error"`
 		}
 		if json.Unmarshal(raw, &eb) == nil && eb.Error.Code != "" {
-			return &APIError{Status: resp.StatusCode, Code: eb.Error.Code, Message: eb.Error.Message}
+			ae.Code, ae.Message = eb.Error.Code, eb.Error.Message
+			return ae
 		}
 		msg := strings.TrimSpace(string(raw))
 		if len(msg) > 200 {
 			msg = msg[:200] + "…"
 		}
-		return &APIError{Status: resp.StatusCode, Code: "http_" + strconv.Itoa(resp.StatusCode), Message: msg}
+		ae.Code, ae.Message = "http_"+strconv.Itoa(resp.StatusCode), msg
+		return ae
 	}
 	if out == nil {
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%s %s: unexpected answer: %w", method, path, err)
+		return fmt.Errorf("%s %s: unexpected answer: %w", method, req.URL.Path, err)
 	}
 	return nil
 }

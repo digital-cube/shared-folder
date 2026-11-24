@@ -73,6 +73,16 @@ type Config struct {
 	SSH *SSH `json:"ssh,omitempty"`
 	// Joined is when join finished its setup.
 	Joined time.Time `json:"joined"`
+	// Account, when set, is the account (shf login) whose device holds
+	// the folder's credentials: Token is that device's folder token and
+	// the key that device's own. Empty: Token is the member's own
+	// (legacy) token.
+	Account  string `json:"account,omitempty"`
+	DeviceID int64  `json:"device_id,omitempty"`
+	Device   string `json:"device,omitempty"` // the device's name
+	// Member is the member the credentials act as in the folder (known
+	// for account folders).
+	Member string `json:"member,omitempty"`
 
 	Token string `json:"-"`
 	Dir   string `json:"-"` // the state directory
@@ -255,6 +265,9 @@ const (
 	// the device's SSH key, as the cycles saw it; 0 or missing while it
 	// accepts it.
 	metaKeyRefused = "key_refused_since"
+	// metaSignedOut is "<unix seconds> <tokenID>": since when the server
+	// refuses the folder token with that id as signed out.
+	metaSignedOut = "signed_out"
 )
 
 // keepCycles is how many cycles the local log keeps.
@@ -309,6 +322,47 @@ func setMeta(x execer, key string, v int64) error {
 	_, err := x.Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
 		key, strconv.FormatInt(v, 10))
 	return err
+}
+
+func (s *State) metaString(key string) (string, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// markSignedOut remembers that the server refuses the folder token token
+// (from at, unless already remembered for it).
+func (s *State) markSignedOut(token string, at time.Time) error {
+	if since, _ := s.SignedOutSince(token); !since.IsZero() {
+		return nil
+	}
+	_, err := s.db.Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+		metaSignedOut, strconv.FormatInt(at.Unix(), 10)+" "+tokenID(token))
+	return err
+}
+
+func (s *State) clearSignedOut() error {
+	_, err := s.db.Exec(`DELETE FROM meta WHERE key = ?`, metaSignedOut)
+	return err
+}
+
+// SignedOutSince is when the server started refusing the folder token
+// token as signed out (a revoked device or account); zero when it has
+// not, or refused another token than this one.
+func (s *State) SignedOutSince(token string) (time.Time, error) {
+	v, err := s.metaString(metaSignedOut)
+	if err != nil || v == "" {
+		return time.Time{}, err
+	}
+	at, id, _ := strings.Cut(v, " ")
+	if id != tokenID(token) {
+		return time.Time{}, nil
+	}
+	n, _ := strconv.ParseInt(at, 10, 64)
+	return time.Unix(n, 0), nil
 }
 
 // Seq is the last applied seq.

@@ -1,8 +1,9 @@
 # Instalacija `shf` (i `shfd`)
 
 Dva puta: **gotov paket** (preuzmeš, raspakuješ, instaliraš; Go ne treba) ili
-**build iz izvornog koda**. Šta posle instalacije (`shf join`, `shf service
-install`) je u [README.md](../README.md#klijent) i na strani Instalacija u GUI-ju.
+**build iz izvornog koda**. Prvi koraci posle instalacije su
+[ispod](#prvi-koraci-sa-nalogom); sve ostalo u [README.md](../README.md#klijent)
+i na strani Instalacija u GUI-ju.
 
 ## Šta treba na svakom uređaju (oba puta)
 
@@ -111,6 +112,26 @@ Posle **ručne** zamene binarnog fajla (nova verzija) ponovo: karantin, pa
 `shfd` iz paketa `linux-amd64` ide na server po
 [docs/server-ssh.md](server-ssh.md) (`/opt/shfd/versions/<verzija>/shfd`,
 symlink `/opt/shfd/current`).
+
+## Prvi koraci sa nalogom
+
+Od admina servera dobiješ korisničko ime i privremenu lozinku (`shfd user
+add`), a on te doda u folder (`shfd member add <share> <ime> --user`). Na
+svakom uređaju:
+
+```sh
+shf login https://shf.example.org --user marko   # lozinka bez eha; privremenu odmah menjaš
+shf folders                                      # tvoji folderi
+shf join https://shf.example.org tim ~/Tim       # folder po imenu (ili id-ju) i prvi sync
+shf service install                              # pozadinski klijent, i pri svakom prijavljivanju
+shf status ~/Tim                                 # nalog, uređaj, poslednji sync
+```
+
+Svaki uređaj dobija svoj token i SSH ključ; `shf logout <url>` opoziva samo
+taj uređaj. Folder koji je ranije priključen tokenom člana (`shf join <url>
+<share-id> <token> <folder>`, i dalje radi) `shf login` nudi da prebaci na
+nalog, bez ponovnog `join`-a (`--migrate`: bez pitanja). Detalji: README,
+odeljak [Nalog](../README.md#nalog-shf-login).
 
 ## Ažuriranje (`shf update`)
 
