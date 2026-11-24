@@ -69,3 +69,24 @@ export const overview = defineHostAction({
     }),
   }),
 });
+
+/**
+ * A file given a new name in its folder: a move of shfd's sync protocol
+ * (POST /ops, op move), so every member's device renames it too. base_hash
+ * is the version the GUI showed; a file changed since is not renamed.
+ */
+export const renameFile = defineHostAction({
+  name: "shfd.file_rename",
+  request: z.object({ path: z.string().min(1), name: z.string().min(1).max(255), base_hash: z.string() }),
+  response: z.object({ path: z.string(), status: z.string(), message: z.string() }),
+});
+
+/**
+ * A file deleted (op delete: it goes to the trash, every device deletes it)
+ * or an empty folder removed (op rmdir).
+ */
+export const removeFile = defineHostAction({
+  name: "shfd.file_remove",
+  request: z.object({ path: z.string().min(1), kind: z.enum(["file", "dir"]), base_hash: z.string() }),
+  response: z.object({ path: z.string(), status: z.string(), message: z.string() }),
+});

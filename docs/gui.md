@@ -180,13 +180,30 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
 - **Pregled i preuzimanje.** Klik na ime fajla (Tabela) ili na pločicu
   (Mreža; i Enter) otvara pregled: slika u većoj veličini (prvo sličica
   `m` od 256 px ako je ima, pa original preko nje), tekst
-  (`txt/md/csv/log/json`) kao tekst, prvih 200 KB (zahtev sa `Range`), PDF
+  (`txt/md/csv/log/json`) kao tekst, prvih 200 KB (zahtev sa `Range`),
+  video (`mp4/m4v/webm/ogv/mov`) i zvuk (`mp3/m4a/aac/wav/ogg/oga/opus/flac`)
+  u plejeru browsera (`Range`, pa premotavanje radi), PDF
   kao dugme **Otvori** (nov tab), a sve ostalo podaci fajla (putanja,
   veličina, izmenjen, poslao, hash) i dugme **Preuzmi**. **Preuzmi** je u
   svakom pregledu (`?download=1`, uvek attachment). `html`, `svg`, `xml`,
   `js` i ostali tipovi van bele liste se nikad ne prikazuju u browseru,
   samo preuzimaju — i kad se link otvori direktno.
-- Samo čitanje: nema upload-a ni brisanja.
+- **Kontekstni meni** (TCKXT9D9DJ). Desni klik na red Tabele ili pločicu
+  Mreže (i taster menija / Shift+F10 na fokusiranom imenu ili pločici)
+  otvara meni kod pokazivača. Fajl: **Informacije** (ime, tip, putanja,
+  veličina i u bajtovima, izmenjen, poslao, seq, ceo hash), **Prikaži**
+  (pregled iznad; sivo za tip bez pregleda), **Preuzmi**, **Preimenuj** i
+  **Obriši**. Folder: **Otvori**, **Informacije** i **Obriši** (samo prazan
+  folder; shfd folder ne preimenuje). `..` nema meni. Strelice, Home/End,
+  Enter i Esc rade u meniju.
+- **Preimenuj i Obriši** su host akcije `shfd.file_rename` i
+  `shfd.file_remove`, koje zovu isti `POST /v1/shares/{id}/ops` kao uređaj
+  (`move`, `delete`, `rmdir`), tokenom prijavljenog admina. Zato važe
+  pravila sync-a: `base_hash` je verzija koju GUI prikazuje (fajl izmenjen u
+  međuvremenu → `stale_base`, „osveži prikaz“), obrisan fajl ide u trash
+  (vraća se karticom **Trash**), a svi uređaji foldera dobiju događaj i
+  urade isto. Preimenovanje menja samo ime u istom folderu (bez `/` i `\`);
+  zauzeto ime je `dest_exists`. Nema upload-a.
 - Kartica **Trash**: lista iz postojećeg `GET …/admin/trash` (putanja, razlog,
   ko, kad, veličina) i akcija **Vrati** (`POST …/trash/{id}/restore`), uz
   poruku koju API vrati (npr. `.restored-…` ime). **Purge nije u v1**, jer
@@ -261,6 +278,7 @@ gui/
     collections.ts        jsudc kolekcije members, logs, files, trash (ArraySource + share_id scope)
   shared/base.ts          normalizeBase (""/"/" = koren, "/gui"), isShfdPath (/v1/, /healthz, /downloads/)
   shared/filekinds.ts     tabela ekstenzija po tipu (ikonice u web-u, opcije čipa Ekstenzija na serveru)
+  shared/rename.ts        renameTarget: nova putanja preimenovanog fajla (akcija i dijalog)
     logs.ts               bafer service.log-a po folderu, poller (1 s), redovi tabele, pločice
   server/test/            vitest: sesije, parsiranje/mapiranje log reda, poller, login i akcije, ruta sličica (lažni shfd)
   web/                    React + @jsudc/react, Vite; ekrani Prijava, Članovi, Logovi, Fajlovi, Instalacija
@@ -269,6 +287,8 @@ gui/
     src/ThumbGrid.tsx     renderer „thumbs“ (Mreža), klizač, tabela sa osvežavanjem
     src/thumbsize.ts      veličina pločica i poslednji jezičak (localStorage)
     src/liveThumbs.ts     ponovno učitavanje dok ima pending sličica
+    src/FileMenu.tsx      kontekstni meni Fajlova + dijalozi Informacije, Preimenuj, Obriši (i pregled)
+    src/filemenu.ts       stavke menija po redu, tip rečima, položaj menija, taster menija
   deploy/                 shfd-gui.service, nginx-gui-root.conf (GUI na korenu), nginx-gui.conf (GUI pod /gui)
   scripts/build-server.mjs  esbuild: ceo server u jedan dist/server.js (bez node_modules na serveru)
 ```

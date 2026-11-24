@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import { restoreTrash } from "../../../shared/actions";
 import { Folder, Trash2, X } from "../icons";
 import { messageOf } from "./Members";
-import { PreviewProvider } from "../FilePreview";
+import { FileActionsProvider } from "../FileMenu";
 import { filesTableRenderer, thumbsRenderer } from "../ThumbGrid";
 import { savedFilesTab, saveFilesTab } from "../thumbsize";
 
@@ -64,8 +64,8 @@ export function Files() {
         <div>
           <h2>Fajlovi</h2>
           <p>
-            Sadržaj foldera kako ga server vidi (<code>storage/</code>), samo za čitanje. Klik na fajl otvara pregled i
-            preuzimanje.
+            Sadržaj foldera kako ga server vidi (<code>storage/</code>). Klik na fajl otvara pregled; desni klik (ili
+            taster menija) daje informacije, pregled, preuzimanje, preimenovanje i brisanje.
           </p>
         </div>
         <div className="spacer" />
@@ -89,7 +89,7 @@ export function Files() {
       ) : null}
       {tab === "files" ? (
         <div className="view-card files-view">
-          <PreviewProvider>
+          <FileActionsProvider>
             <UdcDataView
               key="files"
               collection="files"
@@ -97,7 +97,7 @@ export function Files() {
               chrome={FILES_CHROME}
               renderers={FILES_RENDERERS}
             />
-          </PreviewProvider>
+          </FileActionsProvider>
         </div>
       ) : (
         <>

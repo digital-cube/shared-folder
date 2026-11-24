@@ -32,6 +32,10 @@ func TestContentWhitelist(t *testing.T) {
 		"g.csv":          "a,b",
 		"h.log":          "line",
 		"i.json":         "{}",
+		"v.mp4":          "video",
+		"w.WEBM":         "video",
+		"x.mp3":          "audio",
+		"y.flac":         "audio",
 		"noi.html":       "<script>alert(1)</script>",
 		"j.htm":          "<b>x</b>",
 		"k.svg":          "<svg onload=alert(1)/>",
@@ -54,6 +58,10 @@ func TestContentWhitelist(t *testing.T) {
 		"g.csv":        "text/plain; charset=utf-8",
 		"h.log":        "text/plain; charset=utf-8",
 		"i.json":       "application/json",
+		"v.mp4":        "video/mp4",
+		"w.WEBM":       "video/webm",
+		"x.mp3":        "audio/mpeg",
+		"y.flac":       "audio/flac",
 	}
 	for p, c := range files {
 		resp, raw := call(t, "GET", e.contentURL(p), e.ana.token, nil, nil)

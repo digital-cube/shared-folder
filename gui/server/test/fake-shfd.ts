@@ -66,6 +66,44 @@ export class FakeShfd {
     return this.log.reduce((n, l) => n + l.raw.length + 1, 0);
   }
 
+  /** Where an entry of path lives: its folder's listing and its index. */
+  private find(path: string): [FileEntry[], number] {
+    const i = path.lastIndexOf("/");
+    const list = this.files[i < 0 ? "" : path.slice(0, i)] ?? [];
+    return [list, list.findIndex((f) => f.path === path)];
+  }
+
+  /** Enough of POST /ops: move, delete and rmdir under shfd's rules. */
+  private op(init: RequestInit | undefined, json: (s: number, b: unknown) => Response, err: (s: number, c: string) => Response): Response {
+    const req = JSON.parse(String(init?.body ?? "{}")) as { op: string; path: string; new_path?: string; base_hash?: string };
+    this.ops.push(req);
+    const [list, i] = this.find(req.path);
+    const cur = list[i];
+    if (req.op === "rmdir") {
+      if (!cur) return json(200, { status: "unchanged", path: req.path, events: [], head: 3 });
+      if (cur.kind !== "dir") return err(409, "kind_mismatch");
+      if ((this.files[req.path] ?? []).length > 0) return err(409, "dir_not_empty");
+      list.splice(i, 1);
+      return json(200, { status: "applied", path: req.path, events: [], head: 4 });
+    }
+    if (!cur) return req.op === "delete" ? json(200, { status: "unchanged", path: req.path, events: [], head: 3 }) : err(404, "not_found");
+    if (cur.kind === "dir") return err(409, "is_dir");
+    if (cur.hash !== req.base_hash) return err(409, "stale_base");
+    if (req.op === "delete") {
+      list.splice(i, 1);
+      return json(200, { status: "applied", path: req.path, events: [], head: 4 });
+    }
+    const to = req.new_path ?? "";
+    const [dst, j] = this.find(to);
+    if (j >= 0) return err(409, "dest_exists");
+    list.splice(i, 1);
+    dst.push({ ...cur, path: to, name: to.split("/").pop()! });
+    return json(200, { status: "applied", path: to, events: [], head: 4 });
+  }
+
+  /** Every op the GUI sent, as sent. */
+  ops: { op: string; path: string; new_path?: string; base_hash?: string }[] = [];
+
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     const auth = new Headers(init?.headers).get("authorization") ?? "";
@@ -87,6 +125,7 @@ export class FakeShfd {
     if (url.pathname === "/v1/whoami") {
       return json(200, { share_id: this.share, share_name: "projekti", username: me.username, role: me.role });
     }
+    if (url.pathname === `/v1/shares/${this.share}/ops` && method === "POST") return this.op(init, json, err);
     const prefix = `/v1/shares/${this.share}/admin/`;
     if (!url.pathname.startsWith(prefix)) return err(401, "unauthorized");
     if (me.role !== "admin") return err(403, "forbidden");

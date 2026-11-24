@@ -1,37 +1,30 @@
 // The preview of one file of the Files page: a click on a file's name (the
-// table) or tile (Mreža) opens it. An image large (the 256 px thumbnail at
-// once when there is one, the original over it once loaded), the first
-// 200 KB of a text, a PDF as buttons, anything else as its data and
-// Preuzmi. Everything comes through <base>/api/files/content, which only
-// serves inline what shfd's whitelist allows (preview.ts mirrors it).
+// table) or tile (Mreža), or Prikaži in its context menu, opens it. An
+// image large (the 256 px thumbnail at once when there is one, the
+// original over it once loaded), the first 200 KB of a text, a video or a
+// sound in the browser's own player, a PDF as buttons, anything else as
+// its data and Preuzmi. Everything comes through <base>/api/files/content,
+// which only serves inline what shfd's whitelist allows (preview.ts
+// mirrors it).
 //
 // jsudc's own folder preview (folder_options.preview) reads a filesystem
 // source's /udc/files/blob, which this collection has not, so the view
-// keeps it off and the cells open this one through PreviewContext.
+// keeps it off and the cells open this one through PreviewContext, which
+// FileActionsProvider (FileMenu.tsx) gives them.
 
 import type { Row } from "@jsudc/core";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
+import { kindLabel } from "./filemenu";
 import { bytes, stamp } from "./format";
 import { Download, ExternalLink, X } from "./icons";
 import { contentUrl, decodeTextPreview, previewKind, TEXT_PREVIEW_BYTES } from "./preview";
 import { Thumb, thumbUrl } from "./Thumb";
 
-const PreviewContext = createContext<((row: Row) => void) | null>(null);
+export const PreviewContext = createContext<((row: Row) => void) | null>(null);
 
 /** Opens the preview of a file row; null outside the Files page. */
 export function usePreview(): ((row: Row) => void) | null {
   return useContext(PreviewContext);
-}
-
-/** Gives the cells under it a way to open the preview, and shows it. */
-export function PreviewProvider({ children }: { children: ReactNode }) {
-  const [row, setRow] = useState<Row | null>(null);
-  return (
-    <PreviewContext.Provider value={setRow}>
-      {children}
-      {row ? <FilePreview row={row} onClose={() => setRow(null)} /> : null}
-    </PreviewContext.Provider>
-  );
 }
 
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
@@ -66,6 +59,13 @@ export function FilePreview({ row, onClose }: { row: Row; onClose: () => void })
         <div className="preview-body">
           {kind === "image" ? <ImagePreview row={row} path={path} name={name} /> : null}
           {kind === "text" ? <TextPreview path={path} size={Number(row.size ?? 0)} /> : null}
+          {kind === "video" ? <MediaPreview path={path} video /> : null}
+          {kind === "audio" ? (
+            <div className="preview-audio">
+              <Thumb row={row} px={72} />
+              <MediaPreview path={path} />
+            </div>
+          ) : null}
           {kind === "pdf" ? (
             <p className="preview-note">
               PDF se otvara u novom tabu (<b>Otvori</b>) ili preuzima (<b>Preuzmi</b>); u ovom prozoru se ne prikazuje.
@@ -78,22 +78,77 @@ export function FilePreview({ row, onClose }: { row: Row; onClose: () => void })
             </div>
           ) : null}
         </div>
-        <dl className="preview-meta">
-          <dt>Putanja</dt>
-          <dd className="mono">{path}</dd>
+        <FileMeta row={row} />
+      </div>
+    </div>
+  );
+}
+
+/** The data of a file (or folder): the preview's foot and the info dialog. */
+export function FileMeta({ row, full = false }: { row: Row; full?: boolean }) {
+  const dir = row.kind === "dir";
+  const size = row.size as number | null;
+  return (
+    <dl className="preview-meta" data-testid="file-meta">
+      {full ? (
+        <>
+          <dt>Ime</dt>
+          <dd style={{ wordBreak: "break-all" }}>{str(row.name)}</dd>
+          <dt>Tip</dt>
+          <dd>{kindLabel(row)}</dd>
+        </>
+      ) : null}
+      <dt>Putanja</dt>
+      <dd className="mono" style={{ wordBreak: "break-all" }}>
+        {str(row.path)}
+      </dd>
+      {dir ? null : (
+        <>
           <dt>Veličina</dt>
-          <dd>{bytes(row.size as number | null)}</dd>
+          <dd>
+            {bytes(size)}
+            {full && typeof size === "number" && size >= 1024 ? <span className="faint"> ({size.toLocaleString("sr-Latn-RS")} B)</span> : null}
+          </dd>
           <dt>Izmenjen</dt>
           <dd>{row.mtime ? stamp(str(row.mtime)) : "—"}</dd>
-          <dt>Poslao</dt>
-          <dd>{str(row.updated_by) || "—"}</dd>
+        </>
+      )}
+      <dt>{dir ? "Napravio" : "Poslao"}</dt>
+      <dd>{str(row.updated_by) || "—"}</dd>
+      {full && row.seq !== null && row.seq !== undefined ? (
+        <>
+          <dt>Seq</dt>
+          <dd className="mono">{str(row.seq)}</dd>
+        </>
+      ) : null}
+      {dir ? null : (
+        <>
           <dt>Hash</dt>
           <dd className="mono" style={{ wordBreak: "break-all" }}>
             {str(row.hash_full) || str(row.hash)}
           </dd>
-        </dl>
-      </div>
+        </>
+      )}
+    </dl>
+  );
+}
+
+/**
+ * A video or a sound in the browser's player. It streams through the GUI
+ * (Range, so seeking works); a format the browser cannot play says so.
+ */
+function MediaPreview({ path, video = false }: { path: string; video?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return <p className="preview-note err-text">Browser ne može da pusti ovaj {video ? "video" : "zvuk"}; preuzmi ga.</p>;
+  }
+  const props = { src: contentUrl(path), controls: true, preload: "metadata", onError: () => setFailed(true) } as const;
+  return video ? (
+    <div className="preview-video">
+      <video {...props} playsInline data-testid="preview-video" />
     </div>
+  ) : (
+    <audio {...props} data-testid="preview-audio" />
   );
 }
 

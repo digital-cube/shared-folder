@@ -14,12 +14,15 @@ import {
   addMember,
   overview,
   reactivateMember,
+  removeFile,
+  renameFile,
   resetToken,
   restoreTrash,
   revokeMember,
   setRole,
 } from "../../shared/actions.js";
 import { BASE_META, isShfdPath, normalizeBase } from "../../shared/base.js";
+import { renameTarget } from "../../shared/rename.js";
 import { buildRegistry, type Ctx } from "./collections.js";
 import { toUdcError } from "./errors.js";
 import { FILE_OPS, LogFeed, summarize } from "./logs.js";
@@ -166,6 +169,32 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     else if (r.renamed) message = `Putanja je zauzeta drugim sadržajem, pa je fajl vraćen kao ${r.path}.`;
     else message = `Vraćeno u ${r.path}.`;
     return { path: r.path, status: r.status, renamed: !!r.renamed, message };
+  });
+  // Rename and remove are ops of the sync protocol, made with the admin's
+  // token like a device would: shfd checks the version (base_hash), sends a
+  // deleted file to the trash and tells every device.
+  const filesChanged = async (ctx: Ctx) => {
+    await changes.notify<Ctx>("files", { op: "update", ctx });
+    await changes.notify<Ctx>("trash", { op: "update", ctx });
+  };
+  dispatcher.register(renameFile, async ({ path, name, base_hash }, ctx: Ctx) => {
+    const to = renameTarget(path, name);
+    if (typeof to !== "string") throw new UdcError("validation_error", to.error);
+    if (to === path) return { path, status: "unchanged", message: "Ime je isto; ništa nije menjano." };
+    const r = await guard(ctx, () => shfd.op(ctx.token, ctx.shareId, { op: "move", path, new_path: to, base_hash }));
+    await filesChanged(ctx);
+    return { path: r.path, status: r.status, message: `Preimenovano u ${r.path.split("/").pop()}.` };
+  });
+  dispatcher.register(removeFile, async ({ path, kind, base_hash }, ctx: Ctx) => {
+    const req = kind === "dir" ? ({ op: "rmdir", path } as const) : ({ op: "delete", path, base_hash } as const);
+    const r = await guard(ctx, () => shfd.op(ctx.token, ctx.shareId, req));
+    await filesChanged(ctx);
+    const name = path.split("/").pop();
+    let message: string;
+    if (r.status === "unchanged") message = `${name} već ne postoji.`;
+    else if (kind === "dir") message = `Folder ${name} je obrisan.`;
+    else message = `${name} je obrisan; može se vratiti iz Trash-a.`;
+    return { path: r.path, status: r.status, message };
   });
   dispatcher.register(overview, async (_p, ctx: Ctx) => {
     const [st, health, members, lines] = await Promise.all([

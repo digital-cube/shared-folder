@@ -21,10 +21,13 @@ import {
 import { Pager, tableRenderer } from "@jsudc/react/table";
 import { LayoutGrid } from "lucide-react";
 import { useEffect, useRef, type CSSProperties, type KeyboardEvent } from "react";
+import type React from "react";
 import { useAppMaybe } from "./App";
 import { bytes } from "./format";
 import { gridOrder, usePendingThumbs } from "./liveThumbs";
 import { usePreview } from "./FilePreview";
+import { useFileMenu, type OpenMenu } from "./FileMenu";
+import { isMenuKey } from "./filemenu";
 import { Thumb } from "./Thumb";
 import {
   setThumbSize,
@@ -148,16 +151,20 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
   const up = dir && name === "..";
   const path = folder ? String(row[folder.options.path_field] ?? "") : String(row.path ?? "");
   const preview = usePreview();
-  const open = dir && folder ? () => folder.open(path) : !dir && preview ? () => preview(row) : undefined;
-  const onKeyDown = open
-    ? (e: KeyboardEvent) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          focusAfterOpen = dir;
-          open();
-        }
-      }
-    : undefined;
+  const menu = useFileMenu();
+  const openFolder = dir && folder ? () => folder.open(path) : undefined;
+  const open = openFolder ?? (!dir && preview ? () => preview(row) : undefined);
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (menu && !up && isMenuKey(e)) {
+      // The keyboard's menu: under the tile (no pointer), not the browser's.
+      e.preventDefault();
+      menu(row, { clientX: 0, clientY: 0, target: e.currentTarget }, { openFolder });
+    } else if (open && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      focusAfterOpen = dir;
+      open();
+    }
+  };
   const meta = up ? "Nazad" : dir ? "Folder" : [bytes(row.size as number | null), shortDate(row.mtime)].filter(Boolean).join(" · ");
   return (
     <div
@@ -170,6 +177,14 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
       data-path={path}
       onClick={open}
       onKeyDown={onKeyDown}
+      onContextMenu={
+        menu && !up
+          ? (e) => {
+              e.preventDefault();
+              menu(row, e, { openFolder });
+            }
+          : undefined
+      }
     >
       <Thumb row={row} px={px} />
       <span className="tile-name">{name}</span>
@@ -209,10 +224,38 @@ export const thumbsRenderer: RendererDefinition = {
   toolbar: ThumbSizeTool,
 };
 
-/** jsudc's table, plus the refresh while thumbnails are pending. */
+/**
+ * The context menu of a table row: the right-click (or the menu key) lands
+ * anywhere in a <tr data-row-id>, which names the row of props.data.
+ */
+export function tableContextMenu(props: RendererProps, menu: OpenMenu | null) {
+  if (!menu) return undefined;
+  return (e: React.MouseEvent | React.KeyboardEvent) => {
+    if ("key" in e && !isMenuKey(e)) return;
+    const tr = (e.target as HTMLElement).closest?.("tr[data-row-id]");
+    const id = tr?.getAttribute("data-row-id");
+    const row = id == null ? undefined : props.data.rows.find((r) => String(r.__meta.id) === id);
+    if (!row || String(row.name) === "..") return;
+    e.preventDefault();
+    const { folder } = props;
+    const dir = folder ? isFolderRow(row, folder) : row.kind === "dir";
+    const path = String(row.path ?? "");
+    // From the keyboard there is no pointer: the menu opens under the row.
+    const at = "key" in e ? { clientX: 0, clientY: 0, target: tr } : e;
+    menu(row, at, { openFolder: dir && folder ? () => folder.open(path) : undefined });
+  };
+}
+
+/** jsudc's table, plus the refresh while thumbnails are pending and the context menu. */
 const Table = tableRenderer.component;
 function LiveTable(props: RendererProps) {
   useLive(props);
-  return <Table {...props} />;
+  const menu = useFileMenu();
+  const onMenu = tableContextMenu(props, menu);
+  return (
+    <div className="ctx-scope" onContextMenu={onMenu} onKeyDown={onMenu}>
+      <Table {...props} />
+    </div>
+  );
 }
 export const filesTableRenderer: RendererDefinition = { ...tableRenderer, component: LiveTable };

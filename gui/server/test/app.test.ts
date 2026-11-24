@@ -125,6 +125,56 @@ describe("collections and actions", () => {
     expect(found.payload.rows.map((r: any) => r.name)).toEqual([".."]);
   });
 
+  it("renames a file in its folder through shfd's move op, with the version shown", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const plan = "bb".repeat(32);
+    const r = await udc(app, cookie, "shfd.file_rename", { path: "docs/plan.md", name: " plan-v2.md ", base_hash: plan });
+    expect(r.kind).toBe("udc.shfd.file_rename.ok");
+    expect(r.payload).toEqual({ path: "docs/plan-v2.md", status: "applied", message: "Preimenovano u plan-v2.md." });
+    expect(fake.ops.at(-1)).toEqual({ op: "move", path: "docs/plan.md", new_path: "docs/plan-v2.md", base_hash: plan });
+    const sub = await udc(app, cookie, "list", { collection: "files", filter: { field: "path", op: "eq", value: "docs" } });
+    expect(sub.payload.rows.map((r: any) => r.name)).toEqual(["..", "plan-v2.md"]);
+    // A version changed since, a taken name, a bad name: sentences, and no op for the bad name.
+    const stale = await udc(app, cookie, "shfd.file_rename", { path: "a.txt", name: "b.txt", base_hash: "00".repeat(32) });
+    expect(stale.kind).toBe("udc.shfd.file_rename.err");
+    expect(stale.payload.message).toMatch(/u međuvremenu izmenjen/);
+    const taken = await udc(app, cookie, "shfd.file_rename", { path: "a.txt", name: "docs", base_hash: "aa".repeat(32) });
+    expect(taken.payload.message).toBe("Na toj putanji već postoji drugi fajl.");
+    const n = fake.ops.length;
+    const bad = await udc(app, cookie, "shfd.file_rename", { path: "a.txt", name: "x/y", base_hash: "aa".repeat(32) });
+    expect(bad.kind).toBe("udc.shfd.file_rename.err");
+    expect(bad.payload.message).toMatch(/ne sme da sadrži/);
+    const same = await udc(app, cookie, "shfd.file_rename", { path: "a.txt", name: "a.txt", base_hash: "aa".repeat(32) });
+    expect(same.payload.status).toBe("unchanged");
+    expect(fake.ops.length).toBe(n);
+  });
+
+  it("removes a file (to the trash) and an empty folder; a full folder is refused", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const full = await udc(app, cookie, "shfd.file_remove", { path: "docs", kind: "dir", base_hash: "" });
+    expect(full.kind).toBe("udc.shfd.file_remove.err");
+    expect(full.payload.message).toBe("Folder nije prazan; prvo obriši fajlove u njemu.");
+    const f = await udc(app, cookie, "shfd.file_remove", { path: "docs/plan.md", kind: "file", base_hash: "bb".repeat(32) });
+    expect(f.payload).toEqual({ path: "docs/plan.md", status: "applied", message: "plan.md je obrisan; može se vratiti iz Trash-a." });
+    expect(fake.ops.at(-1)).toEqual({ op: "delete", path: "docs/plan.md", base_hash: "bb".repeat(32) });
+    const d = await udc(app, cookie, "shfd.file_remove", { path: "docs", kind: "dir", base_hash: "" });
+    expect(d.payload.message).toBe("Folder docs je obrisan.");
+    expect(fake.ops.at(-1)).toEqual({ op: "rmdir", path: "docs" });
+    const root = await udc(app, cookie, "list", { collection: "files" });
+    expect(root.payload.rows.map((r: any) => r.name)).toEqual(["a.txt"]);
+    const again = await udc(app, cookie, "shfd.file_remove", { path: "docs/plan.md", kind: "file", base_hash: "bb".repeat(32) });
+    expect(again.payload.message).toBe("plan.md već ne postoji.");
+  });
+
+  it("a member's session cannot rename or remove", async () => {
+    const { fake, app } = await setup();
+    const r = await udc(app, "", "shfd.file_remove", { path: "a.txt", kind: "file", base_hash: "aa".repeat(32) });
+    expect(r.kind).toMatch(/err$/);
+    expect(fake.ops).toEqual([]);
+  });
+
   it("logs come newest first from the buffer", async () => {
     const { fake, app } = await setup();
     fake.append({ ts: "2026-11-24T10:00:00Z", type: "event", seq: 1, member: "ana", op: "put", path: "a.txt" });

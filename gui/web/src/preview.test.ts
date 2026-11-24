@@ -12,6 +12,12 @@ describe("previewKind", () => {
     for (const n of ["test.txt", "README.md", "a.csv", "x.log", "c.json"]) expect(previewKind(n), n).toBe("text");
   });
 
+  it("video and audio a browser plays", () => {
+    for (const n of ["film.mp4", "a.M4V", "a.webm", "a.ogv", "IMG_1.MOV"]) expect(previewKind(n), n).toBe("video");
+    for (const n of ["pesma.mp3", "a.m4a", "a.aac", "a.wav", "a.ogg", "a.oga", "a.opus", "a.FLAC"]) expect(previewKind(n), n).toBe("audio");
+    for (const n of ["a.mkv", "a.avi", "a.wmv"]) expect(previewKind(n), n).toBe("none");
+  });
+
   it("everything a browser would run, and everything else, only downloads", () => {
     for (const n of ["noi.html", "a.htm", "logo.svg", "a.xml", "app.js", "a.docx", "a.zip", "a.heic", "Makefile", ".bashrc", "kraj."]) {
       expect(previewKind(n), n).toBe("none");

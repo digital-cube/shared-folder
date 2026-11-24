@@ -116,6 +116,21 @@ export interface RestoreResult {
   head?: number;
 }
 
+/** One delete, move or rmdir of the sync protocol (POST /ops). */
+export interface OpRequest {
+  op: "delete" | "move" | "rmdir";
+  path: string;
+  new_path?: string;
+  base_hash?: string;
+}
+
+/** What an op did: "applied", or "unchanged" when there was nothing to do. */
+export interface OpResult {
+  status: string;
+  path: string;
+  head: number;
+}
+
 export interface Stats {
   share_id: string;
   head: number;
@@ -225,6 +240,10 @@ export class ShfdClient {
   restore(token: string, share: string, id: number): Promise<RestoreResult> {
     return this.call("POST", `${this.share(share)}/admin/trash/${id}/restore`, token, {});
   }
+  /** An op as the signed-in member, the same call a device makes. */
+  op(token: string, share: string, req: OpRequest): Promise<OpResult> {
+    return this.call("POST", `${this.share(share)}/ops`, token, req);
+  }
 
   /**
    * One thumbnail, not read as JSON: the status (200, 304, 404, …), the
@@ -324,6 +343,16 @@ export function errorMessage(code: string, fallback?: string): string {
       return "To je fajl, a ne folder.";
     case "invalid_path":
       return "Neispravna putanja.";
+    case "stale_base":
+      return "Fajl je u međuvremenu izmenjen; osveži prikaz i pokušaj ponovo.";
+    case "case_conflict":
+      return "U folderu već postoji ime koje se razlikuje samo u velikim i malim slovima.";
+    case "is_dir":
+      return "To je folder; folder se ne može preimenovati, a briše se tek kad je prazan.";
+    case "dir_not_empty":
+      return "Folder nije prazan; prvo obriši fajlove u njemu.";
+    case "parent_not_dir":
+      return "Na putanji je fajl, a ne folder.";
     case "file_changed":
       return "Fajl na disku nije verzija koju baza beleži (nedostaje ili je izmenjen); pokreni shfd verify.";
     case "unreachable":

@@ -473,8 +473,9 @@ ostale admin rute; ne osvežava `last_seen_at`). Pravila:
   `Cache-Control: private, no-cache` (browser pita ponovo, dobija 304).
 - **Bezbednost.** Uvek `X-Content-Type-Options: nosniff` i
   `Content-Security-Policy: sandbox`. Tip je iz bele liste po ekstenziji:
-  `jpg/jpeg/png/gif/webp` (slike), `pdf` i `txt/md/csv/log/json` (`md`,
-  `csv` i `log` kao `text/plain; charset=utf-8`) idu sa
+  `jpg/jpeg/png/gif/webp` (slike), `pdf`, `txt/md/csv/log/json` (`md`,
+  `csv` i `log` kao `text/plain; charset=utf-8`), video
+  `mp4/m4v/webm/ogv/mov` i zvuk `mp3/m4a/aac/wav/ogg/oga/opus/flac` idu sa
   `Content-Disposition: inline`; **sve ostalo**, i `html`, `htm`, `svg`,
   `xml`, `js`, ide kao `application/octet-stream` sa `attachment`.
   `download=1` uvek daje `attachment`. Ime je po RFC 6266/5987:

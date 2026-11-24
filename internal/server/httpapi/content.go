@@ -8,7 +8,8 @@ package httpapi
 // Served on the public API (token of an admin) and on the local admin
 // socket. Only a file of the files table is served, and only when its
 // content on disk has the hash the database records (else 409
-// file_changed). A few harmless types are shown inline; everything else,
+// file_changed). A few harmless types (images, PDF, text, audio and
+// video) are shown inline; everything else,
 // and anything with download=1, is an attachment.
 
 import (
@@ -44,6 +45,21 @@ var inlineTypes = map[string]string{
 	"csv":  "text/plain; charset=utf-8",
 	"log":  "text/plain; charset=utf-8",
 	"json": "application/json",
+	// Audio and video play in the GUI's <audio>/<video>; a media element
+	// runs no script, and Range (ServeContent) lets it seek.
+	"mp4":  "video/mp4",
+	"m4v":  "video/mp4",
+	"webm": "video/webm",
+	"ogv":  "video/ogg",
+	"mov":  "video/quicktime",
+	"mp3":  "audio/mpeg",
+	"m4a":  "audio/mp4",
+	"aac":  "audio/aac",
+	"wav":  "audio/wav",
+	"ogg":  "audio/ogg",
+	"oga":  "audio/ogg",
+	"opus": "audio/ogg",
+	"flac": "audio/flac",
 }
 
 // InlineType returns the Content-Type a file of this name is shown inline

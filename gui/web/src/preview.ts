@@ -1,11 +1,11 @@
 // What the preview of a file shows, decided by its extension the same way
 // shfd decides what it serves inline (internal/server/httpapi/content.go):
-// images, PDF and plain text; everything else only downloads. Pure
+// images, PDF, plain text, audio and video; everything else only downloads. Pure
 // functions, the component is FilePreview.tsx.
 
 import { guiUrl } from "./api";
 
-export type PreviewKind = "image" | "text" | "pdf" | "none";
+export type PreviewKind = "image" | "text" | "pdf" | "video" | "audio" | "none";
 
 const KINDS: Record<string, PreviewKind> = {
   jpg: "image",
@@ -19,6 +19,20 @@ const KINDS: Record<string, PreviewKind> = {
   csv: "text",
   log: "text",
   json: "text",
+  // What a browser's <video>/<audio> plays; mkv, avi, wmv only download.
+  mp4: "video",
+  m4v: "video",
+  webm: "video",
+  ogv: "video",
+  mov: "video",
+  mp3: "audio",
+  m4a: "audio",
+  aac: "audio",
+  wav: "audio",
+  ogg: "audio",
+  oga: "audio",
+  opus: "audio",
+  flac: "audio",
 };
 
 /** The preview of a file of this name; a folder has none. */
