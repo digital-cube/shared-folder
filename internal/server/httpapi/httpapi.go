@@ -1,7 +1,9 @@
 // Package httpapi is the control API of shfd over HTTP(S) and JSON
-// (docs/specifikacija.md, section 4). Every route is authorized with
-// "Authorization: Bearer <member token>" of the folder in the URL.
+// (docs/specifikacija.md, section 4). Every route except the health check
+// is authorized with "Authorization: Bearer <member token>" of the folder
+// in the URL.
 //
+//	GET  /healthz                      (and GET /; no token, see health)
 //	GET  /v1/shares/{id}/changes?since=N&limit=M
 //	POST /v1/shares/{id}/uploads
 //	POST /v1/shares/{id}/uploads/{upload_id}/commit
@@ -27,6 +29,7 @@ import (
 
 	"github.com/digital-cube/shared-folder/internal/authkeys"
 	"github.com/digital-cube/shared-folder/internal/server"
+	"github.com/digital-cube/shared-folder/internal/version"
 )
 
 const (
@@ -98,6 +101,10 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	mux.Handle("PUT /v1/shares/{id}/ssh-key", a.auth(a.setSSHKey))
 	mux.HandleFunc("GET /v1/shares/{id}/ws", a.ws)
 	registerAdmin(mux, a.admin)
+	// Without a method in the pattern: the catch-all "/" below matches
+	// every method, so the mux would answer 404 instead of 405.
+	mux.HandleFunc("/healthz", a.health)
+	mux.HandleFunc("/{$}", a.health)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, server.CodeNotFound, "no such endpoint")
 	})
@@ -111,6 +118,40 @@ type api struct {
 	ping, memberCheck time.Duration
 	ctx               context.Context // canceled by Handler.Close
 	cancel            context.CancelFunc
+}
+
+// HealthTimeout bounds the registry check of GET /healthz.
+const HealthTimeout = 2 * time.Second
+
+// Health is the body of GET /healthz (and GET /). It says on purpose
+// nothing beyond the version: no folders, members, data-root or SSH
+// endpoint, and no detail of a failure.
+type Health struct {
+	Service string `json:"service"` // always "shfd"
+	Version string `json:"version"` // internal/version.Version
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+}
+
+// health answers without a token: 200 when registry.db responds within
+// HealthTimeout, 503 otherwise. Only GET and HEAD are allowed.
+func (a *api) health(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	body := Health{Service: "shfd", Version: version.Version, OK: true}
+	ctx, cancel := context.WithTimeout(r.Context(), HealthTimeout)
+	defer cancel()
+	if err := a.srv.Ping(ctx); err != nil {
+		a.log.Warn("health check: registry unavailable", "err", err)
+		body.OK, body.Error = false, "registry unavailable"
+		writeJSON(w, http.StatusServiceUnavailable, body)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error)

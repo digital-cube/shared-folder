@@ -70,6 +70,8 @@ Admin komande su bezbedne dok `shfd serve` radi: idu kroz njegov lokalni
 socket `<data-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
 primeri: [docs/admin.md](docs/admin.md).
 
+`GET /healthz` (i `GET /`) bez tokena vraća `{"service":"shfd","version":…,"ok":true}`, a 503 kad registry baza ne odgovara.
+
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
 reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
 Za prenos fajlova: sistemski korisnik, `sshd` i `SHFD_AUTHORIZED_KEYS` su

@@ -16,6 +16,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"errors"
@@ -137,6 +138,13 @@ func (s *Server) Root() string { return s.root }
 
 // SSH is the sshd endpoint advertised to clients (Options.SSH).
 func (s *Server) SSH() SSHEndpoint { return s.opts.SSH }
+
+// Ping checks that registry.db answers a trivial query; the health check
+// of the HTTP API calls it with a short deadline.
+func (s *Server) Ping(ctx context.Context) error {
+	var one int
+	return s.reg.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+}
 
 // Close closes the registry and every open folder.
 func (s *Server) Close() error {

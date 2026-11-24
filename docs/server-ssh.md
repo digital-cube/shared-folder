@@ -137,6 +137,12 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
 ## 6. Provera
 
 ```sh
+# shfd radi i na kojoj je verziji (bez tokena; isto daje i GET /)
+curl https://shf.example.org/healthz
+# {"service":"shfd","version":"v1.2.3","ok":true}
+# 503 i {"service":"shfd","version":"v1.2.3","ok":false,"error":"registry unavailable"}
+# kada registry.db ne odgovori za 2 s
+
 # komanda koja nije rsync se odbija
 ssh -i id_ed25519 shfd@shf.example.org id
 # shfd rsync-gate: denied (not_rsync): only rsync is allowed on this key
