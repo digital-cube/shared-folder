@@ -70,6 +70,10 @@ Admin komande su bezbedne dok `shfd serve` radi: idu kroz njegov lokalni
 socket `<data-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
 primeri: [docs/admin.md](docs/admin.md).
 
+Web GUI (prijava admin tokenom, članovi i tokeni, logovi uživo, fajlovi i
+trash, uputstvo za instalaciju) je poseban servis **shfd-gui** na
+`https://<host>/gui`: [docs/gui.md](docs/gui.md), build `make gui`.
+
 `GET /healthz` (i `GET /`) bez tokena vraća `{"service":"shfd","version":…,"ok":true}`, a 503 kad registry baza ne odgovara.
 
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
