@@ -16,3 +16,7 @@ go.work.sum
 .vscode/
 *.swp
 .DS_Store
+
+# deploy targets (deploy/deploy.sh): only the example is in the repository
+/deploy/targets/*.env
+!/deploy/targets/example.env

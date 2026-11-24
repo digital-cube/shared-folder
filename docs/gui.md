@@ -218,7 +218,8 @@ Strana bez prijave, dve kartice:
 - nginx: `gui/deploy/nginx-gui-root.conf` (ceo vhost, GUI na korenu) ili
   `gui/deploy/nginx-gui.conf` (snippet, GUI pod `/gui`); vidi
   [Instalacija na server](#instalacija-na-server).
-- Deploy je isti kao kod shfd: `versions/<sha>`, symlink `current`, restart.
+- Deploy je isti kao kod shfd: `versions/<sha>`, symlink `current`, restart;
+  posle prvog postavljanja to radi `make deploy` ([deploy.md](deploy.md)).
 
 ## Kriterijumi za prihvatanje
 

@@ -4,6 +4,8 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev
 LDFLAGS  := -X github.com/digital-cube/shared-folder/internal/version.Version=$(VERSION)
 GOFMT    ?= $(shell $(GO) env GOROOT 2>/dev/null)/bin/gofmt
 GOLANGCI := $(shell command -v golangci-lint 2>/dev/null)
+SHELLCHECK ?= $(shell command -v shellcheck 2>/dev/null)
+SHELL_SCRIPTS := deploy/deploy.sh deploy/remote.sh deploy/test/deploy_test.sh deploy/test/fake-systemctl
 
 .PHONY: all build test lint fmt check clean e2e
 
@@ -17,7 +19,7 @@ build:
 test:
 	$(GO) test ./...
 
-## lint: go vet + gofmt (and golangci-lint when it is installed)
+## lint: go vet + gofmt (and golangci-lint and shellcheck when installed)
 lint:
 	$(GO) vet ./...
 	$(GO) vet -tags e2e ./e2e/
@@ -26,6 +28,11 @@ ifneq ($(GOLANGCI),)
 	$(GOLANGCI) run ./...
 else
 	@echo "golangci-lint not found, skipped (go vet + gofmt ran)"
+endif
+ifneq ($(SHELLCHECK),)
+	$(SHELLCHECK) $(SHELL_SCRIPTS)
+else
+	@echo "shellcheck not found, deploy scripts not checked"
 endif
 
 ## fmt: rewrite sources with gofmt
@@ -72,3 +79,17 @@ gui:
 ## gui-test: unit tests of shfd-gui
 gui-test:
 	cd gui && npm ci --no-audit --no-fund && npm test
+
+## deploy: build TARGET's ref and put it on the server (deploy/deploy.sh,
+##         docs/deploy.md): make deploy TARGET=<name> [REF=<git-ref>]
+##         [DEPLOY_FLAGS="--dry-run --skip-tests --only shfd,gui,downloads"]
+.PHONY: deploy deploy-test
+deploy:
+	@test -n "$(TARGET)" || { echo "usage: make deploy TARGET=<name> (deploy/targets/<name>.env)"; exit 2; }
+	GO=$(GO) deploy/deploy.sh $(TARGET) $(if $(REF),--ref $(REF)) $(DEPLOY_FLAGS)
+
+## deploy-test: deploy.sh against this machine as the server (SSH_TARGET=local,
+##              real shfd and shfd-gui, fake systemctl): dry run, failed deploy
+##              with rollback, deploy, cleanup. Builds REF twice (default HEAD)
+deploy-test:
+	GO=$(GO) deploy/test/deploy_test.sh $(REF)

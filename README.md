@@ -109,6 +109,13 @@ reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
 Za prenos fajlova: sistemski korisnik, `sshd` i `SHFD_AUTHORIZED_KEYS` su
 opisani u [docs/server-ssh.md](docs/server-ssh.md).
 
+Nova verzija na server (posle prvog, ručnog postavljanja) ide jednom komandom
+sa mašine za build: `make deploy TARGET=<ime>` (`deploy/deploy.sh`) build-uje
+`shfd`, `shfd-gui` i pakete iz `git archive` jednog commita, postavlja ih u
+`versions/<sha>`, menja `current`, restartuje servise, proverava `/healthz` i
+sama vraća prethodne verzije ako provera ne prođe:
+[docs/deploy.md](docs/deploy.md).
+
 ## Klijent
 
 Instalacija `shf` (gotov paket ili build): [docs/install.md](docs/install.md);
@@ -360,6 +367,7 @@ cmd/shfd/        server
 cmd/shf/         klijent
 internal/        zajednički kod
 docs/            specifikacija, instalacija, postavljanje servera, admin komande
+deploy/          deploy.sh: nova verzija na server (docs/deploy.md)
 ```
 
 ## Instalacija

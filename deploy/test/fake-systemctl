@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# deploy/test/fake-systemctl — just enough of systemctl for deploy/remote.sh,
+# for deploy_test.sh: the units shfd, shfd-thumbs and shfd-gui are plain
+# background processes of the real binaries under $FAKE_ROOT/opt/…/current.
+#
+#   cat UNIT | show --property=Environment --value UNIT
+#   restart|start|stop UNIT… | is-active UNIT
+#
+# Environment: FAKE_ROOT (the "server"), FAKE_SHFD_PORT, FAKE_GUI_PORT
+# (deploy_test.sh puts them into SYSTEMCTL="env … fake-systemctl", so they
+# survive ssh). When $FAKE_ROOT/fail-version names shfd's current version,
+# shfd "crashes" at start (it is not started; restart still succeeds, as
+# with systemd's Type=simple), which is what the rollback test needs.
+
+set -euo pipefail
+: "${FAKE_ROOT:?}" "${FAKE_SHFD_PORT:?}" "${FAKE_GUI_PORT:?}"
+R=$FAKE_ROOT
+mkdir -p "$R/run" "$R/log"
+
+known() { [[ $1 == shfd || $1 == shfd-thumbs || $1 == shfd-gui ]] || { echo "Unit $1.service could not be found." >&2; exit 1; }; }
+
+environment() {
+	case $1 in
+	shfd) echo "SHFD_DATA_ROOT=$R/data SHFD_DB_ROOT=$R/db SHFD_DOWNLOADS=$R/downloads" ;;
+	shfd-thumbs) echo "SHFD_DATA_ROOT=$R/data SHFD_DB_ROOT=$R/db" ;;
+	shfd-gui) echo "SHFD_URL=http://127.0.0.1:$FAKE_SHFD_PORT SHFD_GUI_LISTEN=127.0.0.1:$FAKE_GUI_PORT SHFD_GUI_BASE=/gui" ;;
+	esac
+}
+
+execstart() {
+	case $1 in
+	shfd) echo "$R/opt/shfd/current/shfd serve --listen 127.0.0.1:$FAKE_SHFD_PORT" ;;
+	shfd-thumbs) echo "$R/opt/shfd/current/shfd thumbs --workers 1" ;;
+	shfd-gui) echo "$R/opt/shfd-gui/current/bin/shfd-gui" ;;
+	esac
+}
+
+running() { [[ -f $R/run/$1.pid ]] && kill -0 "$(cat "$R/run/$1.pid")" 2>/dev/null; }
+
+stop() {
+	running "$1" || { rm -f "$R/run/$1.pid"; return 0; }
+	local pid i
+	pid=$(cat "$R/run/$1.pid")
+	kill "$pid" 2>/dev/null || true
+	for ((i = 0; i < 50; i++)); do
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	kill -9 "$pid" 2>/dev/null || true
+	rm -f "$R/run/$1.pid"
+}
+
+start() {
+	running "$1" && return 0
+	local v env cmd
+	v=$(readlink "$R/opt/shfd/current")
+	if [[ $1 == shfd && -f $R/fail-version && ${v##*/} == "$(cat "$R/fail-version")" ]]; then
+		echo "$(date -u +%FT%TZ) fake-systemctl: shfd ${v##*/} crashed at start (fail-version)" >>"$R/log/$1.log"
+		return 0
+	fi
+	read -r -a env <<<"$(environment "$1")"
+	read -r -a cmd <<<"$(execstart "$1")"
+	setsid env "${env[@]}" "${cmd[@]}" >>"$R/log/$1.log" 2>&1 </dev/null &
+	echo $! >"$R/run/$1.pid"
+}
+
+op=${1:-}
+shift || true
+case $op in
+cat)
+	known "$1"
+	printf '# /etc/systemd/system/%s.service (fake)\n[Service]\n' "$1"
+	for kv in $(environment "$1"); do echo "Environment=$kv"; done
+	echo "ExecStart=$(execstart "$1")"
+	;;
+show)
+	unit=${*: -1}
+	known "$unit"
+	environment "$unit"
+	;;
+restart) for u in "$@"; do known "$u"; stop "$u"; start "$u"; done ;;
+start) for u in "$@"; do known "$u"; start "$u"; done ;;
+stop) for u in "$@"; do known "$u"; stop "$u"; done ;;
+is-active)
+	known "$1"
+	if running "$1"; then echo active; else echo inactive; exit 3; fi
+	;;
+*) echo "fake-systemctl: unsupported: $op $*" >&2; exit 1 ;;
+esac
