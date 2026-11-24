@@ -1,12 +1,23 @@
-// Formatting for the Serbian (Latin) UI.
+// Formatting in the UI's language (lang.ts): Serbian (Latin) or English.
 
-const nf = new Intl.NumberFormat("sr-Latn-RS");
+import { intlLocale, tr } from "./lang";
 
-export function num(n: number | null | undefined): string {
-  return n === null || n === undefined ? "—" : nf.format(n);
+const formats = new Map<string, Intl.NumberFormat>();
+function nf(digits?: number): Intl.NumberFormat {
+  const key = `${intlLocale()}/${digits ?? ""}`;
+  let f = formats.get(key);
+  if (!f) {
+    f = new Intl.NumberFormat(intlLocale(), digits === undefined ? {} : { maximumFractionDigits: digits, minimumFractionDigits: digits });
+    formats.set(key, f);
+  }
+  return f;
 }
 
-/** 12,4 GB */
+export function num(n: number | null | undefined): string {
+  return n === null || n === undefined ? "—" : nf().format(n);
+}
+
+/** 12,4 GB (12.4 GB in English) */
 export function bytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -17,25 +28,26 @@ export function bytes(n: number | null | undefined): string {
     i++;
   }
   const digits = i === 0 || v >= 100 ? 0 : 1;
-  return `${new Intl.NumberFormat("sr-Latn-RS", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(v)} ${units[i]}`;
+  return `${nf(digits).format(v)} ${units[i]}`;
 }
 
-/** "pre 12 s", "pre 3 min", "pre 2 dana"; "—" for none. */
+/** "pre 12 s", "pre 3 min", "pre 2 dana" ("12 s ago", "3 min ago", "2 days ago"); "—" for none. */
 export function ago(ts: string | null | undefined, now = Date.now()): string {
   if (!ts) return "—";
   const t = Date.parse(ts);
   if (Number.isNaN(t)) return "—";
   const s = Math.max(0, Math.round((now - t) / 1000));
-  if (s < 60) return `pre ${s} s`;
+  if (s < 60) return tr(`pre ${s} s`, `${s} s ago`);
   const m = Math.round(s / 60);
-  if (m < 60) return `pre ${m} min`;
+  if (m < 60) return tr(`pre ${m} min`, `${m} min ago`);
   const h = Math.round(m / 60);
-  if (h < 24) return `pre ${h} h`;
+  if (h < 24) return tr(`pre ${h} h`, `${h} h ago`);
   const d = Math.round(h / 24);
-  if (d < 7) return d === 1 ? "pre 1 dan" : `pre ${d} dana`;
+  if (d < 7) return d === 1 ? tr("pre 1 dan", "1 day ago") : tr(`pre ${d} dana`, `${d} days ago`);
   const w = Math.round(d / 7);
-  if (d < 60) return `pre ${w} ned.`;
-  return `pre ${Math.round(d / 30)} mes.`;
+  if (d < 60) return tr(`pre ${w} ned.`, w === 1 ? "1 week ago" : `${w} weeks ago`);
+  const mo = Math.round(d / 30);
+  return tr(`pre ${mo} mes.`, mo === 1 ? "1 month ago" : `${mo} months ago`);
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

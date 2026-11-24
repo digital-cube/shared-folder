@@ -7,8 +7,35 @@
   --g-warn: #b45309; --g-warn-soft: #fdf3e3;
   --g-err: #b91c1c; --g-err-soft: #fdecec;
   --g-info: #0369a1; --g-info-soft: #e6f3fa;
+  --g-text-soft: #374151; --g-badge-text: #4b5563; --g-avatar-bg: #dfe3ff;
+  --g-on-inverse: #ffffff; --g-inverse-faint: #c7cbd3;
+  --g-reveal-bg: #fffaf0; --g-reveal-line: #f3d9a6; --g-reveal-code-bg: #ffffff; --g-reveal-code-line: #f0dcb6;
+  --g-flash: #eef8f1; --g-callout-text: #0c4a6e; --g-ok-text: #14532d; --g-err-text: #7f1d1d;
+  --g-violet: #7c3aed; --g-orange: #c2410c;
+  --g-shadow: rgba(17,24,39,.06); --g-shadow-strong: rgba(17,24,39,.18); --g-backdrop: rgba(17,24,39,.35);
   --g-radius: 10px;
   --g-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+/* The dark theme: the dark class on <html> (jsudc's ThemeProvider, and the
+   script in index.html before the first paint). The surfaces are jsudc's own
+   dark ones, so the tables sit on the page without a seam. */
+.dark {
+  color-scheme: dark;
+  --g-bg: oklch(19.5% .013 265); --g-bg-soft: oklch(22.5% .014 265); --g-bg-sunk: oklch(16% .012 265);
+  --g-line: oklch(28.5% .016 265); --g-line-strong: oklch(36% .018 265);
+  --g-text: oklch(94% .008 260); --g-muted: oklch(70% .02 262); --g-faint: oklch(56% .02 262);
+  --g-brand: #5b6cf0; --g-brand-soft: oklch(30% .07 268); --g-brand-text: #b4bdff;
+  --g-ok: #4ade80; --g-ok-soft: rgba(34,197,94,.15);
+  --g-warn: #fbbf24; --g-warn-soft: rgba(245,158,11,.15);
+  --g-err: #f87171; --g-err-soft: rgba(239,68,68,.16);
+  --g-info: #38bdf8; --g-info-soft: rgba(14,165,233,.15);
+  --g-text-soft: oklch(86% .01 260); --g-badge-text: oklch(80% .012 260); --g-avatar-bg: oklch(34% .08 268);
+  --g-on-inverse: oklch(19.5% .013 265); --g-inverse-faint: oklch(42% .016 265);
+  --g-reveal-bg: rgba(245,158,11,.08); --g-reveal-line: rgba(245,158,11,.35); --g-reveal-code-bg: oklch(16% .012 265); --g-reveal-code-line: rgba(245,158,11,.3);
+  --g-flash: rgba(34,197,94,.18); --g-callout-text: #bae6fd; --g-ok-text: #bbf7d0; --g-err-text: #fecaca;
+  --g-violet: #a78bfa; --g-orange: #fb923c;
+  --g-shadow: rgba(0,0,0,.35); --g-shadow-strong: rgba(0,0,0,.5); --g-backdrop: rgba(0,0,0,.6);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -20,12 +47,12 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 
 /* ---------- login ---------- */
 #login { min-height: 100%; display: grid; place-items: center; background: radial-gradient(1200px 500px at 50% -10%, var(--g-brand-soft), transparent), var(--g-bg-soft); }
-.login-card { width: 380px; background: var(--g-bg); border: 1px solid var(--g-line); border-radius: 14px; padding: 32px; box-shadow: 0 10px 30px rgba(17,24,39,.06); }
+.login-card { width: 380px; background: var(--g-bg); border: 1px solid var(--g-line); border-radius: 14px; padding: 32px; box-shadow: 0 10px 30px var(--g-shadow); }
 .login-card h1 { font-size: 20px; margin: 18px 0 4px; }
 .login-card p.sub { color: var(--g-muted); margin: 0 0 22px; }
 .field { display: grid; gap: 6px; margin-bottom: 14px; }
 .field label { font-size: 13px; font-weight: 500; }
-.input { height: 38px; border: 1px solid var(--g-line-strong); border-radius: 8px; padding: 0 12px; font: inherit; width: 100%; background: var(--g-bg); }
+.input { height: 38px; border: 1px solid var(--g-line-strong); border-radius: 8px; padding: 0 12px; font: inherit; width: 100%; background: var(--g-bg); color: var(--g-text); }
 .input:focus { outline: 2px solid var(--g-brand-soft); border-color: var(--g-brand); }
 .hint { font-size: 12px; color: var(--g-muted); }
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--g-line-strong); background: var(--g-bg); color: var(--g-text); font-weight: 500; white-space: nowrap; }
@@ -50,13 +77,13 @@ header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px;
 header.top .spacer { flex: 1; }
 .pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--g-line); border-radius: 8px; background: var(--g-bg-soft); font-weight: 500; }
 .pill .k { color: var(--g-muted); font-weight: 400; }
-.avatar { width: 28px; height: 28px; border-radius: 50%; background: #dfe3ff; color: var(--g-brand-text); display: grid; place-items: center; font-weight: 600; font-size: 12px; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--g-avatar-bg); color: var(--g-brand-text); display: grid; place-items: center; font-weight: 600; font-size: 12px; }
 .user { display: flex; align-items: center; gap: 8px; }
 .user .role { font-size: 11px; color: var(--g-brand-text); background: var(--g-brand-soft); padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 
 nav.side { border-right: 1px solid var(--g-line); padding: 14px 12px; display: flex; flex-direction: column; gap: 2px; background: var(--g-bg); }
 nav.side .sec { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--g-faint); padding: 14px 10px 6px; }
-nav.side a { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; color: #374151; font-weight: 500; }
+nav.side a { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; color: var(--g-text-soft); font-weight: 500; white-space: nowrap; }
 nav.side a:hover { background: var(--g-bg-soft); }
 nav.side a.on { background: var(--g-brand-soft); color: var(--g-brand-text); }
 nav.side a .badge { margin-left: auto; }
@@ -74,16 +101,16 @@ main { overflow: auto; background: var(--g-bg); min-width: 0; }
 .toolbar .spacer { flex: 1; }
 .search { position: relative; }
 .search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--g-faint); }
-.search input { height: 32px; width: 280px; border: 1px solid var(--g-line-strong); border-radius: 8px; padding: 0 10px 0 32px; font: inherit; }
-.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--g-line-strong); background: var(--g-bg); color: #374151; font-size: 12.5px; font-weight: 500; }
-.chip.on { background: var(--g-text); color: #fff; border-color: var(--g-text); }
+.search input { height: 32px; width: 280px; border: 1px solid var(--g-line-strong); border-radius: 8px; padding: 0 10px 0 32px; font: inherit; background: var(--g-bg); color: var(--g-text); }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--g-line-strong); background: var(--g-bg); color: var(--g-text-soft); font-size: 12.5px; font-weight: 500; }
+.chip.on { background: var(--g-text); color: var(--g-on-inverse); border-color: var(--g-text); }
 .chip .n { color: var(--g-faint); font-weight: 400; }
-.chip.on .n { color: #c7cbd3; }
+.chip.on .n { color: var(--g-inverse-faint); }
 
 .muted { color: var(--g-muted); }
 .faint { color: var(--g-faint); }
 
-.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--g-bg-sunk); color: #4b5563; }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--g-bg-sunk); color: var(--g-badge-text); }
 .badge.ok { background: var(--g-ok-soft); color: var(--g-ok); }
 .badge.warn { background: var(--g-warn-soft); color: var(--g-warn); }
 .badge.err { background: var(--g-err-soft); color: var(--g-err); }
@@ -106,14 +133,14 @@ main { overflow: auto; background: var(--g-bg); min-width: 0; }
 .stat .s { font-size: 12px; color: var(--g-muted); }
 
 /* token reveal */
-.reveal { display: flex; gap: 14px; align-items: flex-start; border: 1px solid #f3d9a6; background: #fffaf0; border-radius: var(--g-radius); padding: 14px 16px; margin-bottom: 16px; }
+.reveal { display: flex; gap: 14px; align-items: flex-start; border: 1px solid var(--g-reveal-line); background: var(--g-reveal-bg); border-radius: var(--g-radius); padding: 14px 16px; margin-bottom: 16px; }
 .reveal .ic { color: var(--g-warn); margin-top: 2px; }
 .reveal b { display: block; }
 .reveal .tok { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.reveal .tok code { background: #fff; border: 1px solid #f0dcb6; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+.reveal .tok code { background: var(--g-reveal-code-bg); border: 1px solid var(--g-reveal-code-line); padding: 6px 10px; border-radius: 6px; font-size: 13px; }
 
 /* logs */
-@keyframes flash { from { background: #eef8f1; } to { background: transparent; } }
+@keyframes flash { from { background: var(--g-flash); } to { background: transparent; } }
 .op { font-family: var(--g-mono); font-size: 12px; font-weight: 600; }
 .split { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
 .side-card h4 { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--g-line); font-size: 13px; }
@@ -142,11 +169,11 @@ main { overflow: auto; background: var(--g-bg); min-width: 0; }
 .step { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 14px; } /* minmax: a long command scrolls in its <pre> instead of widening the page */
 .step .num { width: 30px; height: 30px; border-radius: 50%; background: var(--g-brand-soft); color: var(--g-brand-text); display: grid; place-items: center; font-weight: 700; }
 .step h3 { margin: 4px 0 4px; font-size: 15px; }
-.step p { margin: 0 0 8px; color: #374151; }
+.step p { margin: 0 0 8px; color: var(--g-text-soft); }
 pre { margin: 0; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; font: 12.5px/1.6 var(--g-mono); overflow: auto; position: relative; }
 pre .c { color: #64748b; }
 pre .copy { position: absolute; top: 8px; right: 8px; height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #cbd5e1; font-size: 11.5px; }
 .os-tabs { margin-bottom: 8px; }
-.callout { display: flex; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--g-info-soft); color: #0c4a6e; font-size: 13px; }
+.callout { display: flex; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--g-info-soft); color: var(--g-callout-text); font-size: 13px; }
 
 .page { padding: 24px 28px 40px; max-width: 1400px; }

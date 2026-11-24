@@ -1,6 +1,8 @@
 // The shfd HTTP API, always called with the token of the signed-in member,
 // so shfd itself decides what that member may do (401 / 403).
 
+import { tr, type Lang } from "./lang.js";
+
 export interface Whoami {
   share_id: string;
   share_name: string;
@@ -316,48 +318,51 @@ export class ShfdClient {
   }
 }
 
-/** Serbian sentences for shfd's error codes; the UI never shows a bare code. */
-export function errorMessage(code: string, fallback?: string): string {
-  switch (code) {
-    case "member_exists":
-      return "Član sa tim imenom već postoji.";
-    case "last_admin":
-      return "To je poslednji aktivni admin foldera. Prvo dodeli ulogu admin nekom drugom.";
-    case "unknown_member":
-      return "Taj član ne postoji ili je opozvan.";
-    case "invalid_request":
-      return "Neispravan zahtev" + (fallback ? `: ${fallback}` : ".");
-    case "unauthorized":
-      return "Token nije ispravan ili je opozvan.";
-    case "forbidden":
-      return "Samo admin foldera može da koristi GUI.";
-    case "unknown_trash":
-      return "Taj unos više nije u trash-u.";
-    case "trash_damaged":
-      return "Fajl ovog unosa nedostaje ili je izmenjen; pokreni shfd verify.";
-    case "dest_exists":
-      return "Na toj putanji već postoji drugi fajl.";
-    case "not_found":
-      return "Ne postoji.";
-    case "kind_mismatch":
-      return "To je fajl, a ne folder.";
-    case "invalid_path":
-      return "Neispravna putanja.";
-    case "stale_base":
-      return "Fajl je u međuvremenu izmenjen; osveži prikaz i pokušaj ponovo.";
-    case "case_conflict":
-      return "U folderu već postoji ime koje se razlikuje samo u velikim i malim slovima.";
-    case "is_dir":
-      return "To je folder; folder se ne može preimenovati, a briše se tek kad je prazan.";
-    case "dir_not_empty":
-      return "Folder nije prazan; prvo obriši fajlove u njemu.";
-    case "parent_not_dir":
-      return "Na putanji je fajl, a ne folder.";
-    case "file_changed":
-      return "Fajl na disku nije verzija koju baza beleži (nedostaje ili je izmenjen); pokreni shfd verify.";
-    case "unreachable":
-      return "shfd ne odgovara.";
-    default:
-      return fallback ? `Greška: ${fallback}` : "Nešto nije uspelo.";
-  }
+/** Sentences for shfd's error codes, Serbian and English; the UI never shows a bare code. */
+const ERROR_MESSAGES: Record<string, [sr: string, en: string]> = {
+  member_exists: ["Član sa tim imenom već postoji.", "A member with that name already exists."],
+  last_admin: [
+    "To je poslednji aktivni admin foldera. Prvo dodeli ulogu admin nekom drugom.",
+    "That is the folder's last active admin. Make someone else an admin first.",
+  ],
+  unknown_member: ["Taj član ne postoji ili je opozvan.", "That member does not exist or has been revoked."],
+  unauthorized: ["Token nije ispravan ili je opozvan.", "The token is not valid or has been revoked."],
+  forbidden: ["Samo admin foldera može da koristi GUI.", "Only an admin of the folder can use the GUI."],
+  unknown_trash: ["Taj unos više nije u trash-u.", "That entry is no longer in the trash."],
+  trash_damaged: [
+    "Fajl ovog unosa nedostaje ili je izmenjen; pokreni shfd verify.",
+    "The file of this entry is missing or has been changed; run shfd verify.",
+  ],
+  dest_exists: ["Na toj putanji već postoji drugi fajl.", "Another file already exists at that path."],
+  not_found: ["Ne postoji.", "Does not exist."],
+  kind_mismatch: ["To je fajl, a ne folder.", "That is a file, not a folder."],
+  invalid_path: ["Neispravna putanja.", "Invalid path."],
+  stale_base: [
+    "Fajl je u međuvremenu izmenjen; osveži prikaz i pokušaj ponovo.",
+    "The file has changed in the meantime; refresh the view and try again.",
+  ],
+  case_conflict: [
+    "U folderu već postoji ime koje se razlikuje samo u velikim i malim slovima.",
+    "The folder already has a name that differs only in upper and lower case.",
+  ],
+  is_dir: [
+    "To je folder; folder se ne može preimenovati, a briše se tek kad je prazan.",
+    "That is a folder; a folder cannot be renamed, and is removed only when it is empty.",
+  ],
+  dir_not_empty: ["Folder nije prazan; prvo obriši fajlove u njemu.", "The folder is not empty; remove the files in it first."],
+  parent_not_dir: ["Na putanji je fajl, a ne folder.", "There is a file on the path, not a folder."],
+  file_changed: [
+    "Fajl na disku nije verzija koju baza beleži (nedostaje ili je izmenjen); pokreni shfd verify.",
+    "The file on disk is not the version the database records (missing or changed); run shfd verify.",
+  ],
+  unreachable: ["shfd ne odgovara.", "shfd is not answering."],
+};
+
+/** The sentence for one of shfd's error codes, in the UI's language. */
+export function errorMessage(code: string, fallback?: string, lang: Lang = "sr"): string {
+  const m = ERROR_MESSAGES[code];
+  if (m) return tr(lang, m[0], m[1]);
+  if (code === "invalid_request") return tr(lang, "Neispravan zahtev", "Invalid request") + (fallback ? `: ${fallback}` : ".");
+  if (fallback) return tr(lang, `Greška: ${fallback}`, `Error: ${fallback}`);
+  return tr(lang, "Nešto nije uspelo.", "Something went wrong.");
 }

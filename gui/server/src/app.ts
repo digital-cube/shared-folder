@@ -25,6 +25,7 @@ import { BASE_META, isShfdPath, normalizeBase } from "../../shared/base.js";
 import { renameTarget } from "../../shared/rename.js";
 import { buildRegistry, type Ctx } from "./collections.js";
 import { toUdcError } from "./errors.js";
+import { langOf, tr, type Lang } from "./lang.js";
 import { FILE_OPS, LogFeed, summarize } from "./logs.js";
 import { COOKIE, readCookie, sessionCookie, SessionStore } from "./sessions.js";
 import { CONTENT_REQUEST_HEADERS, errorMessage, ShfdClient, ShfdError, type LogLine, type ThumbSize } from "./shfd.js";
@@ -43,6 +44,11 @@ export interface AppOptions {
 
 export const LOGIN_INVALID = "Token nije ispravan ili je opozvan.";
 export const LOGIN_NOT_ADMIN = "Samo admin foldera može da koristi GUI.";
+export const LOGIN_INVALID_EN = "The token is not valid or has been revoked.";
+export const LOGIN_NOT_ADMIN_EN = "Only an admin of the folder can use the GUI.";
+
+const loginInvalid = (lang: Lang) => tr(lang, LOGIN_INVALID, LOGIN_INVALID_EN);
+const loginNotAdmin = (lang: Lang) => tr(lang, LOGIN_NOT_ADMIN, LOGIN_NOT_ADMIN_EN);
 
 const THUMB_HASH = /^[0-9a-f]{64}$/;
 const THUMB_SIZES = new Set(["s", "m", "l"]);
@@ -120,7 +126,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     } catch (err) {
       if (err instanceof ShfdError && err.status === 401) sessions.dropToken(ctx.token);
       if (err instanceof ShfdError && err.status === 403) sessions.delete(ctx.sessionId);
-      throw toUdcError(err);
+      throw toUdcError(err, ctx.lang);
     }
   };
   const membersChanged = (ctx: Ctx) => changes.notify<Ctx>("members", { op: "update", ctx });
@@ -133,8 +139,8 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
   dispatcher.register(reactivateMember, async ({ username }, ctx: Ctx) => {
     const list = await guard(ctx, () => shfd.members(ctx.token, ctx.shareId));
     const m = list.members.find((x) => x.username === username);
-    if (!m) throw new UdcError("not_found", errorMessage("unknown_member"));
-    if (m.status !== "revoked") throw new UdcError("validation_error", "Član nije opozvan.");
+    if (!m) throw new UdcError("not_found", errorMessage("unknown_member", undefined, ctx.lang));
+    if (m.status !== "revoked") throw new UdcError("validation_error", tr(ctx.lang, "Član nije opozvan.", "The member is not revoked."));
     const r = await guard(ctx, () => shfd.addMember(ctx.token, ctx.shareId, username, m.role === "admin"));
     await membersChanged(ctx);
     return { username, token: r.token, reactivated: !!r.reactivated };
@@ -160,14 +166,17 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
   });
   dispatcher.register(restoreTrash, async ({ id }, ctx: Ctx) => {
     const n = Number(id);
-    if (!Number.isInteger(n) || n <= 0) throw new UdcError("validation_error", "Neispravan unos trash-a.");
+    if (!Number.isInteger(n) || n <= 0) throw new UdcError("validation_error", tr(ctx.lang, "Neispravan unos trash-a.", "Invalid trash entry."));
     const r = await guard(ctx, () => shfd.restore(ctx.token, ctx.shareId, n));
     await changes.notify<Ctx>("trash", { op: "update", ctx });
     await changes.notify<Ctx>("files", { op: "update", ctx });
+    const l = ctx.lang;
     let message: string;
-    if (r.status === "unchanged") message = `Fajl ${r.path} već ima ovaj sadržaj; ništa nije menjano.`;
-    else if (r.renamed) message = `Putanja je zauzeta drugim sadržajem, pa je fajl vraćen kao ${r.path}.`;
-    else message = `Vraćeno u ${r.path}.`;
+    if (r.status === "unchanged")
+      message = tr(l, `Fajl ${r.path} već ima ovaj sadržaj; ništa nije menjano.`, `The file ${r.path} already has this content; nothing was changed.`);
+    else if (r.renamed)
+      message = tr(l, `Putanja je zauzeta drugim sadržajem, pa je fajl vraćen kao ${r.path}.`, `The path holds other content, so the file was restored as ${r.path}.`);
+    else message = tr(l, `Vraćeno u ${r.path}.`, `Restored to ${r.path}.`);
     return { path: r.path, status: r.status, renamed: !!r.renamed, message };
   });
   // Rename and remove are ops of the sync protocol, made with the admin's
@@ -178,22 +187,23 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     await changes.notify<Ctx>("trash", { op: "update", ctx });
   };
   dispatcher.register(renameFile, async ({ path, name, base_hash }, ctx: Ctx) => {
-    const to = renameTarget(path, name);
+    const to = renameTarget(path, name, ctx.lang);
     if (typeof to !== "string") throw new UdcError("validation_error", to.error);
-    if (to === path) return { path, status: "unchanged", message: "Ime je isto; ništa nije menjano." };
+    if (to === path) return { path, status: "unchanged", message: tr(ctx.lang, "Ime je isto; ništa nije menjano.", "The name is the same; nothing was changed.") };
     const r = await guard(ctx, () => shfd.op(ctx.token, ctx.shareId, { op: "move", path, new_path: to, base_hash }));
     await filesChanged(ctx);
-    return { path: r.path, status: r.status, message: `Preimenovano u ${r.path.split("/").pop()}.` };
+    return { path: r.path, status: r.status, message: tr(ctx.lang, `Preimenovano u ${r.path.split("/").pop()}.`, `Renamed to ${r.path.split("/").pop()}.`) };
   });
   dispatcher.register(removeFile, async ({ path, kind, base_hash }, ctx: Ctx) => {
     const req = kind === "dir" ? ({ op: "rmdir", path } as const) : ({ op: "delete", path, base_hash } as const);
     const r = await guard(ctx, () => shfd.op(ctx.token, ctx.shareId, req));
     await filesChanged(ctx);
     const name = path.split("/").pop();
+    const l = ctx.lang;
     let message: string;
-    if (r.status === "unchanged") message = `${name} već ne postoji.`;
-    else if (kind === "dir") message = `Folder ${name} je obrisan.`;
-    else message = `${name} je obrisan; može se vratiti iz Trash-a.`;
+    if (r.status === "unchanged") message = tr(l, `${name} već ne postoji.`, `${name} no longer exists.`);
+    else if (kind === "dir") message = tr(l, `Folder ${name} je obrisan.`, `The folder ${name} was removed.`);
+    else message = tr(l, `${name} je obrisan; može se vratiti iz Trash-a.`, `${name} was removed; it can be restored from the Trash.`);
     return { path: r.path, status: r.status, message };
   });
   dispatcher.register(overview, async (_p, ctx: Ctx) => {
@@ -243,8 +253,9 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     swagger: false,
     context: (req: FastifyRequest): Ctx => {
       const s = sessionOf(req);
-      if (!s) throw unauthenticatedError("Prijava je istekla.");
-      return { sessionId: s.id, token: s.token, shareId: s.shareId, username: s.username };
+      const lang = langOf(req);
+      if (!s) throw unauthenticatedError(tr(lang, "Prijava je istekla.", "The sign-in has expired."));
+      return { sessionId: s.id, token: s.token, shareId: s.shareId, username: s.username, lang };
     },
   });
 
@@ -258,17 +269,18 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
   // ---- sign-in -----------------------------------------------------------
 
   app.post(`${base}/api/login`, async (req, reply) => {
+    const lang = langOf(req);
     const token = String((req.body as { token?: unknown } | undefined)?.token ?? "").trim();
-    if (!token) return reply.code(400).send({ error: LOGIN_INVALID });
+    if (!token) return reply.code(400).send({ error: loginInvalid(lang) });
     let who;
     try {
       who = await shfd.whoami(token);
     } catch (err) {
-      if (err instanceof ShfdError && err.status === 401) return reply.code(401).send({ error: LOGIN_INVALID });
+      if (err instanceof ShfdError && err.status === 401) return reply.code(401).send({ error: loginInvalid(lang) });
       req.log.warn({ err: (err as Error).message }, "whoami failed");
-      return reply.code(502).send({ error: errorMessage("unreachable") });
+      return reply.code(502).send({ error: errorMessage("unreachable", undefined, lang) });
     }
-    if (who.role !== "admin") return reply.code(403).send({ error: LOGIN_NOT_ADMIN });
+    if (who.role !== "admin") return reply.code(403).send({ error: loginNotAdmin(lang) });
     const s = sessions.create({
       token,
       shareId: who.share_id,
@@ -317,10 +329,10 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       }
       if (err instanceof ShfdError && err.status === 403) {
         sessions.delete(s.id);
-        return reply.code(403).send({ error: LOGIN_NOT_ADMIN });
+        return reply.code(403).send({ error: loginNotAdmin(langOf(req)) });
       }
       req.log.warn({ err: (err as Error).message }, "thumbnail failed");
-      return reply.code(502).send({ error: errorMessage("unreachable") });
+      return reply.code(502).send({ error: errorMessage("unreachable", undefined, langOf(req)) });
     }
     if (r.status !== 200 && r.status !== 304 && r.status !== 404) {
       return reply.code(502).send({ error: `shfd answered ${r.status}` });
@@ -378,13 +390,13 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       }
       if (err instanceof ShfdError && err.status === 403) {
         sessions.delete(s.id);
-        return reply.code(403).send({ error: LOGIN_NOT_ADMIN });
+        return reply.code(403).send({ error: loginNotAdmin(langOf(req)) });
       }
       if (err instanceof ShfdError && err.code !== "unreachable" && err.code !== "internal") {
-        return reply.code(err.status).send({ error: errorMessage(err.code, err.message), code: err.code });
+        return reply.code(err.status).send({ error: errorMessage(err.code, err.message, langOf(req)), code: err.code });
       }
       req.log.warn({ err: (err as Error).message }, "file content failed");
-      return reply.code(502).send({ error: errorMessage("unreachable") });
+      return reply.code(502).send({ error: errorMessage("unreachable", undefined, langOf(req)) });
     }
     reply.code(r.status);
     for (const h of CONTENT_RESPONSE_HEADERS) {

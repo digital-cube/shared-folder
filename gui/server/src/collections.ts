@@ -24,6 +24,7 @@ import type { LogFeed } from "./logs.js";
 import { short, toRow } from "./logs.js";
 import type { ShfdClient } from "./shfd.js";
 import { toUdcError } from "./errors.js";
+import type { Lang } from "./lang.js";
 
 /** Who asks: the signed-in member of one folder. */
 export interface Ctx {
@@ -31,6 +32,8 @@ export interface Ctx {
   token: string;
   shareId: string;
   username: string;
+  /** The UI's language (x-shfd-lang): refusals are sentences in it. */
+  lang: Lang;
 }
 
 function ctxOf(sctx?: SourceContext): Ctx {
@@ -56,7 +59,7 @@ class MembersSource extends ArraySource {
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
     const l = await this.shfd.members(c.token, c.shareId).catch((e) => {
-      throw toUdcError(e);
+      throw toUdcError(e, c.lang);
     });
     return {
       rows: l.members.map((m) => ({
@@ -93,7 +96,7 @@ class LogsSource extends ArraySource {
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
     const lines = await this.feed.lines(c.shareId, c.token).catch((e) => {
-      throw toUdcError(e);
+      throw toUdcError(e, c.lang);
     });
     return {
       rows: lines.map((l) => {
@@ -155,7 +158,7 @@ class FilesSource extends ArraySource {
     const c = ctxOf(sctx);
     const { dir, rest } = takePath(req.filter);
     const l = await this.shfd.files(c.token, c.shareId, dir).catch((e) => {
-      throw toUdcError(e);
+      throw toUdcError(e, c.lang);
     });
     const rows = l.entries.map((f) => ({
       __meta: meta(f.path),
@@ -210,7 +213,7 @@ class TrashSource extends ArraySource {
   protected async load(_req: SourceListRequest, sctx?: SourceContext): Promise<ArrayLoad> {
     const c = ctxOf(sctx);
     const l = await this.shfd.trash(c.token, c.shareId).catch((e) => {
-      throw toUdcError(e);
+      throw toUdcError(e, c.lang);
     });
     return {
       rows: (l.entries ?? []).map((t) => ({

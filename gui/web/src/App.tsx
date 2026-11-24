@@ -1,11 +1,13 @@
 import { UdcClient } from "@jsudc/core/client";
-import { createRendererRegistry, createUdcQueryClient, UdcI18nProvider, UdcProvider } from "@jsudc/react";
+import { createRendererRegistry, createUdcQueryClient, ThemeProvider, UdcI18nProvider, UdcProvider } from "@jsudc/react";
 import { tableRenderer } from "@jsudc/react/table";
 import { Toaster, TooltipProvider, UDC_SCOPE_CLASS } from "@jsudc/react/ui";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { BASE, getSession, logout, type Me } from "./api";
 import { cells } from "./cells";
+import { LANGS, LangProvider, useLang } from "./i18n";
+import { getLang, LANG_HEADER } from "./lang";
 import { messages } from "./messages";
 import { Login } from "./pages/Login";
 import { Install } from "./pages/Install";
@@ -40,10 +42,21 @@ export const useApp = () => useContext(LiveContext)!;
 /** The signed-in app, or null on a page shown without a sign-in. */
 export const useAppMaybe = () => useContext(LiveContext);
 
-const client = new UdcClient({ httpUrl: BASE });
+// Every call says the language of the UI, so shfd's refusals come back in it.
+const client = new UdcClient({ httpUrl: BASE, headers: () => ({ [LANG_HEADER]: getLang() }) });
 const renderers = createRendererRegistry(tableRenderer);
 
 export function App() {
+  return (
+    <ThemeProvider>
+      <LangProvider>
+        <Root />
+      </LangProvider>
+    </ThemeProvider>
+  );
+}
+
+function Root() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [page] = usePage();
   const [expired, setExpired] = useState(false);
@@ -93,9 +106,10 @@ export function App() {
 
 function Signed({ me, signOut }: { me: Me; signOut: () => void }) {
   const [paused, setPaused] = useState(false);
+  const { lang, setLang } = useLang();
   return (
     <UdcProvider client={client} renderers={renderers} cells={cells} changes={!paused}>
-      <UdcI18nProvider locale="sr" messages={messages}>
+      <UdcI18nProvider locale={lang} onLocaleChange={(l) => setLang(l === "en" ? "en" : "sr")} locales={LANGS} messages={messages}>
         <TooltipProvider>
           <Toaster>
             <LiveContext.Provider value={{ paused, setPaused, me, signOut }}>

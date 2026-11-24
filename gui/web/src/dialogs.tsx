@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useTr } from "./i18n";
 
 export function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   return (
@@ -19,12 +20,13 @@ export function Confirm(props: {
   onYes: () => void;
   onClose: () => void;
 }) {
+  const tr = useTr();
   return (
     <Modal title={props.title} onClose={props.onClose}>
       <p>{props.text}</p>
       <div className="row">
         <button className="btn" onClick={props.onClose}>
-          Otkaži
+          {tr("Otkaži", "Cancel")}
         </button>
         <button
           className={`btn ${props.danger ? "danger" : "primary"}`}
@@ -46,9 +48,15 @@ export function NewMember({ onAdd, onClose }: { onAdd: (name: string, admin: boo
   const [admin, setAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const tr = useTr();
   return (
-    <Modal title="Nov član" onClose={onClose}>
-      <p>Jedan član = jedan uređaj. Za drugi uređaj ili drugu osobu napravi novog člana.</p>
+    <Modal title={tr("Nov član", "New member")} onClose={onClose}>
+      <p>
+        {tr(
+          "Jedan član = jedan uređaj. Za drugi uređaj ili drugu osobu napravi novog člana.",
+          "One member = one device. For another device or another person, create a new member.",
+        )}
+      </p>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -60,20 +68,20 @@ export function NewMember({ onAdd, onClose }: { onAdd: (name: string, admin: boo
         }}
       >
         <div className="field">
-          <label htmlFor="new-name">Ime</label>
-          <input id="new-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="npr. marko-laptop" autoFocus />
-          <span className="hint">Slova, brojevi, tačka, crtica i donja crta.</span>
+          <label htmlFor="new-name">{tr("Ime", "Name")}</label>
+          <input id="new-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={tr("npr. marko-laptop", "e.g. marko-laptop")} autoFocus />
+          <span className="hint">{tr("Slova, brojevi, tačka, crtica i donja crta.", "Letters, digits, dot, dash and underscore.")}</span>
         </div>
         <label className="check">
-          <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> Admin foldera
+          <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> {tr("Admin foldera", "Folder admin")}
         </label>
         {error ? <div className="err-text" style={{ marginTop: 10 }} role="alert">{error}</div> : null}
         <div className="row">
           <button type="button" className="btn" onClick={onClose}>
-            Otkaži
+            {tr("Otkaži", "Cancel")}
           </button>
           <button className="btn primary" disabled={busy || !name.trim()}>
-            Napravi
+            {tr("Napravi", "Create")}
           </button>
         </div>
       </form>

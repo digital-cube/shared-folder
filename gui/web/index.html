@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="same-origin" />
     <title>shfd GUI</title>
+    <script>
+      // The theme and the language before the first paint (jsudc's udc-theme and udc-locale).
+      try {
+        if (localStorage.getItem("udc-theme") === "dark") document.documentElement.classList.add("dark");
+        if (localStorage.getItem("udc-locale") === "en") document.documentElement.lang = "en";
+      } catch (e) {}
+    </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b4fd8'/%3E%3Cpath d='M8 11a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E" />
   </head>
   <body>

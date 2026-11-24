@@ -3,6 +3,7 @@
 
 import type { Row } from "@jsudc/core";
 import { fileKind, type FileKind } from "./filekind";
+import { tr } from "./lang";
 import { previewKind } from "./preview";
 
 export type MenuAction = "open" | "info" | "view" | "download" | "rename" | "remove";
@@ -30,36 +31,47 @@ export function menuItems(row: Row): MenuItem[] {
   if (row.kind === "dir") {
     if (name === "..") return [];
     return [
-      { action: "open", label: "Otvori" },
-      { action: "info", label: "Informacije" },
-      { action: "remove", label: "Obriši", danger: true, separator: true, hint: "Briše se samo prazan folder." },
+      { action: "open", label: tr("Otvori", "Open") },
+      { action: "info", label: tr("Informacije", "Info") },
+      {
+        action: "remove",
+        label: tr("Obriši", "Delete"),
+        danger: true,
+        separator: true,
+        hint: tr("Briše se samo prazan folder.", "Only an empty folder can be deleted."),
+      },
     ];
   }
   const view = previewKind(name, str(row.kind));
   return [
-    { action: "info", label: "Informacije" },
+    { action: "info", label: tr("Informacije", "Info") },
     view === "none"
-      ? { action: "view", label: "Prikaži", disabled: true, hint: "Za ovaj tip fajla nema pregleda; preuzmi ga." }
-      : { action: "view", label: "Prikaži" },
-    { action: "download", label: "Preuzmi" },
-    { action: "rename", label: "Preimenuj", separator: true },
-    { action: "remove", label: "Obriši", danger: true },
+      ? {
+          action: "view",
+          label: tr("Prikaži", "View"),
+          disabled: true,
+          hint: tr("Za ovaj tip fajla nema pregleda; preuzmi ga.", "There is no preview for this type of file; download it."),
+        }
+      : { action: "view", label: tr("Prikaži", "View") },
+    { action: "download", label: tr("Preuzmi", "Download") },
+    { action: "rename", label: tr("Preimenuj", "Rename"), separator: true },
+    { action: "remove", label: tr("Obriši", "Delete"), danger: true },
   ];
 }
 
-const KIND_LABELS: Record<FileKind, string> = {
-  folder: "Folder",
-  image: "Slika",
-  pdf: "PDF dokument",
-  word: "Tekstualni dokument (Word)",
-  excel: "Tabela (Excel)",
-  powerpoint: "Prezentacija (PowerPoint)",
-  text: "Tekst",
-  code: "Kod",
-  archive: "Arhiva",
-  audio: "Zvuk",
-  video: "Video",
-  other: "Fajl",
+const KIND_LABELS: Record<FileKind, [sr: string, en: string]> = {
+  folder: ["Folder", "Folder"],
+  image: ["Slika", "Image"],
+  pdf: ["PDF dokument", "PDF document"],
+  word: ["Tekstualni dokument (Word)", "Text document (Word)"],
+  excel: ["Tabela (Excel)", "Spreadsheet (Excel)"],
+  powerpoint: ["Prezentacija (PowerPoint)", "Presentation (PowerPoint)"],
+  text: ["Tekst", "Text"],
+  code: ["Kod", "Code"],
+  archive: ["Arhiva", "Archive"],
+  audio: ["Zvuk", "Audio"],
+  video: ["Video", "Video"],
+  other: ["Fajl", "File"],
 };
 
 /** The type of a row in words, with its extension: "Slika (JPG)". */
@@ -68,7 +80,8 @@ export function kindLabel(row: Row): string {
   const k = fileKind(name, str(row.kind));
   const i = name.lastIndexOf(".");
   const ext = k !== "folder" && i > 0 && i < name.length - 1 ? name.slice(i + 1).toUpperCase() : "";
-  return ext ? `${KIND_LABELS[k]} (${ext})` : KIND_LABELS[k];
+  const label = tr(...KIND_LABELS[k]);
+  return ext ? `${label} (${ext})` : label;
 }
 
 /**

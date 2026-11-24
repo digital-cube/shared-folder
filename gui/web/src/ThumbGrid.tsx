@@ -24,6 +24,8 @@ import { useEffect, useRef, type CSSProperties, type KeyboardEvent } from "react
 import type React from "react";
 import { useAppMaybe } from "./App";
 import { bytes } from "./format";
+import { useTr } from "./i18n";
+import { intlLocale } from "./lang";
 import { gridOrder, usePendingThumbs } from "./liveThumbs";
 import { usePreview } from "./FilePreview";
 import { useFileMenu, type OpenMenu } from "./FileMenu";
@@ -39,12 +41,16 @@ import {
   useThumbSize,
 } from "./thumbsize";
 
-const dateFmt = new Intl.DateTimeFormat("sr-Latn-RS", { day: "numeric", month: "numeric", year: "numeric" });
+const dateFmts = new Map<string, Intl.DateTimeFormat>();
 
 function shortDate(ts: unknown): string {
   if (!ts) return "";
   const d = new Date(String(ts));
-  return Number.isNaN(d.getTime()) ? "" : dateFmt.format(d);
+  if (Number.isNaN(d.getTime())) return "";
+  const loc = intlLocale();
+  let f = dateFmts.get(loc);
+  if (!f) dateFmts.set(loc, (f = new Intl.DateTimeFormat(loc, { day: "numeric", month: "numeric", year: "numeric" })));
+  return f.format(d);
 }
 
 // A folder opened from the keyboard hands the focus to the first tile of
@@ -165,14 +171,15 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
       open();
     }
   };
-  const meta = up ? "Nazad" : dir ? "Folder" : [bytes(row.size as number | null), shortDate(row.mtime)].filter(Boolean).join(" · ");
+  const tr = useTr();
+  const meta = up ? tr("Nazad", "Back") : dir ? "Folder" : [bytes(row.size as number | null), shortDate(row.mtime)].filter(Boolean).join(" · ");
   return (
     <div
       className={`tile${dir ? " dir" : ""}`}
       role="listitem"
       tabIndex={0}
-      title={up ? "Gornji folder" : name}
-      aria-label={up ? "Gornji folder" : dir ? `Folder ${name}` : name}
+      title={up ? tr("Gornji folder", "Parent folder") : name}
+      aria-label={up ? tr("Gornji folder", "Parent folder") : dir ? `Folder ${name}` : name}
       data-testid={dir ? "tile-folder" : "tile-file"}
       data-path={path}
       onClick={open}
@@ -196,9 +203,11 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
 /** The slider in the toolbar while the Grid is open. */
 function ThumbSizeTool() {
   const size = useThumbSize();
+  const tr = useTr();
+  const label = tr("Veličina sličica", "Thumbnail size");
   return (
-    <label className="thumb-size" title="Veličina sličica">
-      <span>Veličina sličica</span>
+    <label className="thumb-size" title={label}>
+      <span>{label}</span>
       <input
         type="range"
         min={THUMB_MIN}

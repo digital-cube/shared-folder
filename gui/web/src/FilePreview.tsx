@@ -16,7 +16,9 @@ import type { Row } from "@jsudc/core";
 import { createContext, useContext, useEffect, useState } from "react";
 import { kindLabel } from "./filemenu";
 import { bytes, stamp } from "./format";
+import { useTr } from "./i18n";
 import { Download, ExternalLink, X } from "./icons";
+import { getLang, intlLocale, LANG_HEADER } from "./lang";
 import { contentUrl, decodeTextPreview, previewKind, TEXT_PREVIEW_BYTES } from "./preview";
 import { Thumb, thumbUrl } from "./Thumb";
 
@@ -33,6 +35,7 @@ export function FilePreview({ row, onClose }: { row: Row; onClose: () => void })
   const name = str(row.name);
   const path = str(row.path);
   const kind = previewKind(name, str(row.kind));
+  const tr = useTr();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -46,13 +49,13 @@ export function FilePreview({ row, onClose }: { row: Row; onClose: () => void })
           <span className="spacer" />
           {kind !== "none" ? (
             <a className="btn sm" href={contentUrl(path)} target="_blank" rel="noopener noreferrer">
-              <ExternalLink size={14} /> Otvori
+              <ExternalLink size={14} /> {tr("Otvori", "Open")}
             </a>
           ) : null}
           <a className="btn sm primary" href={contentUrl(path, true)} download={name} data-testid="preview-download">
-            <Download size={14} /> Preuzmi
+            <Download size={14} /> {tr("Preuzmi", "Download")}
           </a>
-          <button className="btn ghost sm" onClick={onClose} aria-label="Zatvori" autoFocus>
+          <button className="btn ghost sm" onClick={onClose} aria-label={tr("Zatvori", "Close")} autoFocus>
             <X size={14} />
           </button>
         </div>
@@ -68,13 +71,15 @@ export function FilePreview({ row, onClose }: { row: Row; onClose: () => void })
           ) : null}
           {kind === "pdf" ? (
             <p className="preview-note">
-              PDF se otvara u novom tabu (<b>Otvori</b>) ili preuzima (<b>Preuzmi</b>); u ovom prozoru se ne prikazuje.
+              {tr("PDF se otvara u novom tabu", "A PDF opens in a new tab")} (<b>{tr("Otvori", "Open")}</b>){" "}
+              {tr("ili preuzima", "or downloads")} (<b>{tr("Preuzmi", "Download")}</b>);{" "}
+              {tr("u ovom prozoru se ne prikazuje.", "it is not shown in this window.")}
             </p>
           ) : null}
           {kind === "none" ? (
             <div className="preview-none">
               <Thumb row={row} px={96} />
-              <p className="preview-note">Za ovaj tip fajla nema pregleda; preuzmi ga.</p>
+              <p className="preview-note">{tr("Za ovaj tip fajla nema pregleda; preuzmi ga.", "There is no preview for this type of file; download it.")}</p>
             </div>
           ) : null}
         </div>
@@ -88,32 +93,33 @@ export function FilePreview({ row, onClose }: { row: Row; onClose: () => void })
 export function FileMeta({ row, full = false }: { row: Row; full?: boolean }) {
   const dir = row.kind === "dir";
   const size = row.size as number | null;
+  const tr = useTr();
   return (
     <dl className="preview-meta" data-testid="file-meta">
       {full ? (
         <>
-          <dt>Ime</dt>
+          <dt>{tr("Ime", "Name")}</dt>
           <dd style={{ wordBreak: "break-all" }}>{str(row.name)}</dd>
-          <dt>Tip</dt>
+          <dt>{tr("Tip", "Type")}</dt>
           <dd>{kindLabel(row)}</dd>
         </>
       ) : null}
-      <dt>Putanja</dt>
+      <dt>{tr("Putanja", "Path")}</dt>
       <dd className="mono" style={{ wordBreak: "break-all" }}>
         {str(row.path)}
       </dd>
       {dir ? null : (
         <>
-          <dt>Veličina</dt>
+          <dt>{tr("Veličina", "Size")}</dt>
           <dd>
             {bytes(size)}
-            {full && typeof size === "number" && size >= 1024 ? <span className="faint"> ({size.toLocaleString("sr-Latn-RS")} B)</span> : null}
+            {full && typeof size === "number" && size >= 1024 ? <span className="faint"> ({size.toLocaleString(intlLocale())} B)</span> : null}
           </dd>
-          <dt>Izmenjen</dt>
+          <dt>{tr("Izmenjen", "Modified")}</dt>
           <dd>{row.mtime ? stamp(str(row.mtime)) : "—"}</dd>
         </>
       )}
-      <dt>{dir ? "Napravio" : "Poslao"}</dt>
+      <dt>{dir ? tr("Napravio", "Created by") : tr("Poslao", "Uploaded by")}</dt>
       <dd>{str(row.updated_by) || "—"}</dd>
       {full && row.seq !== null && row.seq !== undefined ? (
         <>
@@ -139,8 +145,15 @@ export function FileMeta({ row, full = false }: { row: Row; full?: boolean }) {
  */
 function MediaPreview({ path, video = false }: { path: string; video?: boolean }) {
   const [failed, setFailed] = useState(false);
+  const tr = useTr();
   if (failed) {
-    return <p className="preview-note err-text">Browser ne može da pusti ovaj {video ? "video" : "zvuk"}; preuzmi ga.</p>;
+    return (
+      <p className="preview-note err-text">
+        {video
+          ? tr("Browser ne može da pusti ovaj video; preuzmi ga.", "The browser cannot play this video; download it.")
+          : tr("Browser ne može da pusti ovaj zvuk; preuzmi ga.", "The browser cannot play this audio; download it.")}
+      </p>
+    );
   }
   const props = { src: contentUrl(path), controls: true, preload: "metadata", onError: () => setFailed(true) } as const;
   return video ? (
@@ -158,11 +171,12 @@ function ImagePreview({ row, path, name }: { row: Row; path: string; name: strin
   const quick = row.thumb === "ready" && /^[0-9a-f]{64}$/.test(hash) ? thumbUrl(hash, "m") : null;
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const tr = useTr();
   return (
     <div className="preview-image">
       {quick && !loaded ? <img src={quick} alt="" className="quick" /> : null}
       {failed ? (
-        <p className="preview-note err-text">Slika nije mogla da se učita.</p>
+        <p className="preview-note err-text">{tr("Slika nije mogla da se učita.", "The image could not be loaded.")}</p>
       ) : (
         <img
           src={contentUrl(path)}
@@ -182,17 +196,18 @@ type TextState = { state: "loading" } | { state: "ok"; text: string; cut: boolea
 /** The first TEXT_PREVIEW_BYTES of a text file, asked for with Range. */
 function TextPreview({ path, size }: { path: string; size: number }) {
   const [s, setS] = useState<TextState>({ state: "loading" });
+  const tr = useTr();
   useEffect(() => {
     const ctl = new AbortController();
     (async () => {
       const res = await fetch(contentUrl(path), {
         credentials: "same-origin",
-        headers: { range: `bytes=0-${TEXT_PREVIEW_BYTES - 1}` },
+        headers: { range: `bytes=0-${TEXT_PREVIEW_BYTES - 1}`, [LANG_HEADER]: getLang() },
         signal: ctl.signal,
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setS({ state: "error", message: body.error ?? `Greška ${res.status}` });
+        setS({ state: "error", message: body.error ?? `${getLang() === "en" ? "Error" : "Greška"} ${res.status}` });
         return;
       }
       // A 200 (a server that ignores Range) is read only as far as needed.
@@ -204,7 +219,7 @@ function TextPreview({ path, size }: { path: string; size: number }) {
     });
     return () => ctl.abort();
   }, [path, size]);
-  if (s.state === "loading") return <p className="preview-note">Učitavam…</p>;
+  if (s.state === "loading") return <p className="preview-note">{tr("Učitavam…", "Loading…")}</p>;
   if (s.state === "error") return <p className="preview-note err-text">{s.message}</p>;
   return (
     <>
@@ -213,7 +228,8 @@ function TextPreview({ path, size }: { path: string; size: number }) {
       </pre>
       {s.cut ? (
         <p className="preview-note">
-          Prikazano je prvih {bytes(TEXT_PREVIEW_BYTES)} od {bytes(size)}; ceo fajl preuzmi.
+          {tr("Prikazano je prvih", "Showing the first")} {bytes(TEXT_PREVIEW_BYTES)} {tr("od", "of")} {bytes(size)};{" "}
+          {tr("ceo fajl preuzmi.", "download the whole file.")}
         </p>
       ) : null}
     </>

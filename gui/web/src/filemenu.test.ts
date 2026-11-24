@@ -1,6 +1,9 @@
 import type { Row } from "@jsudc/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { isMenuKey, kindLabel, menuItems, placeMenu, stemRange } from "./filemenu";
+import { setLang } from "./lang";
+
+afterEach(() => setLang("sr"));
 
 const row = (name: string, kind = "file") => ({ __meta: { id: name }, name, kind, path: name }) as unknown as Row;
 const actions = (r: Row) => menuItems(r).map((i) => `${i.action}${i.disabled ? "(off)" : ""}`);
@@ -30,6 +33,12 @@ describe("kindLabel", () => {
     expect(kindLabel(row("film.MP4"))).toBe("Video (MP4)");
     expect(kindLabel(row("ivo123"))).toBe("Fajl");
     expect(kindLabel(row("123", "dir"))).toBe("Folder");
+  });
+  it("in English", () => {
+    setLang("en");
+    expect(kindLabel(row("MZ9_7952.jpeg"))).toBe("Image (JPEG)");
+    expect(kindLabel(row("ivo123"))).toBe("File");
+    expect(menuItems(row("a.txt")).map((i) => i.label)).toEqual(["Info", "View", "Download", "Rename", "Delete"]);
   });
 });
 

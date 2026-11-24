@@ -1,6 +1,7 @@
 // The GUI's own endpoints (sign-in); everything else goes through jsudc.
 
 import { BASE_META, normalizeBase } from "../../shared/base";
+import { getLang, LANG_HEADER, tr } from "./lang";
 
 export interface Me {
   share_id: string;
@@ -42,14 +43,14 @@ export async function login(token: string): Promise<{ ok: true; me: Me } | { ok:
     r = await fetch(guiUrl("/api/login"), {
       method: "POST",
       credentials: "same-origin",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", [LANG_HEADER]: getLang() },
       body: JSON.stringify({ token }),
     });
   } catch {
-    return { ok: false, error: "GUI server ne odgovara." };
+    return { ok: false, error: tr("GUI server ne odgovara.", "The GUI server is not answering.") };
   }
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) return { ok: false, error: body.error ?? "Prijava nije uspela." };
+  if (!r.ok) return { ok: false, error: body.error ?? tr("Prijava nije uspela.", "Sign-in failed.") };
   return { ok: true, me: body };
 }
 

@@ -4,6 +4,7 @@
 // 48×48 viewBox, drawn to the size of its box, legible from 16 to 256 px.
 
 import type { FileKind } from "./filekind";
+import { tr } from "./lang";
 
 interface Tile {
   color: string;
@@ -29,21 +30,25 @@ const EDGE = "#c3c9d3";
 const FOLD = "#e6e9ef";
 const LINE = "#cdd3dc";
 
-/** The label a screen reader gets for a kind. */
-export const KIND_LABEL: Record<FileKind, string> = {
-  folder: "Folder",
-  image: "Slika",
-  pdf: "PDF",
-  word: "Word dokument",
-  excel: "Excel tabela",
-  powerpoint: "PowerPoint prezentacija",
-  text: "Tekst",
-  code: "Kod",
-  archive: "Arhiva",
-  audio: "Zvuk",
-  video: "Video",
-  other: "Fajl",
+const KIND_LABELS: Record<FileKind, [sr: string, en: string]> = {
+  folder: ["Folder", "Folder"],
+  image: ["Slika", "Image"],
+  pdf: ["PDF", "PDF"],
+  word: ["Word dokument", "Word document"],
+  excel: ["Excel tabela", "Excel spreadsheet"],
+  powerpoint: ["PowerPoint prezentacija", "PowerPoint presentation"],
+  text: ["Tekst", "Text"],
+  code: ["Kod", "Code"],
+  archive: ["Arhiva", "Archive"],
+  audio: ["Zvuk", "Audio"],
+  video: ["Video", "Video"],
+  other: ["Fajl", "File"],
 };
+
+/** The label a screen reader gets for a kind, in the UI's language. */
+export function kindName(kind: FileKind): string {
+  return tr(...KIND_LABELS[kind]);
+}
 
 export function FileIcon({ kind, up = false, className }: { kind: FileKind; up?: boolean; className?: string }) {
   return (

@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { login, type Me } from "../api";
+import { useTr } from "../i18n";
 import { Folder } from "../icons";
+import { Prefs } from "../Prefs";
 
 export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boolean }) {
+  const tr = useTr();
   const [token, setToken] = useState("");
-  const [error, setError] = useState<string | null>(expired ? "Sesija je istekla ili je token opozvan. Prijavi se ponovo." : null);
+  // The error of the last attempt, as the server said it; the expired note follows the language.
+  const [error, setError] = useState<string | null>(null);
+  const [showExpired, setShowExpired] = useState(expired);
+  const shown =
+    error ?? (showExpired ? tr("Sesija je istekla ili je token opozvan. Prijavi se ponovo.", "The session expired or the token was revoked. Sign in again.") : null);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -12,6 +19,7 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
     if (!token.trim()) return;
     setBusy(true);
     setError(null);
+    setShowExpired(false);
     const r = await login(token.trim());
     setBusy(false);
     if (r.ok) {
@@ -22,6 +30,9 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
 
   return (
     <section id="login">
+      <div className="login-prefs">
+        <Prefs />
+      </div>
       <form className="login-card" onSubmit={submit} autoComplete="off">
         <div className="logo">
           <div className="logo-mark">
@@ -32,8 +43,8 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
             <small>{location.hostname}</small>
           </div>
         </div>
-        <h1>Prijava</h1>
-        <p className="sub">Za upravljanje folderom, logove i pregled fajlova.</p>
+        <h1>{tr("Prijava", "Sign in")}</h1>
+        <p className="sub">{tr("Za upravljanje folderom, logove i pregled fajlova.", "To manage the folder, read the logs and browse the files.")}</p>
         <div className="field">
           <label htmlFor="token">Token</label>
           <input
@@ -46,15 +57,16 @@ export function Login({ onIn, expired }: { onIn: (m: Me) => void; expired: boole
             autoFocus
           />
           <span className="hint">
-            Token člana foldera. GUI mogu da koriste samo članovi sa ulogom <b>admin</b>.
+            {tr("Token člana foldera. GUI mogu da koriste samo članovi sa ulogom", "The token of a folder member. Only members with the role")} <b>admin</b>
+            {tr(".", " can use the GUI.")}
           </span>
         </div>
-        {error ? <div className="err-text" role="alert">{error}</div> : null}
+        {shown ? <div className="err-text" role="alert">{shown}</div> : null}
         <button className="btn primary block" disabled={busy || !token.trim()}>
-          {busy ? "Proveravam…" : "Prijavi se"}
+          {busy ? tr("Proveravam…", "Checking…") : tr("Prijavi se", "Sign in")}
         </button>
         <div className="foot">
-          <a href="#install">Kako se instalira klijent ili server</a>
+          <a href="#install">{tr("Kako se instalira klijent ili server", "How to install the client or the server")}</a>
         </div>
       </form>
     </section>

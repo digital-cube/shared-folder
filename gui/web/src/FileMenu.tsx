@@ -26,8 +26,10 @@ import {
 } from "react";
 import { removeFile, renameFile } from "../../shared/actions";
 import { renameTarget } from "../../shared/rename";
+import { getLang } from "./lang";
 import { Modal } from "./dialogs";
 import { FileMeta, FilePreview, PreviewContext } from "./FilePreview";
+import { useTr } from "./i18n";
 import { menuItems, placeMenu, stemRange, type MenuAction, type MenuItem } from "./filemenu";
 import { Download, Eye, FolderOpen, Info, Pencil, Trash2 } from "./icons";
 import { messageOf } from "./pages/Members";
@@ -135,6 +137,7 @@ const ICONS: Record<MenuAction, typeof Info> = {
 };
 
 function ContextMenu({ state, onChoose, onClose }: { state: OpenMenuState; onChoose: (a: MenuAction) => void; onClose: () => void }) {
+  useTr(); // the labels of menuItems follow the language
   const items = menuItems(state.row);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: state.x, top: state.y, ready: false });
@@ -246,11 +249,12 @@ function useEscape(onClose: () => void) {
 
 function InfoDialog({ row, onClose, onView }: { row: Row; onClose: () => void; onView: () => void }) {
   useEscape(onClose);
+  const tr = useTr();
   const file = row.kind === "file";
   const viewable = menuItems(row).some((i) => i.action === "view" && !i.disabled);
   return (
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal file-info" role="dialog" aria-label={`Informacije: ${str(row.name)}`} data-testid="file-info">
+      <div className="modal file-info" role="dialog" aria-label={`${tr("Informacije", "Info")}: ${str(row.name)}`} data-testid="file-info">
         <div className="file-info-head">
           <Thumb row={row} px={96} />
           <h3 title={str(row.path)}>{str(row.name)}</h3>
@@ -259,16 +263,16 @@ function InfoDialog({ row, onClose, onView }: { row: Row; onClose: () => void; o
         <div className="row">
           {viewable ? (
             <button className="btn" onClick={onView}>
-              <Eye size={14} /> Prikaži
+              <Eye size={14} /> {tr("Prikaži", "View")}
             </button>
           ) : null}
           {file ? (
             <a className="btn" href={contentUrl(str(row.path), true)} download={str(row.name)}>
-              <Download size={14} /> Preuzmi
+              <Download size={14} /> {tr("Preuzmi", "Download")}
             </a>
           ) : null}
           <button className="btn primary" onClick={onClose} autoFocus>
-            Zatvori
+            {tr("Zatvori", "Close")}
           </button>
         </div>
       </div>
@@ -301,6 +305,7 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const tr = useTr();
   useEscape(onClose);
   useEffect(() => {
     const [a, b] = stemRange(name);
@@ -308,13 +313,16 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
     // Only when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const target = renameTarget(path, name);
+  const target = renameTarget(path, name, getLang());
   const invalid = typeof target === "string" ? null : target.error;
   const same = target === path;
   return (
-    <Modal title="Preimenuj" onClose={onClose}>
+    <Modal title={tr("Preimenuj", "Rename")} onClose={onClose}>
       <p>
-        Novo ime važi na svim uređajima foldera. Fajl ostaje u istom folderu; isti sadržaj se ne šalje ponovo.
+        {tr(
+          "Novo ime važi na svim uređajima foldera. Fajl ostaje u istom folderu; isti sadržaj se ne šalje ponovo.",
+          "The new name applies on every device of the folder. The file stays in the same folder; its content is not sent again.",
+        )}
       </p>
       <form
         onSubmit={async (e) => {
@@ -326,7 +334,7 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
         }}
       >
         <div className="field">
-          <label htmlFor="rename-name">Ime</label>
+          <label htmlFor="rename-name">{tr("Ime", "Name")}</label>
           <input
             id="rename-name"
             ref={input}
@@ -349,10 +357,10 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
         ) : null}
         <div className="row">
           <button type="button" className="btn" onClick={onClose}>
-            Otkaži
+            {tr("Otkaži", "Cancel")}
           </button>
           <button className="btn primary" disabled={busy || !!invalid || same} data-testid="rename-save">
-            Preimenuj
+            {tr("Preimenuj", "Rename")}
           </button>
         </div>
       </form>
@@ -365,18 +373,27 @@ function RemoveDialog({ row, onClose }: { row: Row; onClose: () => void }) {
   const act = useFileAction();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const tr = useTr();
   useEscape(onClose);
   const dir = row.kind === "dir";
   const name = str(row.name);
   return (
-    <Modal title={dir ? "Obriši folder" : "Obriši fajl"} onClose={onClose}>
+    <Modal title={dir ? tr("Obriši folder", "Delete folder") : tr("Obriši fajl", "Delete file")} onClose={onClose}>
       {dir ? (
         <p>
-          Folder <b>{name}</b> se briše sa svih uređaja foldera. Briše se samo prazan folder.
+          {tr("Folder", "The folder")} <b>{name}</b>{" "}
+          {tr(
+            "se briše sa svih uređaja foldera. Briše se samo prazan folder.",
+            "is deleted from every device of the folder. Only an empty folder can be deleted.",
+          )}
         </p>
       ) : (
         <p>
-          <b>{name}</b> se briše sa svih uređaja foldera. Ostaje u Trash-u, odakle se može vratiti.
+          <b>{name}</b>{" "}
+          {tr(
+            "se briše sa svih uređaja foldera. Ostaje u Trash-u, odakle se može vratiti.",
+            "is deleted from every device of the folder. It stays in the Trash, where it can be restored from.",
+          )}
         </p>
       )}
       {error ? (
@@ -386,7 +403,7 @@ function RemoveDialog({ row, onClose }: { row: Row; onClose: () => void }) {
       ) : null}
       <div className="row">
         <button className="btn" onClick={onClose}>
-          Otkaži
+          {tr("Otkaži", "Cancel")}
         </button>
         <button
           className="btn danger"
@@ -403,7 +420,7 @@ function RemoveDialog({ row, onClose }: { row: Row; onClose: () => void }) {
             setBusy(false);
           }}
         >
-          <Trash2 size={14} /> Obriši
+          <Trash2 size={14} /> {tr("Obriši", "Delete")}
         </button>
       </div>
     </Modal>

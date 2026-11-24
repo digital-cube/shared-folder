@@ -259,8 +259,7 @@ Strana bez prijave, dve kartice:
 ## Van v1
 
 Purge trash-a, `verify` iz GUI-ja, više foldera u jednoj sesiji (promena
-foldera = nova prijava), upload i preuzimanje fajlova, `install.sh`, tamna
-tema.
+foldera = nova prijava), upload i preuzimanje fajlova, `install.sh`.
 
 ## Izrada v1
 
@@ -389,6 +388,26 @@ Putanje ispod su napisane za `/gui`; na korenu hosta su iste bez `/gui`
   `…_revoke`, `…_set_role`, `…_reset_token`, `…_reactivate`) koje zovu nove
   admin rute shfd-a. Token iz odgovora ide samo u žuto polje i nestaje na
   Zatvori ili odlaskom sa strane.
+
+### Jezik i tema
+
+U zaglavlju (i na prijavi i samostalnoj stranici Instalacije) su prekidač
+jezika **SR | EN** i dugme svetla/tamna tema. Oba izbora pamti browser, u
+ključevima jsudc-a (`udc-locale`, `udc-theme`); bez izbora GUI je na srpskom
+i svetao. Skripta u `index.html` postavlja temu i `lang` pre prvog crtanja.
+
+- **Tekstovi** stoje uz kod koji ih prikazuje, kao `tr("srpski", "English")`:
+  `useTr()` iz `web/src/i18n.tsx` u komponentama, `tr` iz `web/src/lang.ts`
+  u običnim modulima (`format.ts`, `filemenu.ts`, ćelije). Naslovi kolona i
+  dugmad akcija redova su u `messages.ts` (sekcije `TBL_*`, `ACTION_*`), a
+  jsudc ih bira po istom jeziku (`UdcI18nProvider` dobija `locale`).
+- **Brojevi i datumi** se formatiraju po jeziku (`sr-Latn-RS` / `en-US`).
+- **Poruke servera** (odbijanja shfd-a, prijava, preimenovanje, trash): web
+  šalje `x-shfd-lang: sr|en` uz svaki poziv, a server (`server/src/lang.ts`)
+  odgovara na tom jeziku.
+- **Tamna tema** je klasa `dark` na `<html>` (jsudc `ThemeProvider`); boje
+  GUI-ja su promenljive `--g-*` u `proto.css`, sa tamnim vrednostima pod
+  `.dark`, a površine prate tamne boje jsudc tabela.
 
 ### Odstupanja od specifikacije
 
