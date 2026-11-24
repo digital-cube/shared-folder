@@ -1,0 +1,42 @@
+{
+  "name": "shfd-gui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web GUI for shfd at /gui: sign-in with a member token, members and tokens, live logs, files and trash, install guide.",
+  "scripts": {
+    "dev:server": "SHFD_GUI_COOKIE_SECURE=0 tsx watch server/src/main.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
+    "build": "npm run typecheck && vite build --config web/vite.config.ts && node scripts/build-server.mjs",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@jsudc/core": "^0.8.0",
+    "@jsudc/react": "^0.8.0",
+    "@jsudc/server": "^0.8.0",
+    "@tanstack/react-query": "^5.108.4",
+    "@tanstack/react-table": "^8.21.3",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.8",
+    "lucide-react": "^1.79.0",
+    "radix-ui": "^1.8.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

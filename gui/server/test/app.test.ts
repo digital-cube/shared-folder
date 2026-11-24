@@ -1,0 +1,138 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { buildGui, LOGIN_INVALID, LOGIN_NOT_ADMIN, type GuiApp } from "../src/app.js";
+import { FakeShfd } from "./fake-shfd.js";
+
+let gui: GuiApp | undefined;
+afterEach(async () => {
+  await gui?.app.close();
+  gui = undefined;
+});
+
+async function setup() {
+  const fake = new FakeShfd();
+  gui = await buildGui({ shfdUrl: "http://shfd", base: "/gui", secureCookie: true, fetchFn: fake.fetch, pollMs: 60_000 });
+  return { fake, app: gui.app };
+}
+
+async function login(app: GuiApp["app"], token: string) {
+  const res = await app.inject({ method: "POST", url: "/gui/api/login", payload: { token } });
+  const cookie = String(res.headers["set-cookie"] ?? "").split(";")[0];
+  return { res, cookie };
+}
+
+async function udc(app: GuiApp["app"], cookie: string, action: string, payload: unknown) {
+  const res = await app.inject({ method: "POST", url: `/gui/udc/${action}`, payload: payload as object, headers: { cookie } });
+  return res.json() as { kind: string; payload: any };
+}
+
+describe("sign-in", () => {
+  it("an admin token signs in with an httpOnly, Secure, SameSite=Strict cookie", async () => {
+    const { fake, app } = await setup();
+    const { res, cookie } = await login(app, fake.members[0].token);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ share_id: fake.share, share_name: "projekti", username: "ana", role: "admin" });
+    const set = String(res.headers["set-cookie"]);
+    expect(set).toMatch(/HttpOnly/);
+    expect(set).toMatch(/SameSite=Strict/);
+    expect(set).toMatch(/Secure/);
+    expect(set).toMatch(/Path=\/gui\//);
+    expect(set).not.toContain(fake.members[0].token);
+    expect(res.body).not.toContain(fake.members[0].token);
+    const s = await app.inject({ method: "GET", url: "/gui/api/session", headers: { cookie } });
+    expect(s.json().username).toBe("ana");
+  });
+
+  it("a member token is refused and gets no session", async () => {
+    const { fake, app } = await setup();
+    const { res } = await login(app, fake.members[1].token);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe(LOGIN_NOT_ADMIN);
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(gui!.sessions.size()).toBe(0);
+  });
+
+  it("a wrong token gets the 401 message", async () => {
+    const { app } = await setup();
+    const { res } = await login(app, "shf_pogresan");
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error).toBe(LOGIN_INVALID);
+    const empty = await login(app, "  ");
+    expect(empty.res.statusCode).toBe(400);
+  });
+
+  it("logout ends the session", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    await app.inject({ method: "POST", url: "/gui/api/logout", headers: { cookie } });
+    const s = await app.inject({ method: "GET", url: "/gui/api/session", headers: { cookie } });
+    expect(s.statusCode).toBe(401);
+    const l = await udc(app, cookie, "list", { collection: "members" });
+    expect(l.kind).toBe("udc.list.err");
+    expect(l.payload.details.reason).toBe("unauthenticated");
+  });
+});
+
+describe("collections and actions", () => {
+  it("lists members without the token or the share id", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const l = await udc(app, cookie, "list", { collection: "members" });
+    expect(l.kind).toBe("udc.list.ok");
+    expect(l.payload.rows.map((r: any) => r.username)).toEqual(["ana", "bob"]);
+    expect(JSON.stringify(l.payload)).not.toContain("shf_");
+    expect(l.payload.rows[0].share_id).toBeUndefined();
+  });
+
+  it("adds a member and shows the token once; errors are sentences", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const add = await udc(app, cookie, "shfd.member_add", { username: "marko", admin: false });
+    expect(add.kind).toBe("udc.shfd.member_add.ok");
+    expect(add.payload.token).toBe(fake.members.find((m) => m.username === "marko")!.token);
+    const dup = await udc(app, cookie, "shfd.member_add", { username: "marko", admin: false });
+    expect(dup.kind).toBe("udc.shfd.member_add.err");
+    expect(dup.payload.message).toBe("Član sa tim imenom već postoji.");
+    const last = await udc(app, cookie, "shfd.member_set_role", { username: "ana", role: "member" });
+    expect(last.payload.message).toMatch(/poslednji aktivni admin/);
+    const rev = await udc(app, cookie, "shfd.member_revoke", { username: "marko" });
+    expect(rev.payload).toEqual({ username: "marko", status: "revoked" });
+    const back = await udc(app, cookie, "shfd.member_reactivate", { username: "marko" });
+    expect(back.kind).toBe("udc.shfd.member_reactivate.ok");
+  });
+
+  it("an admin who gives up the role is signed out", async () => {
+    const { fake, app } = await setup();
+    fake.add("jelena", "admin");
+    const { cookie } = await login(app, fake.members[0].token);
+    const r = await udc(app, cookie, "shfd.member_set_role", { username: "ana", role: "member" });
+    expect(r.kind).toBe("udc.shfd.member_set_role.ok");
+    const s = await app.inject({ method: "GET", url: "/gui/api/session", headers: { cookie } });
+    expect(s.statusCode).toBe(401);
+  });
+
+  it("files: the root, a subfolder with .., and search inside it", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const root = await udc(app, cookie, "list", { collection: "files" });
+    expect(root.payload.rows.map((r: any) => `${r.kind}:${r.name}`)).toEqual(["dir:docs", "file:a.txt"]);
+    const sub = await udc(app, cookie, "list", { collection: "files", filter: { field: "path", op: "eq", value: "docs" } });
+    expect(sub.payload.rows.map((r: any) => r.name)).toEqual(["..", "plan.md"]);
+    expect(sub.payload.rows[0].path).toBe("");
+    const found = await udc(app, cookie, "list", {
+      collection: "files",
+      filter: { and: [{ field: "path", op: "eq", value: "docs" }, { field: "name", op: "contains", value: "zzz" }] },
+    });
+    expect(found.payload.rows.map((r: any) => r.name)).toEqual([".."]);
+  });
+
+  it("logs come newest first from the buffer", async () => {
+    const { fake, app } = await setup();
+    fake.append({ ts: "2026-11-24T10:00:00Z", type: "event", seq: 1, member: "ana", op: "put", path: "a.txt" });
+    fake.append({ ts: "2026-11-24T10:00:01Z", type: "event", seq: 2, member: "bob", op: "mkdir", path: "docs" });
+    const { cookie } = await login(app, fake.members[0].token);
+    const l = await udc(app, cookie, "list", { collection: "logs" });
+    expect(l.payload.rows.map((r: any) => r.path)).toEqual(["docs", "a.txt"]);
+    const ov = await udc(app, cookie, "shfd.overview", {});
+    expect(ov.payload).toMatchObject({ version: "abc1234", server_ok: true, head: 3, members: 2, connected: 0 });
+  });
+});
