@@ -35,7 +35,7 @@ preko SSH-a.
 | `internal/shfdcli` | komande `shfd`; admin komande idu kroz `admin.sock` pokrenutog servera ili, bez njega, kroz isti handler u procesu | 8.5 |
 | `internal/client` | klijent: lokalno stanje (`state.db`, manifest, stanje servera), skeniranje uz `.shfignore`, poređenje tri stanja (`Plan`), ciklus sinhronizacije, `join`, `status`, zaštita od masovnog brisanja, `settings.json` | 7, 8.1, 8.2, 8.4 |
 | `internal/daemon` | `shf daemon`: WebSocket sa ponovnim povezivanjem, rezervni poll, praćenje foldera (fsnotify), odlaganje, fajlovi koji se još upisuju, puno poređenje, sopstvena preuzimanja se ne šalju nazad | 8.3 |
-| `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent | 8.3 |
+| `internal/service` | `shf service install\|uninstall\|status`: systemd user jedinica, launchd agent; pamti putanje `rsync`-a i `ssh`-a i postavlja `PATH`, odbija star rsync | 8.3 |
 | `internal/shfcli` | komande `shf` | 8.5 |
 | `internal/sshdtest` | privremeni `sshd` za integracione testove | — |
 | `e2e` | testovi s kraja na kraj (build tag `e2e`, `make e2e`): pravi `shfd`, `shf daemon`-i i rsync preko SSH-a | 6, 7, 8 |
@@ -92,6 +92,14 @@ foldera je van njega, u `$XDG_STATE_HOME/shf/<share-id>/` (na macOS-u
 prenos su potrebni `ssh` i rsync 3.2.4+; adresu sshd-a klijent dobija od
 servera (`shfd serve --ssh-endpoint`) ili iz `--ssh`.
 
+`shf` traži `rsync` i `ssh` u `PATH`-u; `SHF_RSYNC` i `SHF_SSH` (apsolutne
+putanje) imaju prednost. Na macOS-u je `/usr/bin/rsync` Apple-ov `openrsync`
+(predstavlja se kao 2.6.9) i ne radi: `brew install rsync`, pa Homebrew u
+`PATH` ispred `/usr/bin`, npr. `eval "$(/opt/homebrew/bin/brew shellenv)"` u
+`~/.zprofile` (na Intel Mac-u `/usr/local/bin/brew`). `rsync --version` u
+novom terminalu treba da pokaže 3.2.4 ili noviji. Ako nađe pogrešan rsync,
+`shf` kaže koji je našao (putanju) i šta treba uraditi.
+
 ### Pozadinski klijent
 
 ```sh
@@ -109,6 +117,25 @@ poll-a. Na Linux-u je jedinica `~/.config/systemd/user/shf.service`, log se
 `~/Library/Logs/shf.log`. Ako je pri instalaciji postavljen
 `SHF_STATE_HOME`, upisuje se u jedinicu. Posle zamene binarnog fajla
 ponovo pokrenite `shf service install`.
+
+Servis ne vidi `PATH` vašeg shell-a (launchd daje samo
+`/usr/bin:/bin:/usr/sbin:/sbin`), pa `shf service install` **pamti putanje
+alata**: nalazi `rsync` i `ssh` isto kao `shf join` (u `PATH`-u shell-a iz
+kog ga pokrećete, ili iz `SHF_RSYNC`/`SHF_SSH`), proverava verziju rsync-a i
+upisuje apsolutne putanje u jedinicu/agent kao `SHF_RSYNC` i `SHF_SSH`, uz
+`PATH` (na macOS-u `/opt/homebrew/bin:/usr/local/bin`, pa `PATH` shell-a,
+pa sistemske putanje; na Linux-u `PATH` shell-a). Putanje koje je upisao
+ispisuje na kraju. Ako je nađeni rsync stariji od 3.2.4 ili je `openrsync`,
+ne instalira ništa, kaže zašto i izlazi sa kodom 1. **Posle zamene ili
+nadogradnje rsync-a (ili ssh-a) ponovo pokrenite `shf service install`.**
+Na macOS-u se provera radi ovako:
+
+```sh
+rsync --version | head -1     # rsync  version 3.x.y (ne openrsync)
+shf service install           # na kraju: rsync: /opt/homebrew/bin/rsync
+shf service status            # state: running
+tail ~/Library/Logs/shf.log   # bez "rsync/ssh not available"
+```
 
 Šta pozadinski klijent radi za svaki folder:
 

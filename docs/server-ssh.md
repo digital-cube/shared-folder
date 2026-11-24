@@ -17,8 +17,25 @@ apt install openssh-server rsync          # Debian/Ubuntu
 
 Na klijentu: `ssh` i **rsync 3.2.4 ili noviji**. Starije verzije drugačije
 pakuju imena fajlova u komandu koju šalju serveru. `openrsync`, koji macOS
-isporučuje, ne radi; instalirajte `brew install rsync`. `shf` proverava
-verziju pri pokretanju i, ako ne odgovara, kaže šta treba instalirati.
+isporučuje kao `/usr/bin/rsync` (predstavlja se kao 2.6.9), ne radi:
+
+```sh
+brew install rsync
+eval "$(/opt/homebrew/bin/brew shellenv)"   # i u ~/.zprofile; Homebrew ispred /usr/bin
+rsync --version | head -1                   # rsync  version 3.x.y
+```
+
+`shf` proverava verziju pri pokretanju i, ako ne odgovara, kaže koji je
+rsync našao (putanju) i šta treba instalirati. `SHF_RSYNC` i `SHF_SSH`
+(apsolutne putanje) imaju prednost nad `PATH`-om.
+
+Pozadinski klijent (`shf service install`) ne vidi `PATH` shell-a. Zato
+`shf service install` pamti putanje alata: upisuje u systemd jedinicu ili
+launchd agent apsolutne putanje `rsync`-a i `ssh`-a koje je našao
+(`SHF_RSYNC`, `SHF_SSH`) i `PATH` sa `/opt/homebrew/bin` i `/usr/local/bin`
+ispred sistemskih putanja. Star rsync ili `openrsync` odbija i ne instalira
+ništa. Posle zamene ili nadogradnje rsync-a ponovo pokrenite
+`shf service install`.
 
 ## 2. Sistemski korisnik
 

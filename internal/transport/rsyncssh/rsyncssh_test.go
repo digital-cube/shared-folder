@@ -56,6 +56,60 @@ func TestNewChecksTools(t *testing.T) {
 	}
 }
 
+func TestRsyncMessageOnMacOS(t *testing.T) {
+	defer func(g string) { goos = g }(goos)
+	for name, tc := range map[string]struct {
+		goos, out string
+		want      []string
+	}{
+		"openrsync on macOS": {"darwin", "openrsync: protocol version 29\nrsync version 2.6.9 compatible",
+			[]string{"Apple's openrsync", "brew install rsync", "brew shellenv", "ahead of /usr/bin", "shf service install"}},
+		"rsync 2.6.9 on macOS": {"darwin", "rsync  version 2.6.9  protocol version 29",
+			[]string{"Apple's rsync 2.6.9", "brew install rsync", "brew shellenv"}},
+		"openrsync elsewhere": {"linux", "openrsync: protocol version 29\nrsync version 2.6.9 compatible",
+			[]string{"is not the rsync shf needs", "3.2.4"}},
+		"old rsync on Linux": {"linux", "rsync  version 3.1.3  protocol version 31",
+			[]string{"rsync 3.1.3 is too old", "3.2.4"}},
+	} {
+		goos = tc.goos
+		bin := script(t, "cat <<'EOF'\n"+tc.out+"\nEOF")
+		_, err := FindTools(bin, script(t, "exit 0"))
+		if !errors.Is(err, ErrNotInstalled) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, w := range append(tc.want, bin) {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: message lacks %q: %v", name, w, err)
+			}
+		}
+	}
+}
+
+func TestFindToolsFromEnvironment(t *testing.T) {
+	rs, ssh := script(t, `echo "rsync  version 3.2.7"`), script(t, "exit 0")
+	t.Setenv(EnvRsync, rs)
+	t.Setenv(EnvSSH, ssh)
+	tools, err := FindTools("", "")
+	if err != nil || tools.Rsync != rs || tools.SSH != ssh {
+		t.Fatalf("FindTools: %+v %v", tools, err)
+	}
+	// the variables are checked the same way as Config
+	t.Setenv(EnvRsync, script(t, `echo "rsync  version 3.1.3"`))
+	if _, err := FindTools("", ""); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("old rsync from %s: %v", EnvRsync, err)
+	}
+	cfg := baseConfig(t)
+	cfg.SSH = ""
+	if _, err := New(cfg); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("New with old $%s: %v", EnvRsync, err)
+	}
+	// a path given in Config wins over the variable
+	cfg.Rsync = rs
+	if _, err := New(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewValidates(t *testing.T) {
 	rs := script(t, `echo "rsync  version 3.2.7"`)
 	for name, mut := range map[string]func(*Config){

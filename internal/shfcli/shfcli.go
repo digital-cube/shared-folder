@@ -57,7 +57,10 @@ to the current directory (or any folder inside a joined one).
 daemon synchronizes every joined folder in the background: changes on
 the server arrive over a WebSocket (polling while it is down), local
 changes are seen as they happen. service install makes it start with
-your session (systemd user unit on Linux, launchd agent on macOS).
+your session (systemd user unit on Linux, launchd agent on macOS); it
+records the rsync and ssh found now (in PATH, or $SHF_RSYNC and
+$SHF_SSH) and refuses an rsync older than 3.2.4, so run it again after
+replacing rsync.
 
 A cycle that would delete more than 20 files, or more than 10 % of the
 folder (whichever is less), on the server sends none of the deletions:
@@ -449,6 +452,12 @@ func serviceCmd(args []string, env Env) error {
 			return err
 		}
 	}
+	if args[0] == "install" {
+		// the tools the daemon will run; a bad rsync installs nothing
+		if senv, err = senv.Resolve(); err != nil {
+			return fmt.Errorf("service not installed: %w", err)
+		}
+	}
 	m, err := service.For(senv)
 	if err != nil {
 		return err
@@ -460,6 +469,7 @@ func serviceCmd(args []string, env Env) error {
 			return err
 		}
 		fmt.Fprintf(w, "installed %s\nshf daemon runs now and with every login; it serves every joined folder\n", m.File())
+		fmt.Fprintf(w, "rsync: %s\nssh:   %s\n(after replacing rsync or ssh, run \"shf service install\" again)\n", senv.Rsync, senv.SSH)
 	case "uninstall":
 		if err := m.Uninstall(); err != nil {
 			return err

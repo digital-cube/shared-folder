@@ -46,6 +46,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -97,7 +98,8 @@ type Config struct {
 	// BwLimit is rsync's --bwlimit in KiB/s; 0 means unlimited.
 	BwLimit int
 
-	// Rsync and SSH are the binaries; "" looks them up in PATH.
+	// Rsync and SSH are the binaries; "" takes $SHF_RSYNC and $SHF_SSH,
+	// and when those are not set either, looks them up in PATH.
 	Rsync, SSH string
 
 	// ControlPersist is how long the shared SSH connection stays open
@@ -184,15 +186,11 @@ func New(cfg Config) (*Transport, error) {
 		return nil, fmt.Errorf("rsyncssh: SSH key: %w", err)
 	}
 	t := &Transport{cfg: cfg}
-	if t.rsync, err = lookPath(cfg.Rsync, "rsync"); err != nil {
+	tools, err := FindTools(cfg.Rsync, cfg.SSH)
+	if err != nil {
 		return nil, err
 	}
-	if t.ssh, err = lookPath(cfg.SSH, "ssh"); err != nil {
-		return nil, err
-	}
-	if err := checkRsyncVersion(t.rsync); err != nil {
-		return nil, err
-	}
+	t.rsync, t.ssh = tools.Rsync, tools.SSH
 	if !cfg.NoMultiplex && multiplexSupported {
 		t.ctl = controlPath(cfg)
 	}
@@ -247,6 +245,43 @@ func (t *Transport) prepareControlDir() error {
 	return checkPrivateDir(dir)
 }
 
+// Environment variables naming the rsync and ssh binaries, read when
+// Config leaves them empty. "shf service install" writes the absolute
+// paths it found into the service definition through them, because a
+// service manager starts the daemon with a PATH of its own (launchd's
+// lacks Homebrew, so it finds Apple's openrsync in /usr/bin).
+const (
+	EnvRsync = "SHF_RSYNC"
+	EnvSSH   = "SHF_SSH"
+)
+
+// Tools are the absolute paths of the rsync and ssh a Transport runs.
+type Tools struct{ Rsync, SSH string }
+
+// FindTools finds rsync and ssh the way New does: the given name or path,
+// else $SHF_RSYNC / $SHF_SSH, else "rsync" / "ssh" in PATH; and checks that
+// rsync is MinRsyncVersion or newer. Errors wrap ErrNotInstalled.
+func FindTools(rsync, ssh string) (Tools, error) {
+	var t Tools
+	var err error
+	if rsync == "" {
+		rsync = os.Getenv(EnvRsync)
+	}
+	if ssh == "" {
+		ssh = os.Getenv(EnvSSH)
+	}
+	if t.Rsync, err = lookPath(rsync, "rsync"); err != nil {
+		return Tools{}, err
+	}
+	if t.SSH, err = lookPath(ssh, "ssh"); err != nil {
+		return Tools{}, err
+	}
+	if err := checkRsyncVersion(t.Rsync); err != nil {
+		return Tools{}, err
+	}
+	return t, nil
+}
+
 func lookPath(given, name string) (string, error) {
 	if given == "" {
 		given = name
@@ -256,8 +291,19 @@ func lookPath(given, name string) (string, error) {
 		return "", fmt.Errorf("%w: %s not found (%v); install it with your package manager, e.g. \"apt install %s\" or \"brew install %s\"",
 			ErrNotInstalled, name, err, name, name)
 	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
 	return p, nil
 }
+
+// goos is runtime.GOOS; tests replace it to see another platform's message.
+var goos = runtime.GOOS
+
+// macOSRsyncHint is what a Mac user does about Apple's openrsync.
+const macOSRsyncHint = `install rsync with "brew install rsync" and put Homebrew ahead of /usr/bin in PATH ` +
+	`(eval "$(/opt/homebrew/bin/brew shellenv)" in your shell profile; /usr/local/bin/brew on an Intel Mac), ` +
+	`then run "shf service install" again if the background client is installed`
 
 func checkRsyncVersion(bin string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -267,17 +313,31 @@ func checkRsyncVersion(bin string) error {
 		return fmt.Errorf("%w: running %s --version: %v", ErrNotInstalled, bin, err)
 	}
 	m := versionRE.FindSubmatch(out)
-	if m == nil {
+	var v [3]int
+	if m != nil {
+		for i := range v {
+			v[i], _ = strconv.Atoi(string(m[i+1]))
+		}
+	}
+	// openrsync (macOS 15+ ships it as /usr/bin/rsync) reports itself as
+	// "openrsync: protocol version 29" and "rsync version 2.6.9 compatible";
+	// older macOS had the real rsync 2.6.9, just as unusable.
+	openrsync := bytes.Contains(out, []byte("openrsync"))
+	if goos == "darwin" && (openrsync || v == [3]int{2, 6, 9}) {
+		what := "Apple's openrsync"
+		if !openrsync {
+			what = "Apple's rsync 2.6.9"
+		}
+		return fmt.Errorf("%w: %s is %s; shf needs rsync %s or newer: %s",
+			ErrNotInstalled, bin, what, MinRsyncVersion, macOSRsyncHint)
+	}
+	if openrsync || m == nil {
 		first, _, _ := strings.Cut(string(out), "\n")
 		return fmt.Errorf("%w: %s is not the rsync shf needs (%q); install rsync %s or newer (on macOS: brew install rsync)",
 			ErrNotInstalled, bin, first, MinRsyncVersion)
 	}
-	var v [3]int
-	for i := range v {
-		v[i], _ = strconv.Atoi(string(m[i+1]))
-	}
 	if v[0]*1_000_000+v[1]*1000+v[2] < 3_002_004 {
-		return fmt.Errorf("%w: rsync %d.%d.%d is too old; shf needs %s or newer", ErrNotInstalled, v[0], v[1], v[2], MinRsyncVersion)
+		return fmt.Errorf("%w: rsync %d.%d.%d is too old (%s); shf needs %s or newer", ErrNotInstalled, v[0], v[1], v[2], bin, MinRsyncVersion)
 	}
 	return nil
 }

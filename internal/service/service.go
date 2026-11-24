@@ -1,6 +1,15 @@
 // Package service installs shf daemon to start with the user's session
 // (docs/specifikacija.md, 8.3): a systemd user unit on Linux, a launchd
 // agent on macOS. One daemon serves every joined folder.
+//
+// A service manager starts the daemon with a PATH of its own: launchd's is
+// /usr/bin:/bin:/usr/sbin:/sbin, where macOS has Apple's openrsync, which
+// shf cannot use. So Install finds rsync and ssh the way the transport
+// does (in the installing shell's PATH, or $SHF_RSYNC / $SHF_SSH), refuses
+// an rsync that is too old, and writes their absolute paths into the
+// definition as $SHF_RSYNC and $SHF_SSH, together with a PATH that puts
+// Homebrew ahead of the system directories on macOS. After rsync is
+// replaced, "shf service install" has to run again.
 package service
 
 import (
@@ -13,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+
+	"github.com/digital-cube/shared-folder/internal/transport/rsyncssh"
 )
 
 // Names of what is installed.
@@ -32,8 +43,76 @@ type Env struct {
 	// StateHome, when not empty, is passed to the daemon as
 	// $SHF_STATE_HOME (it was set when the service was installed).
 	StateHome string
+	// Rsync and SSH are the absolute paths of the tools the daemon runs,
+	// passed as $SHF_RSYNC and $SHF_SSH; Resolve finds them.
+	Rsync, SSH string
+	// Path is the daemon's $PATH; Resolve sets it (ServicePath).
+	Path string
 	// Run runs a service manager command and returns its combined output.
 	Run func(name string, args ...string) ([]byte, error)
+}
+
+// macOS: Homebrew on Apple silicon, then Homebrew on Intel (and other
+// installs), then the system; launchd's own PATH is only the last four.
+var (
+	darwinFirst  = []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	darwinSystem = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	linuxDefault = []string{"/usr/local/bin", "/usr/bin", "/bin"}
+)
+
+// ServicePath is the PATH the daemon runs with. On macOS it is Homebrew's
+// directories, then the absolute entries of installPath, then the system
+// directories; elsewhere the absolute entries of installPath (the PATH of
+// the shell running "shf service install"), or /usr/local/bin:/usr/bin:/bin
+// when it has none. Each directory appears once.
+func ServicePath(goos, installPath string) string {
+	var dirs []string
+	seen := map[string]bool{}
+	add := func(ds ...string) {
+		for _, d := range ds {
+			d = filepath.Clean(d)
+			// relative entries mean nothing to a service; ':' and newlines
+			// would break PATH or the definition
+			if !filepath.IsAbs(d) || seen[d] || strings.ContainsAny(d, ":\n") {
+				continue
+			}
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	own := filepath.SplitList(installPath)
+	if goos == "darwin" {
+		add(darwinFirst...)
+		add(own...)
+		add(darwinSystem...)
+	} else {
+		add(own...)
+		if len(dirs) == 0 {
+			add(linuxDefault...)
+		}
+	}
+	return strings.Join(dirs, string(filepath.ListSeparator))
+}
+
+// Resolve fills in what Install writes and checks it: rsync and ssh
+// (rsyncssh.FindTools with env.Rsync and env.SSH: a path given there,
+// else $SHF_RSYNC / $SHF_SSH, else the process's PATH; rsync must be new
+// enough) and Path (ServicePath of $PATH). Its errors wrap
+// rsyncssh.ErrNotInstalled and say what to do; nothing is installed then.
+func (env Env) Resolve() (Env, error) {
+	getenv := env.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	tools, err := rsyncssh.FindTools(env.Rsync, env.SSH)
+	if err != nil {
+		return env, err
+	}
+	env.Rsync, env.SSH = tools.Rsync, tools.SSH
+	if env.Path == "" {
+		env.Path = ServicePath(env.GOOS, getenv("PATH"))
+	}
+	return env, nil
 }
 
 // Manager is one platform's service manager.
@@ -122,8 +201,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={{.Exe}} daemon
-{{- if .StateHome}}
-Environment={{.StateHome}}
+{{- range .Environment}}
+Environment={{.}}
 {{- end}}
 Restart=on-failure
 RestartSec=10
@@ -134,7 +213,7 @@ TimeoutStopSec=90
 WantedBy=default.target
 `))
 
-// systemdQuote quotes a word for ExecStart= and Environment=.
+// systemdQuote quotes a word for ExecStart=.
 func systemdQuote(s string) string {
 	if !strings.ContainsAny(s, " \t\"'\\%$") {
 		return s
@@ -143,12 +222,39 @@ func systemdQuote(s string) string {
 	return `"` + r.Replace(s) + `"`
 }
 
+// systemdEnvQuote quotes one NAME=value assignment for Environment=,
+// which expands %-specifiers but not $variables.
+func systemdEnvQuote(s string) string {
+	if !strings.ContainsAny(s, " \t\"'\\%") {
+		return s
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`)
+	return `"` + r.Replace(s) + `"`
+}
+
+// envVar is one variable the daemon is started with.
+type envVar struct{ Name, Value string }
+
+// environment is what the service sets for the daemon, in this order.
+func environment(env Env) []envVar {
+	var vs []envVar
+	for _, v := range []envVar{{"PATH", env.Path}, {rsyncssh.EnvRsync, env.Rsync}, {rsyncssh.EnvSSH, env.SSH}, {"SHF_STATE_HOME", env.StateHome}} {
+		if v.Value != "" {
+			vs = append(vs, v)
+		}
+	}
+	return vs
+}
+
 // Unit is the systemd unit for env.
 func Unit(env Env) string {
 	var b bytes.Buffer
-	data := struct{ Exe, StateHome string }{Exe: systemdQuote(env.Exe)}
-	if env.StateHome != "" {
-		data.StateHome = systemdQuote("SHF_STATE_HOME=" + env.StateHome)
+	data := struct {
+		Exe         string
+		Environment []string
+	}{Exe: systemdQuote(env.Exe)}
+	for _, v := range environment(env) {
+		data.Environment = append(data.Environment, systemdEnvQuote(v.Name+"="+v.Value))
 	}
 	unitTmpl.Execute(&b, data)
 	return b.String()
@@ -157,7 +263,11 @@ func Unit(env Env) string {
 func (s *systemd) File() string { return s.file }
 
 func (s *systemd) Install() error {
-	if err := writeFile(s.file, []byte(Unit(s.env))); err != nil {
+	env, err := s.env.Resolve()
+	if err != nil {
+		return err
+	}
+	if err := writeFile(s.file, []byte(Unit(env))); err != nil {
 		return err
 	}
 	if _, err := run(s.env, "systemctl", "--user", "daemon-reload"); err != nil {
@@ -167,7 +277,7 @@ func (s *systemd) Install() error {
 	if _, err := run(s.env, "systemctl", "--user", "enable", SystemdUnit); err != nil {
 		return err
 	}
-	_, err := run(s.env, "systemctl", "--user", "restart", SystemdUnit)
+	_, err = run(s.env, "systemctl", "--user", "restart", SystemdUnit)
 	return err
 }
 
@@ -213,11 +323,13 @@ var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" e
 		<string>{{.Exe}}</string>
 		<string>daemon</string>
 	</array>
-{{- if .StateHome}}
+{{- if .Environment}}
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>SHF_STATE_HOME</key>
-		<string>{{.StateHome}}</string>
+{{- range .Environment}}
+		<key>{{.Name}}</key>
+		<string>{{.Value}}</string>
+{{- end}}
 	</dict>
 {{- end}}
 	<key>RunAtLoad</key>
@@ -247,8 +359,14 @@ func (l *launchd) LogFile() string { return filepath.Join(l.home, defaultLogDir,
 // Plist is the launchd agent for env, logging to logFile.
 func Plist(env Env, logFile string) string {
 	var b bytes.Buffer
-	plistTmpl.Execute(&b, struct{ Label, Exe, StateHome, Log string }{
-		Label: LaunchdLabel, Exe: xmlEscape(env.Exe), StateHome: xmlEscape(env.StateHome), Log: xmlEscape(logFile)})
+	data := struct {
+		Label, Exe, Log string
+		Environment     []envVar
+	}{Label: LaunchdLabel, Exe: xmlEscape(env.Exe), Log: xmlEscape(logFile)}
+	for _, v := range environment(env) {
+		data.Environment = append(data.Environment, envVar{xmlEscape(v.Name), xmlEscape(v.Value)})
+	}
+	plistTmpl.Execute(&b, data)
 	return b.String()
 }
 
@@ -261,15 +379,19 @@ func (l *launchd) domain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 func (l *launchd) File() string { return l.file }
 
 func (l *launchd) Install() error {
+	env, err := l.env.Resolve()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(l.LogFile()), 0o755); err != nil {
 		return err
 	}
-	if err := writeFile(l.file, []byte(Plist(l.env, l.LogFile()))); err != nil {
+	if err := writeFile(l.file, []byte(Plist(env, l.LogFile()))); err != nil {
 		return err
 	}
 	// bootout first, so a reinstall loads the new definition
 	run(l.env, "launchctl", "bootout", l.domain()+"/"+LaunchdLabel)
-	_, err := run(l.env, "launchctl", "bootstrap", l.domain(), l.file)
+	_, err = run(l.env, "launchctl", "bootstrap", l.domain(), l.file)
 	return err
 }
 
