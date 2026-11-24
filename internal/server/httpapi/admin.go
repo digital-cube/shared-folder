@@ -23,6 +23,7 @@ import (
 //	POST /v1/shares/{id}/admin/members/{username}/revoke
 //	POST /v1/shares/{id}/admin/members/{username}/role    SetRoleRequest
 //	POST /v1/shares/{id}/admin/members/{username}/reset-token
+//	DELETE /v1/shares/{id}/admin/members/{username}/devices/{device}   (revokes one device's credentials in the folder)
 //	GET  /v1/shares/{id}/admin/log?after=&limit=
 //	GET  /v1/shares/{id}/admin/files?dir=
 //	GET  /v1/shares/{id}/admin/files/content?path=&download=  (file content, see content.go)
@@ -61,6 +62,7 @@ func registerAdmin(mux *http.ServeMux, wrap func(handler) http.Handler, raw func
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/revoke", wrap(memberRevoke))
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/role", wrap(memberRole))
 	mux.Handle("POST /v1/shares/{id}/admin/members/{username}/reset-token", wrap(memberResetToken))
+	mux.Handle("DELETE /v1/shares/{id}/admin/members/{username}/devices/{device}", wrap(a.memberDeviceRevoke))
 	mux.Handle("GET /v1/shares/{id}/admin/log", wrap(logRead))
 	mux.Handle("GET /v1/shares/{id}/admin/files", wrap(filesList))
 	mux.Handle("GET /v1/shares/{id}/admin/files/content", raw(a.fileContent))
@@ -290,6 +292,28 @@ func memberRevoke(w http.ResponseWriter, r *http.Request, sh *server.Share, m *s
 		return nil, err
 	}
 	return MemberResponse{Member: mi}, nil
+}
+
+// memberDeviceRevoke revokes the folder credentials of one device of a
+// member and answers with the member as it is now, devices included.
+func (a *api) memberDeviceRevoke(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
+	name := r.PathValue("username")
+	id, err := strconv.ParseInt(r.PathValue("device"), 10, 64)
+	if err != nil || id <= 0 {
+		return nil, &server.Error{Code: server.CodeUnknownDevice, Message: "no device " + strconv.Quote(r.PathValue("device"))}
+	}
+	if err := sh.RevokeMemberDevice(name, id); err != nil {
+		return nil, err
+	}
+	mi, err := sh.MemberInfoByName(name)
+	if err != nil {
+		return nil, err
+	}
+	one := []server.MemberInfo{*mi}
+	if err := a.srv.FillAccounts(one); err != nil {
+		return nil, err
+	}
+	return MemberResponse{Member: &one[0]}, nil
 }
 
 func memberRole(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {

@@ -18,10 +18,13 @@
 //	GET  /v1/shares/{id}/admin/thumbs/{hash}  (admin role only; image/jpeg, see thumbs.go)
 //	GET  /v1/shares/{id}/admin/files/content  (admin role only; the file, see content.go)
 //	     /v1/auth/..., /v1/me/..., /v1/users      (accounts and device tokens, see accounts.go)
+//	POST /v1/shares/{id}/devices       (account device token; the device's folder token, see accounts.go)
 //
-// The routes of a folder also take the device token of an account that is
-// an active member of it (see accounts.go), except the WebSocket and
-// PUT ssh-key: devices get their own credentials for a folder later.
+// The routes of a folder take three credentials (server.AuthenticateFolder):
+// the member's own token, the folder token of one of its account's devices
+// (POST /v1/shares/{id}/devices), and the account's device token itself.
+// All three act as the member. PUT ssh-key takes the first two: with a
+// device's folder token it registers that device's key.
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
 // of the server.Code values.
@@ -270,8 +273,9 @@ func bearerToken(r *http.Request) string {
 
 // authenticate resolves the folder and member of a request, answering it
 // with an error when that fails. The token is a member token of the
-// folder, or the device token of an account that is an active member of
-// it; either way the result is that member.
+// folder, a device's folder token, or the device token of an account that
+// is an active member of it; the result is that member, with the device
+// of the credential (server.Member.DeviceID).
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Share, *server.Member, bool) {
 	token := bearerToken(r)
 	if token == "" {
@@ -287,12 +291,7 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Shar
 		a.fail(w, r, err)
 		return nil, nil, false
 	}
-	var m *server.Member
-	if server.IsDeviceToken(token) {
-		m, err = a.deviceMember(sh, token)
-	} else {
-		m, err = sh.Authenticate(token)
-	}
+	m, err := a.srv.AuthenticateFolder(sh, token)
 	if err != nil {
 		a.fail(w, r, err)
 		return nil, nil, false
@@ -360,16 +359,18 @@ type SSHKeyRequest struct {
 }
 
 // SSHKeyResponse confirms the key that rsync over SSH now accepts for the
-// member; it replaces any earlier one.
+// member (or, with a device's folder token, for that device); it replaces
+// any earlier one of the same credential.
 type SSHKeyResponse struct {
 	PublicKey   string `json:"public_key"` // "type base64", without the comment
 	Fingerprint string `json:"fingerprint"`
 	// SSH is where rsync over SSH connects (shfd serve --ssh-endpoint);
 	// empty fields are left to the client's defaults.
 	SSH server.SSHEndpoint `json:"ssh"`
-	// Replaced is set when the member had a different key, registered by
-	// another device, which can no longer sync. Absent on the first
-	// registration and when the same key is registered again.
+	// Replaced is set when the member had a different key of its own,
+	// registered by another device, which can no longer sync. Absent on
+	// the first registration, when the same key is registered again, and
+	// always for a device's folder token: devices do not share a key.
 	Replaced *ReplacedKey `json:"replaced,omitempty"`
 }
 
@@ -380,7 +381,7 @@ type ReplacedKey struct {
 
 func (a *api) setSSHKey(w http.ResponseWriter, r *http.Request, sh *server.Share, m *server.Member) (any, error) {
 	if server.IsDeviceToken(bearerToken(r)) {
-		return nil, &server.Error{Code: server.CodeForbidden, Message: "an SSH key is registered with the member's token; device keys come with device credentials"}
+		return nil, &server.Error{Code: server.CodeForbidden, Message: "an SSH key is registered with a folder token: get the device's with POST /v1/shares/{id}/devices"}
 	}
 	var req SSHKeyRequest
 	if err := decode(r, &req); err != nil {
@@ -402,7 +403,7 @@ func status(c server.Code) int {
 	switch c {
 	case server.CodeUnauthorized, server.CodeInvalidCredentials:
 		return http.StatusUnauthorized
-	case server.CodeForbidden, server.CodePasswordChangeRequired, server.CodeWrongPassword:
+	case server.CodeForbidden, server.CodePasswordChangeRequired, server.CodeWrongPassword, server.CodeDeviceRevoked:
 		return http.StatusForbidden
 	case server.CodeTooManyAttempts:
 		return http.StatusTooManyRequests

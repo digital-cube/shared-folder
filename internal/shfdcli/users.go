@@ -13,7 +13,7 @@ import (
 //
 //	shfd user add <username> [--display-name NAME]
 //	shfd user passwd <username>
-//	shfd user disable|enable <username>
+//	shfd user disable|enable <username> [--authorized-keys FILE]
 //	shfd user list
 //	shfd user show <username>
 //
@@ -66,11 +66,20 @@ func userCmd(args []string, env Env) error {
 		return nil
 	case "disable", "enable":
 		fs := flag.NewFlagSet("user "+args[0], flag.ContinueOnError)
+		var sf sshFlags
+		sf.register(fs, env)
 		root, pos, err := flags(fs, args[1:], 1, env)
 		if err != nil {
 			return err
 		}
-		srv, err := open(root)
+		// disable removes the lines of the account's devices from
+		// authorized_keys.
+		opts, err := sf.options(root, env)
+		if err != nil {
+			return err
+		}
+		opts.SkipRecovery = true
+		srv, err := root.open(opts)
 		if err != nil {
 			return err
 		}
@@ -86,7 +95,7 @@ func userCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(env.Stdout, "disabled %s; signed out %d %s\n", pos[0], n, plural(n, "device", "devices"))
+		fmt.Fprintf(env.Stdout, "disabled %s; signed out %d %s, and their folder credentials and SSH keys are revoked\n", pos[0], n, plural(n, "device", "devices"))
 		return nil
 	case "list":
 		fs := flag.NewFlagSet("user list", flag.ContinueOnError)

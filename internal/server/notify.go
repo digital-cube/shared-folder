@@ -14,8 +14,13 @@ import "sync"
 // case).
 type Watcher struct {
 	MemberID int64
-	Heads    chan int64
-	Revoked  chan struct{}
+	// DeviceID is the account's device whose credential opened the
+	// subscription (0: the member's own token); FolderDevice says it was
+	// the device's folder token rather than the account's device token.
+	DeviceID     int64
+	FolderDevice bool
+	Heads        chan int64
+	Revoked      chan struct{}
 
 	s    *Share
 	once sync.Once
@@ -29,7 +34,14 @@ type watchers struct {
 // Watch subscribes to the folder's HEAD. Call Close when done. Subscribe
 // before reading the current HEAD, so a write in between is not missed.
 func (s *Share) Watch(memberID int64) *Watcher {
-	w := &Watcher{MemberID: memberID, Heads: make(chan int64, 1), Revoked: make(chan struct{}), s: s}
+	return s.WatchAs(&Member{ID: memberID})
+}
+
+// WatchAs is Watch for the credential of an authenticated member
+// (Member.DeviceID), so that revoking that device closes it.
+func (s *Share) WatchAs(m *Member) *Watcher {
+	w := &Watcher{MemberID: m.ID, DeviceID: m.DeviceID, FolderDevice: m.FolderDevice,
+		Heads: make(chan int64, 1), Revoked: make(chan struct{}), s: s}
 	s.watch.mu.Lock()
 	if s.watch.set == nil {
 		s.watch.set = map[*Watcher]struct{}{}
@@ -68,13 +80,19 @@ func (s *Share) notify(head int64) {
 	}
 }
 
-// revokeWatchers closes Revoked of every watcher of the member (its token
-// was revoked or replaced).
+// revokeWatchers closes Revoked of every watcher of the member, whatever
+// its credential (the member was revoked).
 func (s *Share) revokeWatchers(memberID int64) {
+	s.revokeWatchersWhere(func(w *Watcher) bool { return w.MemberID == memberID })
+}
+
+// revokeWatchersWhere closes Revoked of every watcher for which match is
+// true (its credential was revoked or replaced).
+func (s *Share) revokeWatchersWhere(match func(*Watcher) bool) {
 	s.watch.mu.Lock()
 	defer s.watch.mu.Unlock()
 	for w := range s.watch.set {
-		if w.MemberID == memberID {
+		if match(w) {
 			w.once.Do(func() { close(w.Revoked) })
 		}
 	}

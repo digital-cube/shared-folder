@@ -96,7 +96,13 @@ func keysCmd(args []string, env Env) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(env.Stdout, "%s: %d member key(s)\n", opts.AuthorizedKeys.Path, len(es))
+	devs := 0
+	for _, e := range es {
+		if e.DeviceID != 0 {
+			devs++
+		}
+	}
+	fmt.Fprintf(env.Stdout, "%s: %d member key(s), %d device key(s)\n", opts.AuthorizedKeys.Path, len(es)-devs, devs)
 	return nil
 }
 
@@ -107,6 +113,7 @@ func rsyncGate(args []string, env Env) int {
 	fs := flag.NewFlagSet("rsync-gate", flag.ContinueOnError)
 	share := fs.String("share", "", "share id")
 	member := fs.String("member", "", "member id")
+	device := fs.Int64("device", 0, "device id of the account (the line of a device's key)")
 	rsync := fs.String("rsync", "", "rsync binary on the server (default: rsync from PATH)")
 	root, _, err := flags(fs, args, 0, env)
 	if err != nil {
@@ -116,6 +123,10 @@ func rsyncGate(args []string, env Env) int {
 	mid, err := strconv.ParseInt(*member, 10, 64)
 	if err != nil || mid <= 0 || !server.ValidShareID(*share) {
 		fmt.Fprintln(env.Stderr, "shfd rsync-gate: --share <share-id> and --member <member-id> are required")
+		return 2
+	}
+	if *device < 0 {
+		fmt.Fprintln(env.Stderr, "shfd rsync-gate: --device must be a device id")
 		return 2
 	}
 	srv, err := root.open(server.Options{SkipRecovery: true})
@@ -139,6 +150,6 @@ func rsyncGate(args []string, env Env) int {
 	if stdin == nil {
 		stdin = os.Stdin
 	}
-	g := &rsyncgate.Gate{Share: sh, MemberID: mid, Rsync: *rsync}
+	g := &rsyncgate.Gate{Share: sh, MemberID: mid, DeviceID: *device, Server: srv, Rsync: *rsync}
 	return g.Run(ctx, env.Getenv("SSH_ORIGINAL_COMMAND"), stdin, env.Stdout, env.Stderr)
 }

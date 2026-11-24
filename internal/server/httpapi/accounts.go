@@ -18,9 +18,13 @@ import (
 //	POST   /v1/me/password         (device token) {old, new}
 //	DELETE /v1/me/devices/{id}     (device token) revokes one of the account's devices
 //	GET    /v1/users?q=            (device token of a folder admin, or an admin's member token) [{username, display_name}]
+//	POST   /v1/shares/{id}/devices (device token) server.FolderDevice: the device's folder token
 //
 // A device token ("shd_…") is also accepted on the routes of a folder in
 // which its account is an active member (auth): it acts as that member.
+// A client device asks for a folder token of its own instead
+// (POST /v1/shares/{id}/devices) and registers its own SSH key with it
+// (PUT ssh-key): rsync over SSH needs a key per device.
 // While the account has a temporary password (must_change), the token is
 // good only for /v1/me, /v1/me/password and /v1/auth/logout; everything
 // else answers 403 password_change_required.
@@ -117,6 +121,22 @@ func registerAccounts(mux *http.ServeMux, a *api) {
 	mux.Handle("POST /v1/me/password", a.session(true, a.changePassword))
 	mux.Handle("DELETE /v1/me/devices/{device}", a.session(true, a.revokeDevice))
 	mux.HandleFunc("GET /v1/users", a.users)
+	mux.Handle("POST /v1/shares/{id}/devices", a.session(false, a.folderDevice))
+}
+
+// folderDevice issues the folder token of the session's device: a new
+// one on every call, which revokes the device's earlier token in the
+// folder. An unknown folder answers 401 like a token not valid for it, a
+// folder the account is not an active member of 403.
+func (a *api) folderDevice(w http.ResponseWriter, r *http.Request, sess *server.Session) (any, error) {
+	sh, err := a.srv.Share(r.PathValue("id"))
+	if server.CodeOf(err) == server.CodeUnknownShare {
+		return nil, &server.Error{Code: server.CodeUnauthorized, Message: "token not valid for this folder"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a.srv.IssueFolderDevice(sh, sess)
 }
 
 // login answers a sign-in. Over the attempt limit it is 429 with
@@ -277,17 +297,4 @@ func (a *api) users(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// deviceMember resolves a device token on a folder route: the active
-// member of sh linked to its account.
-func (a *api) deviceMember(sh *server.Share, token string) (*server.Member, error) {
-	sess, err := a.srv.AuthenticateDevice(token)
-	if err != nil {
-		return nil, err
-	}
-	if sess.User.MustChange {
-		return nil, errMustChange
-	}
-	return a.srv.MemberForUser(sh, sess.User.ID)
 }

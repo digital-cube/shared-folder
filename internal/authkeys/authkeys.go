@@ -1,10 +1,15 @@
 // Package authkeys maintains the members' lines in the authorized_keys file
 // of the system user shfd runs as (docs/specifikacija.md, section 5).
 //
-// Every member who registered an SSH key has exactly one line, which sshd
-// turns into a forced command:
+// A member who registered an SSH key with its own token has one line (the
+// legacy credential), and so has every device of the member's account that
+// registered a key with its folder token. sshd turns each into a forced
+// command:
 //
 //	command="/usr/local/bin/shfd rsync-gate --data-root /var/lib/shfd --share <id> --member <n>",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 AAAA… shfd:<username>@<share-id>
+//	command="/usr/local/bin/shfd rsync-gate --data-root /var/lib/shfd --share <id> --member <n> --device <d>",no-port-forwarding,… ssh-ed25519 AAAA… shfd:<username>/<device-name>@<share-id>
+//
+// A key is on one line at most.
 //
 // The lines live between two marker comments. shfd rewrites only what is
 // between them; everything before and after the block stays byte for byte.
@@ -43,12 +48,43 @@ const Restrictions = "no-port-forwarding,no-agent-forwarding,no-X11-forwarding,n
 // would match first, without the forced command).
 var ErrKeyInUse = errors.New("this SSH key is already in use")
 
-// Entry is one member's line.
+// Entry is one line: a member's own key (DeviceID 0) or the key of one of
+// its account's devices.
 type Entry struct {
 	ShareID  string
 	MemberID int64
+	// DeviceID is the account's device (registry.db devices.id) whose key
+	// this is; 0 for the member's own, legacy key.
+	DeviceID int64
 	Username string // only for the comment at the end of the line
+	Device   string // the device's name, only for the comment
 	Key      string // "type base64", as returned by ParsePublicKey
+}
+
+// same says whether e and x are the line of the same credential.
+func (e Entry) same(x Entry) bool {
+	return e.ShareID == x.ShareID && e.MemberID == x.MemberID && e.DeviceID == x.DeviceID
+}
+
+// DeviceLabel is the device name as the comment of a line carries it:
+// letters, digits, ".", "_" and "-", the rest replaced by "-", at most 32
+// characters; "device-<id>" when nothing is left.
+func DeviceLabel(name string, id int64) string {
+	var b strings.Builder
+	for _, r := range name {
+		if b.Len() >= 32 {
+			break
+		}
+		if r < 0x80 && usernameRE.MatchString(string(r)) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	if l := strings.Trim(b.String(), "-"); l != "" {
+		return l
+	}
+	return "device-" + strconv.FormatInt(id, 10)
 }
 
 // File is an authorized_keys file with a managed block.
@@ -57,7 +93,8 @@ type File struct {
 	Path string
 	// Command is the forced command up to the member's arguments, e.g.
 	// {"/usr/local/bin/shfd", "rsync-gate", "--data-root", "/var/lib/shfd"}.
-	// "--share <id> --member <n>" is appended per line.
+	// "--share <id> --member <n>" (and "--device <d>") is appended per
+	// line.
 	Command []string
 }
 
@@ -127,7 +164,7 @@ func Fingerprint(key string) string {
 var (
 	shareIDRE  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	usernameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	lineRE     = regexp.MustCompile(`^command="[^"]* --share ([0-9a-f-]+) --member ([0-9]+)",` + regexp.QuoteMeta(Restrictions) + ` (\S+ \S+)(?: shfd:(\S*)@\S*)?$`)
+	lineRE     = regexp.MustCompile(`^command="[^"]* --share ([0-9a-f-]+) --member ([0-9]+)(?: --device ([0-9]+))?",` + regexp.QuoteMeta(Restrictions) + ` (\S+ \S+)(?: shfd:([^/\s@]*)(?:/([^/\s@]*))?@\S*)?$`)
 )
 
 // shellQuote quotes one word for the POSIX shell sshd runs the forced
@@ -140,8 +177,8 @@ func shellQuote(w string) string {
 }
 
 func (f *File) line(e Entry) (string, error) {
-	if !shareIDRE.MatchString(e.ShareID) || e.MemberID <= 0 {
-		return "", fmt.Errorf("invalid share %q / member %d", e.ShareID, e.MemberID)
+	if !shareIDRE.MatchString(e.ShareID) || e.MemberID <= 0 || e.DeviceID < 0 {
+		return "", fmt.Errorf("invalid share %q / member %d / device %d", e.ShareID, e.MemberID, e.DeviceID)
 	}
 	key, err := ParsePublicKey(e.Key)
 	if err != nil {
@@ -163,6 +200,10 @@ func (f *File) line(e Entry) (string, error) {
 	user := e.Username
 	if !usernameRE.MatchString(user) {
 		user = ""
+	}
+	if e.DeviceID > 0 {
+		cmd += " --device " + strconv.FormatInt(e.DeviceID, 10)
+		user += "/" + DeviceLabel(e.Device, e.DeviceID)
 	}
 	return fmt.Sprintf(`command="%s",%s %s shfd:%s@%s`, cmd, Restrictions, key, user, e.ShareID), nil
 }
@@ -222,7 +263,11 @@ func (f *File) read() (*parsed, error) {
 			return nil, fmt.Errorf("%s: unexpected line inside the shfd block: %.60q", f.Path, ln)
 		}
 		id, _ := strconv.ParseInt(m[2], 10, 64)
-		p.entries = append(p.entries, Entry{ShareID: m[1], MemberID: id, Key: m[3], Username: m[4]})
+		var dev int64
+		if m[3] != "" {
+			dev, _ = strconv.ParseInt(m[3], 10, 64)
+		}
+		p.entries = append(p.entries, Entry{ShareID: m[1], MemberID: id, DeviceID: dev, Key: m[4], Username: m[5], Device: m[6]})
 	}
 	return p, nil
 }
@@ -252,7 +297,10 @@ func (f *File) write(p *parsed) error {
 		if a.ShareID != b.ShareID {
 			return a.ShareID < b.ShareID
 		}
-		return a.MemberID < b.MemberID
+		if a.MemberID != b.MemberID {
+			return a.MemberID < b.MemberID
+		}
+		return a.DeviceID < b.DeviceID
 	})
 	var b bytes.Buffer
 	b.Write(p.before)
@@ -331,9 +379,9 @@ func (f *File) update(fn func(p *parsed) error) error {
 	return f.write(p)
 }
 
-// Set adds the member's line or replaces the key on it. It fails with
-// ErrKeyInUse when the same key is on another line, inside the block or
-// outside it.
+// Set adds the line of a credential (a member's own key, or one device's)
+// or replaces the key on it. It fails with ErrKeyInUse when the same key is
+// on another line, inside the block or outside it.
 func (f *File) Set(e Entry) error {
 	key, err := ParsePublicKey(e.Key)
 	if err != nil {
@@ -354,11 +402,11 @@ func (f *File) Set(e Entry) error {
 		}
 		out := p.entries[:0]
 		for _, x := range p.entries {
-			if x.ShareID == e.ShareID && x.MemberID == e.MemberID {
+			if x.same(e) {
 				continue
 			}
 			if keyBlob(x.Key) == blob {
-				return fmt.Errorf("%w by another member", ErrKeyInUse)
+				return fmt.Errorf("%w by another member or device", ErrKeyInUse)
 			}
 			out = append(out, x)
 		}
@@ -367,13 +415,25 @@ func (f *File) Set(e Entry) error {
 	})
 }
 
-// Remove deletes the member's line. Removing a line that is not there is
-// not an error.
+// Remove deletes every line of the member: its own key and those of its
+// devices. Removing lines that are not there is not an error.
 func (f *File) Remove(shareID string, memberID int64) error {
+	return f.removeWhere(func(x Entry) bool { return x.ShareID == shareID && x.MemberID == memberID })
+}
+
+// RemoveDevice deletes the line of one device of the member; deviceID 0
+// is the member's own key. Removing a line that is not there is not an
+// error.
+func (f *File) RemoveDevice(shareID string, memberID, deviceID int64) error {
+	e := Entry{ShareID: shareID, MemberID: memberID, DeviceID: deviceID}
+	return f.removeWhere(e.same)
+}
+
+func (f *File) removeWhere(drop func(Entry) bool) error {
 	return f.update(func(p *parsed) error {
 		out := p.entries[:0]
 		for _, x := range p.entries {
-			if x.ShareID != shareID || x.MemberID != memberID {
+			if !drop(x) {
 				out = append(out, x)
 			}
 		}

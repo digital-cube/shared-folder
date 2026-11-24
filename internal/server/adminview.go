@@ -29,6 +29,10 @@ func (s *Server) Whoami(token string) (ShareInfo, *Member, *Share, error) {
 	if token == "" {
 		return ShareInfo{}, nil, nil, errf(CodeUnauthorized, "missing token")
 	}
+	if IsDeviceToken(token) {
+		// An account's token is not bound to one folder: GET /v1/me.
+		return ShareInfo{}, nil, nil, errf(CodeUnauthorized, "unknown token")
+	}
 	shares, err := s.Shares()
 	if err != nil {
 		return ShareInfo{}, nil, nil, err
@@ -39,7 +43,7 @@ func (s *Server) Whoami(token string) (ShareInfo, *Member, *Share, error) {
 		if err != nil {
 			return ShareInfo{}, nil, nil, err
 		}
-		m, err := sh.Authenticate(token)
+		m, err := s.AuthenticateFolder(sh, token)
 		if err == nil {
 			return si, m, sh, nil
 		}
@@ -85,6 +89,10 @@ type MemberInfo struct {
 	// Account is filled by Server.FillAccounts.
 	UserID  *int64 `json:"user_id,omitempty"`
 	Account string `json:"account,omitempty"`
+	// Devices are the credentials of the account's devices in this folder
+	// (member_devices), revoked ones included; name, kind and last use are
+	// filled by Server.FillAccounts.
+	Devices []MemberDeviceInfo `json:"devices"`
 }
 
 // MemberList is the body of GET /admin/members.
@@ -103,7 +111,20 @@ func (s *Share) MemberInfos() (*MemberList, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn := s.connectedByMember()
+	conn, connDev := s.connectedByMember()
+	mds, err := s.MemberDevices()
+	if err != nil {
+		return nil, err
+	}
+	byMember := map[int64][]MemberDeviceInfo{}
+	for _, d := range mds {
+		di := MemberDeviceInfo{ID: d.DeviceID, CreatedAt: d.CreatedAt, RevokedAt: d.RevokedAt, Revoked: d.RevokedAt != nil,
+			Connected: connDev[[2]int64{d.MemberID, d.DeviceID}]}
+		if d.SSHPubkey != "" {
+			di.SSHFingerprint = authkeys.Fingerprint(d.SSHPubkey)
+		}
+		byMember[d.MemberID] = append(byMember[d.MemberID], di)
+	}
 	out := &MemberList{Head: head, Members: make([]MemberInfo, 0, len(ms))}
 	for _, m := range ms {
 		mi := MemberInfo{
@@ -112,6 +133,10 @@ func (s *Share) MemberInfos() (*MemberList, error) {
 			LastSeenAt: m.LastSeenAt, LastPushAt: m.LastPushAt,
 			LastSeqAcked: m.LastSeqAcked, Behind: max(head-m.LastSeqAcked, 0),
 			Connected: conn[m.ID], UserID: m.UserID,
+			Devices: byMember[m.ID],
+		}
+		if mi.Devices == nil {
+			mi.Devices = []MemberDeviceInfo{}
 		}
 		if m.SSHPubkey != "" {
 			mi.SSHFingerprint = authkeys.Fingerprint(m.SSHPubkey)
@@ -126,14 +151,19 @@ func (s *Share) MemberInfos() (*MemberList, error) {
 	return out, nil
 }
 
-func (s *Share) connectedByMember() map[int64]int {
+// connectedByMember counts the open WebSockets per member, and those
+// opened with a device's folder token per (member, device).
+func (s *Share) connectedByMember() (map[int64]int, map[[2]int64]int) {
 	s.watch.mu.Lock()
 	defer s.watch.mu.Unlock()
-	out := map[int64]int{}
+	out, dev := map[int64]int{}, map[[2]int64]int{}
 	for w := range s.watch.set {
 		out[w.MemberID]++
+		if w.FolderDevice {
+			dev[[2]int64{w.MemberID, w.DeviceID}]++
+		}
 	}
-	return out
+	return out, dev
 }
 
 // MemberInfoByName is one row of MemberInfos.

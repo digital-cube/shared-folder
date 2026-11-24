@@ -241,3 +241,76 @@ func TestParsePublicKey(t *testing.T) {
 		}
 	}
 }
+
+func TestDeviceLines(t *testing.T) {
+	f := newFile(t)
+	legacy, mac, lin := newKey(t, "a"), newKey(t, "b"), newKey(t, "c")
+	for _, e := range []Entry{
+		{ShareID: share1, MemberID: 2, Username: "marko", Key: legacy},
+		{ShareID: share1, MemberID: 2, DeviceID: 5, Username: "marko", Device: "Marko's Mac/Book@home", Key: mac},
+		{ShareID: share1, MemberID: 2, DeviceID: 9, Username: "marko", Device: "linux", Key: lin},
+	} {
+		if err := f.Set(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, _ := os.ReadFile(f.Path)
+	norm, _ := ParsePublicKey(mac)
+	want := `command="/usr/local/bin/shfd rsync-gate --data-root '/srv/shfd data' --share ` + share1 + ` --member 2 --device 5",` +
+		Restrictions + " " + norm + " shfd:marko/Marko-s-Mac-Book-home@" + share1 + "\n"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("no device line\n%s\nin\n%s", want, data)
+	}
+	es, err := f.Entries()
+	if err != nil || len(es) != 3 {
+		t.Fatalf("entries %+v %v", es, err)
+	}
+	if es[0].DeviceID != 0 || es[1].DeviceID != 5 || es[1].Device != "Marko-s-Mac-Book-home" || es[1].Username != "marko" || es[2].DeviceID != 9 {
+		t.Errorf("entries %+v", es)
+	}
+	// One key on two devices: refused; a device replacing its own key: fine.
+	if err := f.Set(Entry{ShareID: share1, MemberID: 2, DeviceID: 9, Key: mac}); !errors.Is(err, ErrKeyInUse) {
+		t.Errorf("key of another device: %v", err)
+	}
+	if err := f.Set(Entry{ShareID: share1, MemberID: 2, DeviceID: 9, Username: "marko", Device: "linux", Key: newKey(t, "d")}); err != nil {
+		t.Errorf("new key of the same device: %v", err)
+	}
+	// RemoveDevice takes one line (0: the member's own key); Remove all.
+	if err := f.RemoveDevice(share1, 2, 5); err != nil {
+		t.Fatal(err)
+	}
+	if es, _ := f.Entries(); len(es) != 2 || es[0].DeviceID != 0 || es[1].DeviceID != 9 {
+		t.Errorf("after RemoveDevice %+v", es)
+	}
+	if err := f.RemoveDevice(share1, 2, 0); err != nil {
+		t.Fatal(err)
+	}
+	if es, _ := f.Entries(); len(es) != 1 || es[0].DeviceID != 9 {
+		t.Errorf("after removing the legacy line %+v", es)
+	}
+	f.Set(Entry{ShareID: share1, MemberID: 2, Key: legacy})
+	f.Set(Entry{ShareID: share1, MemberID: 3, DeviceID: 5, Key: mac})
+	if err := f.Remove(share1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if es, _ := f.Entries(); len(es) != 1 || es[0].MemberID != 3 {
+		t.Errorf("after Remove %+v", es)
+	}
+}
+
+func TestDeviceLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"macbook":               "macbook",
+		"Mac Book":              "Mac-Book",
+		"čačak-pc":              "a-ak-pc",
+		"   ":                   "device-7",
+		"ш":                     "device-7",
+		"a@b/c":                 "a-b-c",
+		"x.y_z-1":               "x.y_z-1",
+		strings.Repeat("a", 40): strings.Repeat("a", 32),
+	} {
+		if got := DeviceLabel(in, 7); got != want {
+			t.Errorf("DeviceLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

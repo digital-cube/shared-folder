@@ -47,7 +47,7 @@ shfd member add <share-id> <username> [--admin]      # nov član, ili vraćanje 
 shfd member revoke <share-id> <username>
 shfd member set-role <share-id> <username> admin|member
 shfd member reset-token <share-id> <username>
-shfd member list <share-id>
+shfd member list <share-id> [--json]
 ```
 
 Komande `shfd member` ne idu kroz `admin.sock`: upisuju direktno u
@@ -69,6 +69,10 @@ Iste promene radi i admin API (odeljak [Admin API](#admin-api)) i web GUI
 (`docs/gui.md`), istim funkcijama kao ove komande.
 
 ### Jedan član = jedan uređaj
+
+Ovo važi za **token člana** (legacy kredencijal). Uređaji naloga imaju
+svako svoj token i ključ za folder i ne otimaju se (vidi
+[Kredencijali uređaja za folder](#kredencijali-uređaja-za-folder)).
 
 Server čuva **jedan SSH ključ po članu** (`members.ssh_pubkey`). Svaki
 `shf join` registruje ključ uređaja na kome je pokrenut i time zamenjuje
@@ -98,11 +102,23 @@ nema). Isti otisak daje `ssh-keygen -lf ~/.local/state/shf/<share-id>/id_ed25519
 na uređaju (na macOS-u `~/Library/Application Support/shf/<share-id>/`).
 
 ```
-USERNAME  ROLE    STATUS  LAST SEEN             LAST PUSH             ACKED SEQ  SSH KEY
-ana       admin   active  2026-11-24T10:14:00Z  2026-11-24T09:58:12Z  41         SHA256:3vQk…
-marko     member  active  2026-11-24T10:15:02Z  -                     41         SHA256:Yp7c…
-ivan      member  active  -                     -                     0          -
+USERNAME  ROLE    STATUS  LAST SEEN             LAST PUSH             ACKED SEQ  DEVICES          ACCOUNT  SSH KEY
+ana       admin   active  2026-11-24T10:14:00Z  2026-11-24T09:58:12Z  41         -                -        SHA256:3vQk…
+marko     member  active  2026-11-24T10:15:02Z  -                     41         1 (+1 revoked)   marko    SHA256:Yp7c…
+ivan      member  active  -                     -                     0          -                -        -
+
+Devices:
+MEMBER  DEVICE  NAME        KIND    LAST SEEN             STATUS                         SSH KEY
+marko   7       macbook     client  2026-11-24T10:15:02Z  revoked 2026-11-24T10:20:00Z   SHA256:k2Lx…
+marko   9       linux-mare  client  2026-11-24T10:16:40Z  active                         SHA256:Qe0w…
 ```
+
+`SSH KEY` je ključ samog člana; `DEVICES` broji uređaje naloga sa
+kredencijalima u folderu, a tabela `Devices` ih pokazuje (id uređaja, ime,
+vrsta, poslednji put viđen, stanje i otisak ključa uređaja). Uređaj je
+`revoked` i kad je opozvan samo u folderu (`revoked <vreme>`) i kad je
+odjavljen, istekao ili mu je nalog ugašen (`revoked (signed out)`).
+`member list --json` ispisuje isto što i `GET /admin/members`.
 
 ### Uloga: `set-role`
 
@@ -246,14 +262,61 @@ paketa). Svaki pokušaj ide u `auth_log` (`ok`, `bad_password`,
   bez korišćenja, a najkasnije **7 dana** posle prijave.
 - `POST /v1/auth/logout` opoziva token kojim je pozvan;
   `DELETE /v1/me/devices/{id}` opoziva bilo koji uređaj sopstvenog naloga;
-  `shfd user disable` sve odjednom.
-- **Device token na rutama foldera**: `admin/*`, `files`, `content`,
-  `thumbs`, `changes`, `uploads`, `ops` primaju i device token naloga koji
-  je aktivan član tog foldera; poziv radi u ime tog člana (`updated_by` je
-  član, ne uređaj). Za ne-člana, opozvanog člana, ugašen nalog ili istekao
-  token odgovor je `401`. WebSocket (`/ws`) i `PUT ssh-key` za sada traže
-  token člana: kredencijali uređaja za folder (SSH ključ po uređaju) dolaze
-  u sledećem koraku.
+  `shfd user disable` sve odjednom. Sva tri opozivaju i kredencijale tog
+  uređaja (uređaja) u **svim** folderima: folder-tokene, redove u
+  `authorized_keys` i otvorene WebSocket veze.
+- **Device token na rutama foldera**: sve rute foldera (`admin/*`, `files`,
+  `content`, `thumbs`, `changes`, `uploads`, `ops`, `sync-report`, `ws`)
+  primaju i device token naloga koji je aktivan član tog foldera; poziv radi
+  u ime tog člana (`updated_by` je član, ne uređaj). Za ne-člana, opozvanog
+  člana, ugašen nalog ili istekao token odgovor je `401`. `PUT ssh-key`
+  traži folder-token (sledeći odeljak).
+
+### Kredencijali uređaja za folder
+
+Za rsync preko SSH-a svaki uređaj treba **svoj** ključ, pa uređaj naloga
+(`shf`) za svaki folder dobija svoj **folder-token** (tabela
+`member_devices` u `service.db` foldera):
+
+1. `POST /v1/shares/{id}/devices` sa device tokenom uređaja. Ako je nalog
+   aktivan član foldera, odgovor je
+   `{token, member, role, device_id, ssh: {user, host, port}}`. Token
+   (`shf_…`) se vidi samo tada; u bazi je njegov SHA-256. Ne-član dobija
+   `403 forbidden`, nepoznat folder `401`.
+2. Uređaj tim tokenom radi `PUT /v1/shares/{id}/ssh-key`: ključ ide u
+   `member_devices.ssh_pubkey` i u red uređaja u `authorized_keys`
+   (`--device`, komentar `shfd:<član>/<uređaj>@<share>`;
+   [server-ssh.md](server-ssh.md#5-šta-shfd-upisuje-u-authorized_keys)).
+3. Folder-token radi na **svim** rutama foldera, kao token člana, i u ime
+   člana. Klijent ga koristi isto kao token člana (`shf join <url> <id>
+   <folder-token> <folder>` već radi).
+
+- Ponovni `POST …/devices` istog uređaja izdaje **nov** token; stari token
+  i ključ tog uređaja u tom folderu odmah prestaju da važe, a otvorene
+  WebSocket veze sa starim tokenom se zatvaraju.
+- Folder-token važi dok su aktivni: red u `member_devices`, član, uređaj
+  naloga (nije odjavljen ni istekao) i nalog (nije ugašen). API to proverava
+  pri svakom zahtevu, a `rsync-gate --device` pri svakom prenosu. Privremena
+  lozinka (`shfd user passwd`) folder-tokene ne gasi, kao ni token člana;
+  za izgubljen uređaj opozovite uređaj ili ugasite nalog.
+- **Opoziv**:
+  - jednog uređaja u jednom folderu, od strane admina foldera:
+    `DELETE /v1/shares/{id}/admin/members/{član}/devices/{device_id}`. Član,
+    drugi uređaji i isti uređaj u drugim folderima ostaju. Opozvan uređaj ne
+    može sam sebi ponovo da izda token u tom folderu (`403
+    device_revoked`): mora da se prijavi ponovo, kao nov uređaj;
+  - uređaja naloga svuda: `DELETE /v1/me/devices/{id}` ili
+    `POST /v1/auth/logout`;
+  - svih uređaja naloga: `shfd user disable <username>` (sa
+    `--authorized-keys`, da bi se obrisali i redovi u `authorized_keys`);
+  - člana: `shfd member revoke` / `POST …/admin/members/{član}/revoke` gasi
+    i token člana i sve kredencijale njegovih uređaja u tom folderu.
+
+  Opoziv zatvara otvorene WebSocket veze tog uređaja odmah kad ga radi
+  `shfd serve` (API), a kad ga radi CLI u drugom procesu, pri sledećoj
+  proveri veze (najkasnije 10 s).
+- Token člana i njegov ključ (legacy) rade i dalje, nezavisno od uređaja;
+  upozorenje `key-replaced` postoji samo za njih.
 
 ### API naloga
 
@@ -265,6 +328,8 @@ paketa). Svaki pokušaj ide u `auth_log` (`ok`, `bad_password`,
 | `POST /v1/me/password` | device | `{"old","new"}` | `{status, user}` |
 | `DELETE /v1/me/devices/{id}` | device | — | `{status}` |
 | `GET /v1/users` | device admina foldera, ili token člana-admina | `?q=` (početak username-a ili deo imena) | `[{username, display_name}]`, najviše 20 |
+| `POST /v1/shares/{id}/devices` | device | — | `{token, member, role, device_id, ssh: {user, host, port}}` (folder-token uređaja) |
+| `DELETE /v1/shares/{id}/admin/members/{član}/devices/{device_id}` | admin foldera | — | `{member}` |
 | `POST /v1/shares/{id}/admin/members` | admin foldera | `{"user": "bob", "admin": false}` | `{member, reactivated?}` (bez tokena) |
 
 `user` je `{id, username, display_name, must_change, created_at,
@@ -273,7 +338,9 @@ osim novog tokena u odgovoru na prijavu. Greške: `invalid_credentials`
 (401), `too_many_attempts` (429), `password_change_required` (403),
 `wrong_password` (403, pogrešna stara lozinka; broji se kao neuspeh),
 `invalid_password` (400, nova lozinka krši pravila), `unknown_user` i
-`unknown_device` (404), `user_disabled` i `member_exists` (409).
+`unknown_device` (404), `user_disabled` i `member_exists` (409),
+`device_revoked` (403, ponovno izdavanje tokena uređaju opozvanom u
+folderu).
 
 ```sh
 TOKEN=$(curl -s -d '{"username":"bob","password":"…","device_name":"laptop","kind":"client"}' \
@@ -530,12 +597,13 @@ samo za člana sa ulogom `admin`. Greške su
 | `POST /v1/shares/{id}/admin/trash/purge` | `{"older_than": "30d"}` ili `{"ids": [1,2]}` ili `{"all": true}`, uz `"dry_run": true` | `{dry_run, entries, count, total_size, events, head}` |
 | `POST /v1/shares/{id}/admin/verify` | `{"repair": false}` | `{repair, issues, checked, events, head}` |
 | `GET /v1/shares/{id}/admin/stats` | — | `server.Stats` |
-| `GET /v1/shares/{id}/admin/members` | — | `{head, members: [{username, role, status, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, behind, ssh_fingerprint, connected, user_id?, account?}]}` |
+| `GET /v1/shares/{id}/admin/members` | — | `{head, members: [{username, role, status, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, behind, ssh_fingerprint, connected, user_id?, account?, devices: [{id, name, kind, ssh_fingerprint, created_at, last_seen_at, revoked, revoked_at?, connected}]}]}` |
 | `POST /v1/shares/{id}/admin/members` | `{"username": "bob", "admin": false}` | `{member, token, reactivated?}` |
 | `POST /v1/shares/{id}/admin/members` | `{"user": "bob", "admin": false}` (nalog, [Nalozi](#nalozi)) | `{member, reactivated?}` |
 | `POST /v1/shares/{id}/admin/members/{username}/revoke` | — | `{member}` |
 | `POST /v1/shares/{id}/admin/members/{username}/role` | `{"role": "admin"}` ili `"member"` | `{member, old_role}` |
 | `POST /v1/shares/{id}/admin/members/{username}/reset-token` | — | `{member, token}` |
+| `DELETE /v1/shares/{id}/admin/members/{username}/devices/{device_id}` | — | `{member}` (opoziv kredencijala jednog uređaja u folderu) |
 | `GET /v1/shares/{id}/admin/log` | `?after=<bajt-offset>&limit=<n>` | `{offset, next_offset, size, lines}` |
 | `GET /v1/shares/{id}/admin/files` | `?dir=<putanja>` (prazno = koren) | `{dir, entries}` |
 | `GET /v1/shares/{id}/admin/files/content` | `?path=<putanja>` (obavezno), `&download=1` | sadržaj fajla ([Sadržaj fajla](#sadržaj-fajla)); `Range`, `If-None-Match` |

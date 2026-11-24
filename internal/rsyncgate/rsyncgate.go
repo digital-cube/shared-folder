@@ -1,7 +1,15 @@
 // Package rsyncgate is the forced command sshd runs for every member's key
 // (docs/specifikacija.md, section 5):
 //
-//	command="shfd rsync-gate --data-root D --share <share-id> --member <member-id>",no-pty,… <key>
+//	command="shfd rsync-gate --data-root D --share <share-id> --member <member-id> [--device <device-id>]",no-pty,… <key>
+//
+// --device is on the line of a key registered with a device's folder token
+// (an account's device, docs/specifikacija.md section 3.2). Then every
+// transfer also checks that the device's credentials in the folder
+// (member_devices), the account's device (signed in, not expired) and the
+// account (enabled) are all active; otherwise it is refused as
+// device_revoked, so revoking a device ends its transfers at once, even
+// while its line is still in authorized_keys.
 //
 // It reads the command the client asked for from SSH_ORIGINAL_COMMAND and
 // lets through exactly two shapes of rsync in server mode:
@@ -55,6 +63,10 @@ const (
 	CodeUpload   = "upload"    // upload_id not open for this member
 	CodeNotFound = "not_found" // download of a file that does not exist
 	CodeMember   = "member"    // unknown or revoked member
+	// CodeDevice: the line's device may no longer use the folder (its
+	// credentials, the account's device or the account were revoked, or
+	// the member was): "denied (device_revoked)".
+	CodeDevice = "device_revoked"
 )
 
 // Denied is a refused command.
@@ -280,8 +292,15 @@ type Plan struct {
 type Gate struct {
 	Share    *server.Share
 	MemberID int64
+	// DeviceID is the account's device of the key's line (--device), 0 for
+	// the member's own key. Server is then required: it holds the
+	// accounts and their devices.
+	DeviceID int64
+	Server   *server.Server
 	// Rsync is the rsync binary to run; "" looks it up in PATH.
 	Rsync string
+
+	deviceName string // of DeviceID, once Authorize looked it up
 }
 
 // Authorize checks the member, the command and the path it names.
@@ -293,7 +312,19 @@ func (g *Gate) Authorize(cmd string) (*server.Member, *Plan, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if m.RevokedAt != nil {
+	if g.DeviceID != 0 {
+		if g.Server == nil {
+			return m, nil, errors.New("rsync-gate: a device's key needs the server's accounts")
+		}
+		name, err := g.Server.CheckFolderDevice(g.Share, m, g.DeviceID)
+		g.deviceName = name
+		if server.CodeOf(err) == server.CodeDeviceRevoked {
+			return m, nil, deny(CodeDevice, "%s", err.(*server.Error).Message)
+		}
+		if err != nil {
+			return m, nil, err
+		}
+	} else if m.RevokedAt != nil {
 		return m, nil, deny(CodeMember, "member %s is revoked", m.Username)
 	}
 	req, err := Parse(cmd)
@@ -386,6 +417,12 @@ func (g *Gate) Run(ctx context.Context, cmd string, stdin io.Reader, stdout, std
 	t := server.Transfer{Member: fmt.Sprintf("#%d", g.MemberID)}
 	if m != nil {
 		t.Member = m.Username
+	}
+	if g.DeviceID != 0 {
+		t.Device = fmt.Sprintf("#%d", g.DeviceID)
+		if g.deviceName != "" {
+			t.Device = g.deviceName + t.Device
+		}
 	}
 	if p != nil {
 		t.Direction, t.Path = string(p.Direction), p.Path

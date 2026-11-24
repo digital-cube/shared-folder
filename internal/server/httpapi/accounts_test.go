@@ -216,9 +216,10 @@ func TestDeviceTokenOnFolderRoutes(t *testing.T) {
 	if fs, _ := sh.ListDir(""); len(fs.Entries) != 2 || fs.Entries[1].UpdatedBy != "cid" {
 		t.Errorf("files = %+v", fs.Entries)
 	}
-	// Not on the WebSocket nor for an SSH key, for now.
+	// The WebSocket takes it too; an SSH key needs the device's folder
+	// token (POST /v1/shares/{id}/devices).
 	hs, _ := e.wsServer()
-	if _, resp, err := dialWS(t, hs.URL, e.share, cid); err == nil || resp == nil || resp.StatusCode != 401 {
+	if _, _, err := dialWS(t, hs.URL, e.share, cid); err != nil {
 		t.Errorf("ws with a device token: %v", err)
 	}
 	if err := c.do("PUT", "/ssh-key", httpapi.SSHKeyRequest{PublicKey: "ssh-ed25519 AAAA"}, nil); err == nil || err.Status != 403 {

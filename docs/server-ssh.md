@@ -238,12 +238,28 @@ bloka, npr. adminov sopstveni ključ, ostaju netaknuti.
 ```
 # >>> shfd managed block: do not edit by hand, `shfd keys sync` rewrites it >>>
 command="/usr/local/bin/shfd rsync-gate --data-root /var/lib/shfd/data --share 690a2702-… --member 2",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 AAAA… shfd:bob@690a2702-…
+command="/usr/local/bin/shfd rsync-gate --data-root /var/lib/shfd/data --share 690a2702-… --member 3 --device 7",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 AAAA… shfd:marko/macbook@690a2702-…
+command="/usr/local/bin/shfd rsync-gate --data-root /var/lib/shfd/data --share 690a2702-… --member 3 --device 9",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 AAAA… shfd:marko/linux-mare@690a2702-…
 # <<< shfd managed block <<<
 ```
 
+Postoje dve vrste redova:
+
+- **red člana** (legacy kredencijal): jedan po (folder, član), za ključ
+  registrovan tokenom člana; komentar `shfd:<član>@<share-id>`;
+- **red uređaja**: jedan po (folder, član, uređaj), za ključ koji je uređaj
+  naloga registrovao svojim **folder-tokenom** (vidi niže). Prinudna komanda
+  ima i `--device <id>` (`devices.id` iz `registry.db`), a komentar je
+  `shfd:<član>/<ime-uređaja>@<share-id>`. U komentaru ime uređaja ima samo
+  slova, cifre, `.`, `_` i `-` (ostalo postaje `-`), najviše 32 znaka.
+
+Uređaji istog člana imaju svako svoj red i svoj ključ, pa se ne otimaju
+(Mac i Linux kao `marko` rade istovremeno).
+
 U redu je i `--data-root`: sshd ne prosleđuje okruženje prinudnoj komandi, pa
 `rsync-gate` drugačije ne bi znao gde su podaci. Isti ključ ne može imati dva
-reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
+reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija
+(`key_in_use`), bilo da je na redu člana, drugog uređaja ili van bloka.
 
 - **Registracija ključa**, kao član i uz njegov token:
   ```sh
@@ -251,11 +267,28 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
        -H "Authorization: Bearer $TOKEN" \
        -d "{\"public_key\": \"$(cat id_ed25519.pub)\"}"
   ```
-  Ključ se upisuje u `members.ssh_pubkey` i u blok. Novi ključ zamenjuje
-  stari. Odgovor sadrži sačuvani ključ, njegov SHA256 otisak i `ssh` (korisnik,
-  host i port iz `--ssh-endpoint`). `shf join` ovo radi sam.
+  Sa tokenom člana ključ se upisuje u `members.ssh_pubkey` i u red člana; sa
+  folder-tokenom uređaja u `member_devices.ssh_pubkey` i u red tog uređaja.
+  Novi ključ zamenjuje stari istog kredencijala. Odgovor sadrži sačuvani
+  ključ, njegov SHA256 otisak i `ssh` (korisnik, host i port iz
+  `--ssh-endpoint`). `shf join` ovo radi sam.
 
-  **Jedan član = jedan uređaj**: član ima jedan ključ, pa kad isti član
+  **Folder-token uređaja**: uređaj naloga (device token `shd_…`, vidi
+  [admin.md](admin.md#kredencijali-uređaja-za-folder)) traži
+  `POST /v1/shares/<share-id>/devices` i dobija svoj token za taj folder
+  (`shf_…`, isti oblik kao token člana), pa njime registruje svoj ključ:
+  ```sh
+  FT=$(curl -s -X POST -H "Authorization: Bearer $DEVICE_TOKEN" \
+       https://shf.example.org/v1/shares/<share-id>/devices | jq -r .token)
+  curl -X PUT https://shf.example.org/v1/shares/<share-id>/ssh-key \
+       -H "Authorization: Bearer $FT" -d "{\"public_key\": \"$(cat id_ed25519.pub)\"}"
+  ```
+  Ključ uređaja ne zamenjuje ničiji drugi, pa odgovor nikad nema `replaced`.
+  Ponovni `POST …/devices` izdaje nov token, a stari token i ključ tog
+  uređaja u folderu prestaju da važe (klijent registruje ključ ponovo).
+
+  **Jedan član = jedan uređaj** važi samo za token člana (legacy): član ima
+  jedan sopstveni ključ, pa kad isti član
   registruje ključ sa drugog uređaja, prvi uređaj više ne može da sinhronizuje
   (`Permission denied (publickey)`). Kad novi ključ zamenjuje **drugačiji**
   postojeći, odgovor ima i `"replaced": {"fingerprint": "SHA256:…"}` (otisak
@@ -263,15 +296,40 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
   `key-replaced member=marko old=SHA256:… new=SHA256:…`, a `shf join`
   upozorava korisnika. Isti ključ ponovo (ponovljen `join` posle prekida) nije
   zamena. Zamena se ne odbija; za drugi uređaj ili osobu napravite novog člana
-  (`shfd member add`). Trenutni ključ svakog člana pokazuje kolona `SSH KEY` u
-  `shfd member list` (vidi [admin.md](admin.md#jedan-član--jedan-uređaj)).
-- **Opoziv**: `shfd member revoke <share-id> <username>` briše red. `rsync-gate`
-  odbija opozvanog člana i ako red iz nekog razloga još postoji, i na SSH vezi
-  koja je otvorena pre opoziva (vidi niže): član se proverava pri svakom
-  prenosu, ne samo pri prijavi.
-- **Popravka**: `shfd keys sync` ponovo ispiše ceo blok iz baza svih foldera
-  (aktivni članovi koji imaju ključ). Korisno posle vraćanja iz rezervne kopije
-  ili ručne izmene.
+  (`shfd member add`) ili, bolje, nalog (`shfd user add`), čiji uređaji
+  dobijaju svoje ključeve. Trenutni ključ svakog člana pokazuje kolona
+  `SSH KEY` u `shfd member list` (vidi [admin.md](admin.md#jedan-član--jedan-uređaj)).
+  Upozorenje `key-replaced` postoji samo za ključ člana.
+- **Opoziv**:
+  - `shfd member revoke <share-id> <username>` briše sve redove člana (i
+    njegov i redove njegovih uređaja);
+  - opoziv jednog uređaja u folderu (`DELETE
+    /v1/shares/<id>/admin/members/<član>/devices/<id>`) briše red tog
+    uređaja;
+  - odjava ili opoziv uređaja naloga (`POST /v1/auth/logout`,
+    `DELETE /v1/me/devices/<id>`) briše njegove redove u svim folderima;
+  - `shfd user disable <username>` briše redove svih uređaja naloga (komandi
+    dajte `--authorized-keys` ili `SHFD_AUTHORIZED_KEYS`).
+
+  `rsync-gate` odbija opozvanog člana i ako red iz nekog razloga još postoji,
+  i na SSH vezi koja je otvorena pre opoziva (vidi niže): član se proverava
+  pri svakom prenosu, ne samo pri prijavi.
+- **`rsync-gate --device D`**: za red uređaja `rsync-gate` pri **svakom**
+  prenosu proverava i da su red uređaja u `member_devices`, uređaj u
+  `registry.devices` (nije odjavljen ni istekao) i nalog (`users`, nije
+  ugašen) aktivni, kao i član. Ako nije, prenos se odbija sa
+  ```
+  shfd rsync-gate: denied (device_revoked): device 7 is revoked in this folder
+  ```
+  (razlog može biti i `member marko is revoked`, `device 7: account
+  disabled`, `device 7: device signed out`, …), a u `service.log` foldera
+  ide red sa `device="macbook#7"` i `outcome=denied`. Klijent to tumači kao
+  odbijen ključ, isto kao `Permission denied (publickey)`.
+- **Popravka**: `shfd keys sync` ponovo ispiše ceo blok iz baza svih foldera:
+  redove aktivnih članova koji imaju svoj ključ i redove uređaja čiji su
+  kredencijal, član, uređaj i nalog aktivni i koji imaju ključ. Ispisuje
+  koliko je kojih (`2 member key(s), 3 device key(s)`). Korisno posle
+  vraćanja iz rezervne kopije ili ručne izmene.
 
 ## 6. Provera
 
@@ -292,6 +350,8 @@ tail /var/lib/shfd/data/<share-id>/service.log
 # 2026-11-23T15:02:11.5Z transfer member=bob dir=upload path="tmp/3f…" outcome=ok
 # 2026-11-23T15:02:12.1Z transfer member=bob dir=download path="storage/docs/a.txt" outcome=ok
 # 2026-11-23T15:03:40.0Z transfer member=bob dir=- path="" outcome=denied detail="not_rsync: only rsync is allowed on this key; command id"
+# 2026-11-24T09:11:02.4Z transfer member=marko device="macbook#7" dir=download path="storage/a.txt" outcome=ok
+# 2026-11-24T09:20:15.0Z transfer member=marko device="macbook#7" dir=- path="" outcome=denied detail="device_revoked: device 7 is revoked in this folder"
 ```
 
 Ključ servera klijent pamti pri prvom povezivanju (to radi već `shf join`) u

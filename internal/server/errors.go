@@ -48,6 +48,7 @@ const (
 	CodeUserExists             Code = "user_exists"              // the username is taken by another account
 	CodeUserDisabled           Code = "user_disabled"            // the account is disabled (shfd user enable)
 	CodeUnknownDevice          Code = "unknown_device"           // no such device of this account
+	CodeDeviceRevoked          Code = "device_revoked"           // the device's credentials for the folder were revoked: sign in again
 )
 
 // Error is an operation refused by the rules. It never leaves the database

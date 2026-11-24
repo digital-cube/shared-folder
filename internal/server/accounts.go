@@ -297,8 +297,12 @@ func (s *Server) ResetPassword(username string) (string, error) {
 }
 
 // DisableUser disables an account and revokes all its devices and GUI
-// sessions at once; it returns how many were active. The account's
-// members stay, and so do their legacy member tokens.
+// sessions at once, and with them their folder credentials in every
+// folder (member_devices, and their lines in authorized_keys); it returns
+// how many devices were active. The account's members stay, and so do
+// their legacy member tokens. A failure to rewrite authorized_keys is
+// returned after the revocation is stored: rsync-gate --device refuses a
+// disabled account's device anyway.
 func (s *Server) DisableUser(username string) (int, error) {
 	u, err := s.UserByName(username)
 	if err != nil {
@@ -318,7 +322,35 @@ func (s *Server) DisableUser(username string) (int, error) {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	return int(n), tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	ids, err := s.userDeviceIDs(u.ID)
+	if err != nil {
+		return int(n), err
+	}
+	_, err = s.revokeDeviceCredentials(ids)
+	return int(n), err
+}
+
+// userDeviceIDs lists every device of an account, revoked ones included:
+// a credential of one may still be active after an earlier revocation
+// that did not get through every folder.
+func (s *Server) userDeviceIDs(userID int64) ([]int64, error) {
+	rows, err := s.reg.Query(`SELECT id FROM devices WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // EnableUser enables a disabled account. Its devices stay revoked: they
@@ -596,24 +628,28 @@ func (s *Server) AuthenticateDevice(token string) (*Session, error) {
 	return &Session{User: u, DeviceID: devID}, nil
 }
 
-// Logout revokes the device of a token. A token already revoked or
-// expired is not an error.
+// Logout revokes the device of a token, and its folder credentials in
+// every folder. A token already revoked or expired is not an error.
 func (s *Server) Logout(token string) error {
 	if !IsDeviceToken(token) {
 		return errf(CodeUnauthorized, "not a device token")
 	}
-	res, err := s.reg.Exec(`UPDATE devices SET revoked_at = coalesce(revoked_at, ?) WHERE token_hash = ?`,
-		fmtTime(s.opts.Now()), HashToken(token))
+	var id int64
+	err := s.reg.QueryRow(`UPDATE devices SET revoked_at = coalesce(revoked_at, ?) WHERE token_hash = ? RETURNING id`,
+		fmtTime(s.opts.Now()), HashToken(token)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errf(CodeUnauthorized, "unknown token")
+	}
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errf(CodeUnauthorized, "unknown token")
-	}
-	return nil
+	_, err = s.revokeDeviceCredentials([]int64{id})
+	return err
 }
 
-// RevokeDevice revokes one device of an account.
+// RevokeDevice revokes one device of an account, and its folder
+// credentials in every folder: their tokens stop working, their lines
+// leave authorized_keys and their WebSockets (in this process) close.
 func (s *Server) RevokeDevice(userID, deviceID int64) error {
 	res, err := s.reg.Exec(`UPDATE devices SET revoked_at = coalesce(revoked_at, ?) WHERE id = ? AND user_id = ?`,
 		fmtTime(s.opts.Now()), deviceID, userID)
@@ -623,7 +659,8 @@ func (s *Server) RevokeDevice(userID, deviceID int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return errf(CodeUnknownDevice, "no device %d", deviceID)
 	}
-	return nil
+	_, err = s.revokeDeviceCredentials([]int64{deviceID})
+	return err
 }
 
 // Devices lists the devices of an account that still work, newest first;
@@ -972,15 +1009,45 @@ func (s *Server) UsernamesByID() (map[int64]string, error) {
 	return out, rows.Err()
 }
 
-// FillAccounts sets MemberInfo.Account from MemberInfo.UserID.
+// FillAccounts sets MemberInfo.Account from MemberInfo.UserID, and the
+// name, kind, last use and state of every device in MemberInfo.Devices
+// from the registry. A member with an account but neither its own key nor
+// a device with a working key is pending.
 func (s *Server) FillAccounts(ms []MemberInfo) error {
 	names, err := s.UsernamesByID()
 	if err != nil {
 		return err
 	}
+	devs, err := s.deviceStates()
+	if err != nil {
+		return err
+	}
+	now := s.opts.Now()
 	for i := range ms {
-		if ms[i].UserID != nil {
-			ms[i].Account = names[*ms[i].UserID]
+		mi := &ms[i]
+		if mi.UserID != nil {
+			mi.Account = names[*mi.UserID]
+		}
+		keyed := false
+		for j := range mi.Devices {
+			di := &mi.Devices[j]
+			d, ok := devs[di.ID]
+			if !ok {
+				di.Revoked = true
+				continue
+			}
+			di.Name, di.Kind, di.LastSeenAt = d.Name, d.Kind, d.LastSeenAt
+			if d.why(&Member{UserID: mi.UserID}, now) != "" {
+				di.Revoked = true
+			}
+			if di.Revoked {
+				di.Connected = 0
+			} else if di.SSHFingerprint != "" {
+				keyed = true
+			}
+		}
+		if keyed && mi.Status == StatusPending {
+			mi.Status = StatusActive
 		}
 	}
 	return nil

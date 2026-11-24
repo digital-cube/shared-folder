@@ -127,6 +127,14 @@ type Member struct {
 	// UserID is the account (registry.db users.id) the member is linked
 	// to; nil for a member that has only its token.
 	UserID *int64 `json:"user_id,omitempty"`
+
+	// The credential a request came with, set by Server.AuthenticateFolder.
+	// DeviceID is the account's device (registry.db devices.id): the one
+	// whose folder token it was (FolderDevice), or the one whose account
+	// device token it was. 0 for the member's own (legacy) token.
+	DeviceID     int64  `json:"-"`
+	DeviceName   string `json:"-"`
+	FolderDevice bool   `json:"-"`
 }
 
 // NewToken returns a fresh random token: "shf_" and 43 base64url characters
@@ -306,12 +314,14 @@ func (s *Share) ResetToken(username string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.revokeWatchers(id)
+	// Only the WebSockets opened with the member's own token: the devices'
+	// credentials are not touched.
+	s.revokeWatchersWhere(func(w *Watcher) bool { return w.MemberID == id && w.DeviceID == 0 })
 	return token, nil
 }
 
-// RevokeMember revokes a member's token and removes the member's line from
-// authorized_keys. The member stays in the list (and in the history);
+// RevokeMember revokes a member's token and the folder credentials of all
+// its devices, and removes all its lines from authorized_keys. The member stays in the list (and in the history);
 // revoking twice is not an error. rsync-gate refuses a revoked member even
 // while the line is still there, so a failure to rewrite authorized_keys
 // (returned after the revocation is stored) does not keep access open.
@@ -345,6 +355,9 @@ func (s *Share) RevokeMember(username string) error {
 	if _, err := tx.Exec(`UPDATE members SET revoked_at = coalesce(revoked_at, ?) WHERE id = ?`, fmtTime(s.now()), id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`UPDATE member_devices SET revoked_at = coalesce(revoked_at, ?) WHERE member_id = ?`, fmtTime(s.now()), id); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -359,7 +372,9 @@ func (s *Share) RevokeMember(username string) error {
 
 // SetSSHKey registers the member's SSH public key: it is stored in
 // members.ssh_pubkey and written to authorized_keys as the member's line,
-// replacing an earlier key. It returns the key as stored ("type base64")
+// replacing an earlier key. A request made with a device's folder token
+// (m.FolderDevice) registers that device's key instead (setDeviceSSHKey):
+// it replaces no other device's key and never warns. It returns the key as stored ("type base64")
 // and, when that replaced a different key, the replaced one: a member has
 // one key, so the device that registered it can no longer sync. Such a
 // replacement leaves a key-replaced line in service.log. Registering the
@@ -371,6 +386,9 @@ func (s *Share) SetSSHKey(m *Member, pubkey string) (key, replaced string, err e
 	key, err = authkeys.ParsePublicKey(pubkey)
 	if err != nil {
 		return "", "", errf(CodeInvalidKey, "%v", err)
+	}
+	if m.FolderDevice {
+		return key, "", s.setDeviceSSHKey(m, key)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -436,11 +454,11 @@ func (s *Share) CheckUpload(memberID int64, uploadID string) error {
 
 const memberCols = `id, username, role, ssh_pubkey, created_at, revoked_at, last_seen_at, last_push_at, last_seq_acked, user_id`
 
-func scanMember(sc interface{ Scan(...any) error }) (*Member, error) {
+func scanMember(sc interface{ Scan(...any) error }, extra ...any) (*Member, error) {
 	var m Member
 	var created, revoked, seen, push sql.NullString
 	var user sql.NullInt64
-	if err := sc.Scan(&m.ID, &m.Username, &m.Role, &m.SSHPubkey, &created, &revoked, &seen, &push, &m.LastSeqAcked, &user); err != nil {
+	if err := sc.Scan(append([]any{&m.ID, &m.Username, &m.Role, &m.SSHPubkey, &created, &revoked, &seen, &push, &m.LastSeqAcked, &user}, extra...)...); err != nil {
 		return nil, err
 	}
 	if user.Valid {
@@ -515,6 +533,7 @@ func (s *Share) logEvents(evs []Event) error {
 // Transfer is one call of rsync-gate, for service.log.
 type Transfer struct {
 	Member    string // username, or "#<id>" when the id is unknown
+	Device    string // "<name>#<id>" of an account's device (rsync-gate --device), "" for the member's own key
 	Direction string // "upload", "download" or "" when the command was refused before that was clear
 	Path      string // share-relative: tmp/<upload_id> or storage/<path>
 	Outcome   string // "ok", "denied" or "failed"
@@ -525,8 +544,11 @@ type Transfer struct {
 // runs in its own process; the file is opened O_APPEND and every line is a
 // single write, so its lines and those of shfd serve do not interleave.
 func (s *Share) LogTransfer(t Transfer) error {
-	line := fmt.Sprintf("%s transfer member=%s dir=%s path=%s outcome=%s",
-		fmtTime(s.now()), t.Member, orDash(t.Direction), strconv.Quote(t.Path), t.Outcome)
+	line := fmt.Sprintf("%s transfer member=%s", fmtTime(s.now()), t.Member)
+	if t.Device != "" {
+		line += " device=" + strconv.Quote(t.Device)
+	}
+	line += fmt.Sprintf(" dir=%s path=%s outcome=%s", orDash(t.Direction), strconv.Quote(t.Path), t.Outcome)
 	if t.Detail != "" {
 		line += " detail=" + strconv.Quote(t.Detail)
 	}

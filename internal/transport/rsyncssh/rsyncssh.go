@@ -664,9 +664,10 @@ func classify(remotePath string, err error, stderr string) error {
 		switch m[1] {
 		case "not_found":
 			return wrap(transport.ErrChanged, m[2])
-		case "member":
-			// Unknown or revoked: what sshd says on a new connection
-			// once the key is gone, said here on a shared one.
+		case "member", "device_revoked":
+			// Unknown or revoked (the member, or this device's
+			// credentials): what sshd says on a new connection once the
+			// key is gone, said here on a shared one.
 			return wrap(ErrAuth, m[1]+": "+m[2])
 		}
 		return wrap(ErrDenied, m[1]+": "+m[2])

@@ -8,7 +8,7 @@
 //	shfd member revoke <share-id> <username>
 //	shfd member set-role <share-id> <username> admin|member
 //	shfd member reset-token <share-id> <username>
-//	shfd member list <share-id>
+//	shfd member list <share-id> [--json]
 //	shfd user add|passwd|disable|enable|list|show ...   (users.go)
 //	shfd keys sync
 //	shfd trash list <share-id> [--path P] [--by USER] [--reason deleted|replaced] [--since DATE]
@@ -18,7 +18,7 @@
 //	shfd stats <share-id> [--json]
 //	shfd db move --to DIR
 //	shfd thumbs [--workers N] [--pdftoppm PATH] [--once] [--retry-failed]   (thumbs.go)
-//	shfd rsync-gate --share <share-id> --member <member-id>   (sshd's forced command)
+//	shfd rsync-gate --share <share-id> --member <member-id> [--device <device-id>]   (sshd's forced command)
 //
 // --data-root defaults to $SHFD_DATA_ROOT and is accepted by every command,
 // and so is --db-root (default $SHFD_DB_ROOT, else the data-root): where
@@ -35,6 +35,7 @@ package shfdcli
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -45,6 +46,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -83,7 +85,7 @@ Usage:
   shfd member revoke <share-id> <username>
   shfd member set-role <share-id> <username> admin|member
   shfd member reset-token <share-id> <username>
-  shfd member list <share-id>
+  shfd member list <share-id> [--json]
   shfd keys sync
   shfd trash list <share-id> [--path PREFIX] [--by USERNAME]
                   [--reason deleted|replaced] [--since DATE]
@@ -96,7 +98,7 @@ Usage:
   shfd thumbs [--workers N] [--pdftoppm PATH] [--once] [--retry-failed]
               [--max-image-mib N] [--max-megapixels N] [--max-pdf-mib N]
               [--pdf-timeout D]
-  shfd rsync-gate --share <share-id> --member <member-id>
+  shfd rsync-gate --share <share-id> --member <member-id> [--device <device-id>]
   shfd version
   shfd help
 
@@ -123,13 +125,18 @@ the databases. Each line runs "<shfd-binary> rsync-gate"; --shfd-binary
 serve --ssh-endpoint (default $SHFD_SSH_ENDPOINT) is the address clients
 use for rsync over SSH; "shf join" learns it when it registers its key.
 rsync-gate is that forced command: it reads $SSH_ORIGINAL_COMMAND and runs
-only the rsync transfers the member may do.
+only the rsync transfers the member may do. A device of an account gets a
+folder token and an SSH key of its own (POST /v1/shares/<id>/devices): its
+line runs rsync-gate with --device, which refuses the transfer
+(device_revoked) once the device, its account or the member is revoked.
 
 Accounts (docs/admin.md): a user signs in with a username and password
 (POST /v1/auth/login) and reaches every folder it is a member of. Only
 the server's admin makes accounts: user add and user passwd print a
 temporary password, shown only then, that must be changed at the first
-sign-in. user disable signs out all the account's devices at once.
+sign-in. user disable signs out all the account's devices at once and
+removes their SSH keys (give it --authorized-keys). member list shows the
+devices of each member, --json as GET /admin/members does.
 member add --user makes the account <username> a member (no token is
 printed); member link links an existing member to an account, and the
 member's token keeps working. serve --trusted-proxy (default
@@ -477,6 +484,7 @@ func memberCmd(args []string, env Env) error {
 	case "list":
 		fs := flag.NewFlagSet("member list", flag.ContinueOnError)
 		sf.register(fs, env)
+		asJSON := fs.Bool("json", false, "print the list as JSON (as GET /admin/members answers)")
 		root, pos, err := flags(fs, args[1:], 1, env)
 		if err != nil {
 			return err
@@ -494,11 +502,25 @@ func memberCmd(args []string, env Env) error {
 		if err != nil {
 			return err
 		}
+		infos, err := sh.MemberInfos()
+		if err != nil {
+			return err
+		}
+		if err := srv.FillAccounts(infos.Members); err != nil {
+			return err
+		}
+		if *asJSON {
+			enc := json.NewEncoder(env.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(infos)
+		}
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
-		// SSH KEY is the fingerprint of the member's one registered key: the
-		// device that joined last (shf join replaces an earlier device's key).
-		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ\tACCOUNT\tSSH KEY")
-		for _, m := range ms {
+		// SSH KEY is the fingerprint of the member's own (legacy) key: the
+		// device that joined last with the member's token (shf join replaces
+		// an earlier device's key). The account's devices have keys of their
+		// own, listed below the table.
+		fmt.Fprintln(tw, "USERNAME\tROLE\tSTATUS\tLAST SEEN\tLAST PUSH\tACKED SEQ\tDEVICES\tACCOUNT\tSSH KEY")
+		for i, m := range ms {
 			st := "active"
 			if m.RevokedAt != nil {
 				st = "revoked " + m.RevokedAt.Format(time.RFC3339)
@@ -511,11 +533,60 @@ func memberCmd(args []string, env Env) error {
 			if m.UserID != nil {
 				acct = cmp.Or(accounts[*m.UserID], fmt.Sprintf("#%d", *m.UserID))
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked, acct, fp)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", m.Username, m.Role, st, when(m.LastSeenAt), when(m.LastPushAt), m.LastSeqAcked, deviceCount(infos.Members[i].Devices), acct, fp)
 		}
-		return tw.Flush()
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		return printMemberDevices(env, infos.Members)
 	}
 	return usageError("member: unknown subcommand %q", args[0])
+}
+
+// deviceCount is the DEVICES column of member list: the active devices,
+// and the revoked ones when there are any.
+func deviceCount(ds []server.MemberDeviceInfo) string {
+	active := 0
+	for _, d := range ds {
+		if !d.Revoked {
+			active++
+		}
+	}
+	switch {
+	case len(ds) == 0:
+		return "-"
+	case active == len(ds):
+		return strconv.Itoa(active)
+	}
+	return fmt.Sprintf("%d (+%d revoked)", active, len(ds)-active)
+}
+
+// printMemberDevices lists the devices of the account members below the
+// member table, when any member has one.
+func printMemberDevices(env Env, ms []server.MemberInfo) error {
+	any := false
+	for _, m := range ms {
+		any = any || len(m.Devices) > 0
+	}
+	if !any {
+		return nil
+	}
+	fmt.Fprintf(env.Stdout, "\nDevices:\n")
+	tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "MEMBER\tDEVICE\tNAME\tKIND\tLAST SEEN\tSTATUS\tSSH KEY")
+	for _, m := range ms {
+		for _, d := range m.Devices {
+			st := "active"
+			switch {
+			case d.RevokedAt != nil:
+				st = "revoked " + when(d.RevokedAt)
+			case d.Revoked:
+				st = "revoked (signed out)"
+			}
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\n", m.Username, d.ID, orDash(d.Name), orDash(d.Kind), when(d.LastSeenAt), st, orDash(d.SSHFingerprint))
+		}
+	}
+	return tw.Flush()
 }
 
 // printToken prints a member's new token the way member add always has.

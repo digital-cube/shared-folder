@@ -35,12 +35,6 @@ const (
 // resetting its token closes its connections. Clients send nothing (a data message closes the
 // connection).
 func (a *api) ws(w http.ResponseWriter, r *http.Request) {
-	// A device token gets the WebSocket with its device credentials for
-	// the folder (a later step); its re-check below knows member tokens.
-	if server.IsDeviceToken(bearerToken(r)) {
-		writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "the WebSocket takes a member token of the folder")
-		return
-	}
 	sh, m, ok := a.authenticate(w, r)
 	if !ok {
 		return
@@ -54,7 +48,7 @@ func (a *api) ws(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(1 << 10)
 
 	// Subscribe before reading the HEAD, so a write in between is sent.
-	sub := sh.Watch(m.ID)
+	sub := sh.WatchAs(m)
 	defer sub.Close()
 	if err := sh.Touch(m.ID); err != nil {
 		a.log.Warn("last_seen_at not updated", "share", sh.ID, "member", m.Username, "err", err)
@@ -94,9 +88,11 @@ func (a *api) ws(w http.ResponseWriter, r *http.Request) {
 			c.Close(CloseRevoked, "token revoked")
 			return
 		case <-check.C:
-			// The token itself is checked again: shfd member revoke and
-			// reset-token in another process both end it.
-			if _, err := sh.Authenticate(token); server.CodeOf(err) == server.CodeUnauthorized {
+			// The token itself is checked again: shfd member revoke,
+			// reset-token and user disable in another process all end
+			// it, and so does a device's folder token re-issued there.
+			switch _, err := a.srv.AuthenticateFolder(sh, token); server.CodeOf(err) {
+			case server.CodeUnauthorized, server.CodePasswordChangeRequired:
 				c.Close(CloseRevoked, "token revoked")
 				return
 			}

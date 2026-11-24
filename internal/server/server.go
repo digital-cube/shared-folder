@@ -374,9 +374,12 @@ func newUUID() string {
 }
 
 // SyncAuthorizedKeys rewrites the managed block of authorized_keys from the
-// databases: one line for every active member with an SSH key, in every
-// folder. Lines whose key clashes with another line are left out and
-// returned as "share-id/username".
+// databases: in every folder, one line for every active member with an SSH
+// key of its own (the legacy credential) and one for every device with an
+// SSH key whose folder credential still works (member, member_devices row,
+// the account's device and the account all active). Lines whose key
+// clashes with another line are left out and returned as
+// "share-id/username" or "share-id/username/device".
 func (s *Server) SyncAuthorizedKeys() (skipped []string, err error) {
 	if s.opts.AuthorizedKeys == nil {
 		return nil, errf(CodeSSHNotConfigured, "no authorized_keys file is configured")
@@ -385,6 +388,11 @@ func (s *Server) SyncAuthorizedKeys() (skipped []string, err error) {
 	if err != nil {
 		return nil, err
 	}
+	devs, err := s.deviceStates()
+	if err != nil {
+		return nil, err
+	}
+	now := s.opts.Now()
 	var entries []authkeys.Entry
 	for _, si := range shares {
 		sh, err := s.Share(si.ID)
@@ -395,15 +403,33 @@ func (s *Server) SyncAuthorizedKeys() (skipped []string, err error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range ms {
+		byID := map[int64]*Member{}
+		for i, m := range ms {
+			byID[m.ID] = &ms[i]
 			if m.RevokedAt == nil && m.SSHPubkey != "" {
 				entries = append(entries, authkeys.Entry{ShareID: si.ID, MemberID: m.ID, Username: m.Username, Key: m.SSHPubkey})
 			}
 		}
+		mds, err := sh.MemberDevices()
+		if err != nil {
+			return nil, err
+		}
+		for _, md := range mds {
+			m, d := byID[md.MemberID], devs[md.DeviceID]
+			if md.RevokedAt != nil || md.SSHPubkey == "" || m == nil || m.RevokedAt != nil || d.ID == 0 || d.why(m, now) != "" {
+				continue
+			}
+			entries = append(entries, authkeys.Entry{ShareID: si.ID, MemberID: m.ID, DeviceID: d.ID,
+				Username: m.Username, Device: d.Name, Key: md.SSHPubkey})
+		}
 	}
 	sk, err := s.opts.AuthorizedKeys.Replace(entries)
 	for _, e := range sk {
-		skipped = append(skipped, e.ShareID+"/"+e.Username)
+		name := e.ShareID + "/" + e.Username
+		if e.DeviceID > 0 {
+			name += "/" + authkeys.DeviceLabel(e.Device, e.DeviceID)
+		}
+		skipped = append(skipped, name)
 	}
 	return skipped, err
 }

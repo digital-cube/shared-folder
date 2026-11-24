@@ -64,6 +64,13 @@ nestaje bez odluke admina.
   `replaced`), by_member, at, event_seq.
 - `sync_log`: member, started_at, finished_at, from_seq, to_seq, sent, received,
   conflicts, error.
+- `member_devices` (migracija `0006`, TCKCQMRX95): kredencijali uređaja
+  naloga za ovaj folder — member_id, device_id (`registry.db` `devices.id`),
+  token_hash (jedinstven), ssh_pubkey, created_at, revoked_at;
+  `UNIQUE (member_id, device_id)`. Identitet u istoriji ostaje član
+  (`updated_by`), uređaj je samo kredencijal; `members.token_hash` i
+  `members.ssh_pubkey` ostaju kao kredencijal člana (legacy)
+  ([admin.md](admin.md#kredencijali-uređaja-za-folder)).
 
 `events` je izvor istine; `service.log` je njegov čitljiv ispis, plus jedan red
 po sinhronizaciji iz `sync_log`.
@@ -136,7 +143,10 @@ thumbnails/<prva 2 znaka hash-a>/<hash>.l.jpg    512 px
 ## 4. Kontrolni API (HTTPS + JSON)
 
 Autorizacija: `Authorization: Bearer <token člana>`. TLS preko reverse proxy-ja
-ili ugrađen.
+ili ugrađen. Rute foldera primaju i folder-token uređaja naloga
+(`POST /v1/shares/{id}/devices`) i device token naloga koji je aktivan član
+foldera; sva tri rade u ime člana (TCK3C27P32, TCKCQMRX95,
+[admin.md](admin.md#nalozi)).
 
 - `GET  /v1/shares/{id}/changes?since=N` — događaji posle N i trenutni HEAD.
 - `POST /v1/shares/{id}/uploads` — najava: path, base_hash (verzija koju je
@@ -175,6 +185,15 @@ fajl po putanji i hash-u. Prva implementacija je rsync preko SSH-a:
   klijent napravi pri pridruživanju. U `authorized_keys` stoji sa prinudnom
   komandom (`command="shfd rsync-gate --share … --member …"`), kao kod
   gitolite-a. Opoziv člana briše taj red.
+
+  Implementacija (TCKCQMRX95): uređaj naloga ima svoj ključ po folderu, sa
+  svojim redom (`… --member M --device D`, komentar
+  `shfd:<član>/<uređaj>@<share>`), pa se uređaji istog člana ne otimaju.
+  `rsync-gate --device` pri svakom prenosu proverava da su član, red u
+  `member_devices`, uređaj i nalog aktivni, inače odbija sa
+  `denied (device_revoked)` i upisuje to u `service.log`. Opoziv uređaja (u
+  folderu, na nalogu, `shfd user disable`) i opoziv člana brišu njegove redove
+  ([server-ssh.md](server-ssh.md#5-šta-shfd-upisuje-u-authorized_keys)).
 - `rsync-gate` dozvoljava samo rsync, i to: upis isključivo u
   `tmp/<upload_id>` i čitanje isključivo iz `storage/`. Klijent nikad ne piše
   direktno u `storage/`, tako da servis ostaje jedini pisac.

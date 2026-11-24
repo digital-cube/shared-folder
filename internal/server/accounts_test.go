@@ -623,7 +623,7 @@ func TestMigrateTestServerSchema(t *testing.T) {
 	if rm, _ := migrations("registry"); rv != len(rm) || rv != 2 {
 		t.Errorf("registry version %d", rv)
 	}
-	if sm, _ := migrations("service"); sv != len(sm) || sv != 5 {
+	if sm, _ := migrations("service"); sv != len(sm) || sv != 6 {
 		t.Errorf("service version %d", sv)
 	}
 	m, err := sh.Authenticate(token)

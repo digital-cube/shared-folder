@@ -53,9 +53,9 @@ shfd member add <share-id> bob [--admin]   # ispisuje token člana (samo tada); 
 shfd member revoke <share-id> bob
 shfd member set-role <share-id> bob admin|member   # ne oduzima ulogu poslednjem adminu (last_admin)
 shfd member reset-token <share-id> bob     # nov token aktivnom članu; stari odmah prestaje, SSH ključ ostaje
-shfd member list <share-id>                # i otisak trenutnog SSH ključa (uređaj koji je aktivan)
+shfd member list <share-id> [--json]       # otisak ključa člana i uređaji naloga sa svojim ključevima
 shfd user add bob [--display-name "Bob B."]   # nalog sa lozinkom; ispisuje privremenu lozinku (samo tada)
-shfd user passwd|disable|enable|show bob      # disable odmah odjavljuje sve uređaje naloga
+shfd user passwd|disable|enable|show bob      # disable odmah odjavljuje sve uređaje naloga i briše njihove SSH ključeve
 shfd user list
 shfd member add <share-id> bob --user [--admin]   # nalog postaje član foldera (bez tokena)
 shfd member link <share-id> marko marko           # postojeći član dobija nalog; token mu i dalje radi
@@ -100,7 +100,10 @@ kom je član, kao taj član. Naloge pravi samo admin servera (`shfd user
 add`); privremena lozinka se menja pri prvoj prijavi. Lozinke su Argon2id,
 pokušaji prijave su ograničeni po nalogu i po adresi (iza proxy-ja:
 `--trusted-proxy`), GUI sesija ističe posle 12 h neaktivnosti (najviše 7
-dana). Prijava tokenom radi kao i do sada. Opis, CLI i API:
+dana). Svaki uređaj naloga dobija za folder svoj token i svoj SSH ključ
+(`POST /v1/shares/{id}/devices`, red `rsync-gate --device` u
+`authorized_keys`), pa se uređaji istog člana ne otimaju, a opoziv jednog ne
+dira ostale. Prijava tokenom radi kao i do sada. Opis, CLI i API:
 [docs/admin.md](docs/admin.md#nalozi); proxy:
 [docs/server-ssh.md](docs/server-ssh.md#adresa-klijenta-x-forwarded-for).
 
