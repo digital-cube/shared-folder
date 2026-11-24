@@ -1,0 +1,32 @@
+#root { height: 100%; }
+.err-text { color: var(--g-err); font-size: 13px; margin: -4px 0 12px; }
+.login-card .foot { margin-top: 16px; text-align: center; font-size: 13px; }
+.status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; }
+.status-pill.ok { background: var(--g-ok-soft); color: var(--g-ok); }
+.status-pill.err { background: var(--g-err-soft); color: var(--g-err); }
+.status-pill.warn { background: var(--g-warn-soft); color: var(--g-warn); }
+.status-pill.muted { background: var(--g-bg-sunk); color: var(--g-muted); }
+.view-card { border: 1px solid var(--g-line); border-radius: var(--g-radius); background: var(--g-bg); overflow: hidden; display: flex; flex-direction: column; min-height: 420px; height: calc(100vh - 230px); }
+.view-card.short { height: calc(100vh - 370px); min-height: 360px; }
+.chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.modal-back { position: fixed; inset: 0; background: rgba(17,24,39,.35); display: grid; place-items: center; z-index: 50; }
+.modal { width: 420px; background: var(--g-bg); border-radius: 12px; padding: 22px; box-shadow: 0 20px 50px rgba(17,24,39,.25); }
+.modal h3 { margin: 0 0 6px; font-size: 17px; }
+.modal p { margin: 0 0 16px; color: var(--g-muted); }
+.modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.banner { display: flex; gap: 10px; align-items: center; border-radius: var(--g-radius); padding: 10px 14px; margin-bottom: 14px; font-size: 13.5px; }
+.banner.ok { background: var(--g-ok-soft); color: #14532d; }
+.banner.err { background: var(--g-err-soft); color: #7f1d1d; }
+.banner .spacer { flex: 1; }
+.reveal .tok code { word-break: break-all; }
+.reveal .grow { flex: 1; }
+.side-note { font-size: 12.5px; color: var(--g-muted); }
+.install-wrap { max-width: 900px; }
+.install-standalone { min-height: 100%; background: var(--g-bg-soft); }
+.install-standalone .page { margin: 0 auto; }
+.pre-wrap { position: relative; }
+.kv .v { text-align: right; font-variant-numeric: tabular-nums; }
+.udc-scope { height: 100%; }
+.split { grid-template-columns: minmax(0, 1fr) 300px; }
+.reveal .tok .btn { font-family: inherit; }

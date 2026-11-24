@@ -259,7 +259,7 @@ const membersView = ViewConfigSchema.parse({
     { field: "ssh_fingerprint", render: "fingerprint", width: "fill", min_width: 180 },
   ],
   search: { fields: ["username"] },
-  row_actions_display: "inline",
+  row_actions_display: "menu",
   row_action_defs: [
     { kind: "reset_token", label: "Nov token", when: { field: "status", op: "neq", value: "revoked" } },
     {

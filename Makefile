@@ -43,3 +43,13 @@ e2e:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+## gui: build shfd-gui (Node 22+): gui/dist with bin/shfd-gui, server.js and web/
+##      (needs npm; see docs/gui.md)
+.PHONY: gui gui-test
+gui:
+	cd gui && npm ci --no-audit --no-fund && VERSION=$(VERSION) npm run build
+
+## gui-test: unit tests of shfd-gui
+gui-test:
+	cd gui && npm ci --no-audit --no-fund && npm test

@@ -1,0 +1,21 @@
+# /etc/systemd/system/shfd-gui.service — the web GUI of shfd (docs/gui.md).
+# Install: versions/<sha> under /opt/shfd-gui, symlink current, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now shfd-gui
+[Unit]
+Description=shfd-gui web GUI of the shared-folder server
+After=network.target shfd.service
+
+[Service]
+User=shfd
+Environment=SHFD_URL=http://127.0.0.1:8443
+Environment=SHFD_GUI_LISTEN=127.0.0.1:8444
+Environment=SHFD_GUI_BASE=/gui
+ExecStart=/opt/shfd-gui/current/bin/shfd-gui
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

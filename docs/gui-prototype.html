@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shared-storage · GUI</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-soft: #f7f8fa; --bg-sunk: #f1f3f6;
+    --line: #e5e7eb; --line-strong: #d6d9de;
+    --text: #111827; --muted: #6b7280; --faint: #9ca3af;
+    --brand: #3b4fd8; --brand-soft: #eef0ff; --brand-text: #2f3fb8;
+    --ok: #15803d; --ok-soft: #e7f6ec;
+    --warn: #b45309; --warn-soft: #fdf3e3;
+    --err: #b91c1c; --err-soft: #fdecec;
+    --info: #0369a1; --info-soft: #e6f3fa;
+    --radius: 10px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+  a { color: var(--brand-text); text-decoration: none; }
+  button { font: inherit; cursor: pointer; }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; }
+  svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  /* ---------- login ---------- */
+  #login { min-height: 100%; display: grid; place-items: center; background: radial-gradient(1200px 500px at 50% -10%, var(--brand-soft), transparent), var(--bg-soft); }
+  .login-card { width: 380px; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 32px; box-shadow: 0 10px 30px rgba(17,24,39,.06); }
+  .login-card h1 { font-size: 20px; margin: 18px 0 4px; }
+  .login-card p.sub { color: var(--muted); margin: 0 0 22px; }
+  .field { display: grid; gap: 6px; margin-bottom: 14px; }
+  .field label { font-size: 13px; font-weight: 500; }
+  .input { height: 38px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 12px; font: inherit; width: 100%; background: var(--bg); }
+  .input:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
+  .hint { font-size: 12px; color: var(--muted); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font-weight: 500; white-space: nowrap; }
+  .btn:hover { background: var(--bg-soft); }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.07); }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+  .btn.ghost:hover { background: var(--bg-sunk); color: var(--text); }
+  .btn.danger { color: var(--err); }
+  .btn.sm { height: 28px; padding: 0 9px; font-size: 12.5px; }
+  .btn.block { width: 100%; justify-content: center; height: 40px; }
+
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-mark { width: 32px; height: 32px; border-radius: 8px; background: var(--brand); color: #fff; display: grid; place-items: center; }
+  .logo-mark svg { width: 18px; height: 18px; }
+  .logo b { display: block; font-size: 14px; }
+  .logo small { display: block; color: var(--muted); font-size: 11.5px; margin-top: -2px; }
+
+  /* ---------- app shell ---------- */
+  #app { display: none; height: 100%; grid-template-rows: 56px 1fr; grid-template-columns: 240px 1fr; }
+  #app.on { display: grid; }
+  header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+  header.top .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft); font-weight: 500; }
+  .pill .k { color: var(--muted); font-weight: 400; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #dfe3ff; color: var(--brand-text); display: grid; place-items: center; font-weight: 600; font-size: 12px; }
+  .user { display: flex; align-items: center; gap: 8px; }
+  .user .role { font-size: 11px; color: var(--brand-text); background: var(--brand-soft); padding: 1px 7px; border-radius: 999px; font-weight: 600; }
+
+  nav.side { border-right: 1px solid var(--line); padding: 14px 12px; display: flex; flex-direction: column; gap: 2px; background: var(--bg); }
+  nav.side .sec { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); padding: 14px 10px 6px; }
+  nav.side a { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; color: #374151; font-weight: 500; }
+  nav.side a:hover { background: var(--bg-soft); }
+  nav.side a.on { background: var(--brand-soft); color: var(--brand-text); }
+  nav.side a .badge { margin-left: auto; }
+  nav.side .foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+  nav.side .foot .row { display: flex; justify-content: space-between; }
+
+  main { overflow: auto; background: var(--bg); }
+  .page { display: none; padding: 24px 28px 40px; max-width: 1280px; }
+  .page.on { display: block; }
+  .page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
+  .page-head h2 { margin: 0; font-size: 20px; }
+  .page-head p { margin: 2px 0 0; color: var(--muted); }
+  .page-head .spacer { flex: 1; }
+
+  .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .toolbar .spacer { flex: 1; }
+  .search { position: relative; }
+  .search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); }
+  .search input { height: 32px; width: 280px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 10px 0 32px; font: inherit; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--bg); color: #374151; font-size: 12.5px; font-weight: 500; }
+  .chip.on { background: var(--text); color: #fff; border-color: var(--text); }
+  .chip .n { color: var(--faint); font-weight: 400; }
+  .chip.on .n { color: #c7cbd3; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12.5px; background: var(--bg-soft); padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: #fafbfc; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .faint { color: var(--faint); }
+
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--bg-sunk); color: #4b5563; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.err { background: var(--err-soft); color: var(--err); }
+  .badge.info { background: var(--info-soft); color: var(--info); }
+  .badge.brand { background: var(--brand-soft); color: var(--brand-text); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
+  .live .dot { animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+
+  .who { display: flex; align-items: center; gap: 10px; }
+  .who .avatar { width: 26px; height: 26px; font-size: 11px; }
+  .who b { font-weight: 600; }
+  .acts { display: flex; gap: 4px; justify-content: flex-end; }
+
+  /* stat tiles */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .stat { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .stat .k { color: var(--muted); font-size: 12.5px; }
+  .stat .v { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .stat .s { font-size: 12px; color: var(--muted); }
+
+  /* token reveal */
+  .reveal { display: flex; gap: 14px; align-items: flex-start; border: 1px solid #f3d9a6; background: #fffaf0; border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px; }
+  .reveal .ic { color: var(--warn); margin-top: 2px; }
+  .reveal b { display: block; }
+  .reveal .tok { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .reveal .tok code { background: #fff; border: 1px solid #f0dcb6; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+
+  /* logs */
+  .logs td { padding: 7px 12px; font-size: 13px; }
+  .logs td.t { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .logs td.p { font-family: var(--mono); font-size: 12.5px; }
+  .logs tr.new td { animation: flash 1.8s ease-out; }
+  @keyframes flash { from { background: #eef8f1; } to { background: transparent; } }
+  .op { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .split { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+  .side-card h4 { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; padding: 12px 14px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .bars { padding: 6px 14px 14px; display: grid; gap: 8px; }
+  .bar { display: grid; grid-template-columns: 64px 1fr 32px; align-items: center; gap: 8px; font-size: 12.5px; }
+  .bar .track { height: 8px; background: var(--bg-sunk); border-radius: 4px; overflow: hidden; }
+  .bar .fill { height: 100%; background: var(--brand); border-radius: 4px; }
+
+  /* files */
+  .crumbs { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--bg-soft); font-weight: 500; }
+  .crumbs .sep { color: var(--faint); }
+  .fname { display: flex; align-items: center; gap: 10px; }
+  .fname svg { color: var(--muted); }
+  .fname.dir a { font-weight: 500; }
+  .fname.dir svg { color: var(--brand); }
+  .tabs { display: flex; gap: 4px; padding: 3px; background: var(--bg-sunk); border-radius: 9px; }
+  .tabs button { border: 0; background: transparent; height: 28px; padding: 0 12px; border-radius: 7px; color: var(--muted); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+  .tabs button.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  .foot-note { text-align: center; color: var(--muted); font-size: 12.5px; padding: 12px; }
+  .jsudc-tag { font-size: 11.5px; color: var(--faint); display: inline-flex; align-items: center; gap: 6px; }
+
+  /* install */
+  .steps { display: grid; gap: 14px; }
+  .step { display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
+  .step .num { width: 30px; height: 30px; border-radius: 50%; background: var(--brand-soft); color: var(--brand-text); display: grid; place-items: center; font-weight: 700; }
+  .step h3 { margin: 4px 0 4px; font-size: 15px; }
+  .step p { margin: 0 0 8px; color: #374151; }
+  pre { margin: 0; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; font: 12.5px/1.6 var(--mono); overflow: auto; position: relative; }
+  pre .c { color: #64748b; }
+  pre .copy { position: absolute; top: 8px; right: 8px; height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #cbd5e1; font-size: 11.5px; }
+  .os-tabs { margin-bottom: 8px; }
+  .callout { display: flex; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--info-soft); color: #0c4a6e; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<section id="login">
+  <div class="login-card">
+    <div class="logo">
+      <div class="logo-mark"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+      <div><b>shared-storage</b><small>shared-storage.igor.digitalcube.work</small></div>
+    </div>
+    <h1>Prijava</h1>
+    <p class="sub">Za upravljanje folderom, logove i pregled fajlova.</p>
+    <div class="field">
+      <label>Folder</label>
+      <select class="input"><option>projekti — 493b54d3…</option><option>arhiva — 3f0c91aa…</option></select>
+    </div>
+    <div class="field">
+      <label>Token</label>
+      <input class="input mono" type="password" value="shf_4f8a9b0c1d2e3f" placeholder="shf_…">
+      <span class="hint">Token člana. Admin deo vide samo članovi sa ulogom <b>admin</b>.</span>
+    </div>
+    <button class="btn primary block" onclick="go('members')">Prijavi se</button>
+  </div>
+</section>
+
+<!-- ================= APP ================= -->
+<div id="app">
+  <header class="top">
+    <div class="logo">
+      <div class="logo-mark"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+      <div><b>shared-storage</b><small>shfd GUI</small></div>
+    </div>
+    <span class="pill"><span class="k">Folder</span> projekti <svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+    <div class="spacer"></div>
+    <span class="badge ok"><span class="dot"></span> shfd radi · v56261fd</span>
+    <div class="user"><div class="avatar">A</div><b>ana</b><span class="role">admin</span></div>
+    <button class="btn ghost sm" onclick="go('login')"><svg class="i" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>Odjava</button>
+  </header>
+
+  <nav class="side">
+    <div class="sec">Upravljanje</div>
+    <a href="#members" data-p="members"><svg class="i" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Članovi i tokeni<span class="badge">5</span></a>
+    <div class="sec">Sistem</div>
+    <a href="#logs" data-p="logs"><svg class="i" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Logovi<span class="badge ok live"><span class="dot"></span>live</span></a>
+    <a href="#files" data-p="files"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Fajlovi</a>
+    <div class="sec">Pomoć</div>
+    <a href="#install" data-p="install"><svg class="i" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>Instalacija</a>
+    <div class="foot">
+      <div class="row"><span>Zauzeto</span><b>12,4 GB</b></div>
+      <div class="row"><span>Trash</span><b>1,1 GB</b></div>
+      <div class="row"><span>Poslednji seq</span><b>4 812</b></div>
+    </div>
+  </nav>
+
+  <main>
+    <!-- ---------- MEMBERS ---------- -->
+    <section class="page" id="p-members">
+      <div class="page-head">
+        <div><h2>Članovi i tokeni</h2><p>Jedan član = jedan uređaj. Token se vidi samo kad se napravi.</p></div>
+        <div class="spacer"></div>
+        <button class="btn primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Nov član</button>
+      </div>
+
+      <div class="reveal">
+        <svg class="i ic" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div style="flex:1">
+          <b>Nov token za <span class="mono">marko-linux</span></b>
+          <span class="muted">Sačuvaj ga sada — čuva se samo hash i neće se ponovo prikazati.</span>
+          <div class="tok"><code>shf_7Kq2mXd9vLp0Rt4ZbN8cYwE1</code><button class="btn sm">Kopiraj</button><button class="btn sm">Kopiraj <span class="mono">shf join</span> komandu</button></div>
+        </div>
+        <button class="btn ghost sm">Zatvori</button>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Traži člana"></div>
+          <span class="chip on">Svi <span class="n">5</span></span>
+          <span class="chip">Aktivni <span class="n">4</span></span>
+          <span class="chip">Opozvani <span class="n">1</span></span>
+          <span class="chip">Admini <span class="n">2</span></span>
+          <div class="spacer"></div>
+          <span class="muted" style="font-size:12.5px">Kolona <b>Kasni</b> = koliko događaja član još nije potvrdio</span>
+        </div>
+        <table>
+          <thead><tr><th>Član</th><th>Uloga</th><th>Status</th><th>Poslednji put viđen</th><th>Poslednji upis</th><th class="num">Kasni</th><th>SSH ključ</th><th></th></tr></thead>
+          <tbody>
+            <tr><td><div class="who"><div class="avatar">A</div><b>ana</b></div></td><td><span class="badge brand">admin</span></td><td><span class="badge ok"><span class="dot"></span>aktivan</span></td><td>pre 12 s</td><td>pre 3 min</td><td class="num">0</td><td class="mono muted">SHA256:3vQk…a91F</td>
+              <td><div class="acts"><button class="btn sm">Nov token</button><button class="btn ghost sm">⋯</button></div></td></tr>
+            <tr><td><div class="who"><div class="avatar" style="background:#e3f4ea;color:#15803d">M</div><b>marko</b></div></td><td><span class="badge">member</span></td><td><span class="badge ok"><span class="dot"></span>aktivan</span></td><td>pre 40 s</td><td>pre 1 h</td><td class="num">0</td><td class="mono muted">SHA256:Yp7c…02kd</td>
+              <td><div class="acts"><button class="btn sm">Nov token</button><button class="btn ghost sm">⋯</button></div></td></tr>
+            <tr><td><div class="who"><div class="avatar" style="background:#fdf0dc;color:#b45309">M</div><b>marko-linux</b></div></td><td><span class="badge">member</span></td><td><span class="badge warn">čeka join</span></td><td class="faint">—</td><td class="faint">—</td><td class="num faint">—</td><td class="faint">nema ključa</td>
+              <td><div class="acts"><button class="btn sm">Nov token</button><button class="btn ghost sm">⋯</button></div></td></tr>
+            <tr><td><div class="who"><div class="avatar" style="background:#e6f0fb;color:#0369a1">J</div><b>jelena</b></div></td><td><span class="badge brand">admin</span></td><td><span class="badge ok"><span class="dot"></span>aktivan</span></td><td>pre 2 dana</td><td>pre 2 dana</td><td class="num"><span class="badge warn">138</span></td><td class="mono muted">SHA256:p0Lw…Tt3e</td>
+              <td><div class="acts"><button class="btn sm">Nov token</button><button class="btn ghost sm">⋯</button></div></td></tr>
+            <tr style="opacity:.6"><td><div class="who"><div class="avatar" style="background:#eee;color:#6b7280">I</div><b>ivan</b></div></td><td><span class="badge">member</span></td><td><span class="badge err">opozvan</span></td><td>pre 3 ned.</td><td class="faint">—</td><td class="num faint">—</td><td class="faint">—</td>
+              <td><div class="acts"><button class="btn sm">Vrati člana</button></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ---------- LOGS ---------- -->
+    <section class="page" id="p-logs">
+      <div class="page-head">
+        <div><h2>Logovi</h2><p>Šta se dešava na folderu, uživo iz <span class="mono">service.log</span>.</p></div>
+        <div class="spacer"></div>
+        <span class="badge ok live" style="height:28px;padding:0 10px"><span class="dot"></span>live · jsudc stream</span>
+        <button class="btn"><svg class="i" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>Pauziraj</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="k">Događaja danas</div><div class="v">1 284</div><div class="s">+212 u poslednjih sat</div></div>
+        <div class="stat"><div class="k">Transferi (rsync)</div><div class="v">342</div><div class="s">318 upload · 24 download</div></div>
+        <div class="stat"><div class="k">Odbijeno</div><div class="v" style="color:var(--err)">3</div><div class="s">key refused / denied</div></div>
+        <div class="stat"><div class="k">Povezani klijenti</div><div class="v">3</div><div class="s">WebSocket veze</div></div>
+      </div>
+
+      <div class="split">
+        <div class="card">
+          <div class="toolbar">
+            <div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Putanja, član, op…" style="width:220px"></div>
+            <span class="chip on">Sve</span>
+            <span class="chip">Izmene</span>
+            <span class="chip">Transferi</span>
+            <span class="chip">Ključevi</span>
+            <span class="chip">Greške <span class="n">3</span></span>
+          </div>
+          <table class="logs">
+            <thead><tr><th>Vreme</th><th>Tip</th><th>Član</th><th>Operacija</th><th>Putanja</th><th class="num">seq</th></tr></thead>
+            <tbody id="logrows"></tbody>
+          </table>
+        </div>
+
+        <div style="display:grid;gap:16px;align-content:start">
+          <div class="card side-card">
+            <h4>Aktivnost po članu (1 h)</h4>
+            <div class="bars">
+              <div class="bar"><span>ana</span><div class="track"><div class="fill" style="width:88%"></div></div><span class="num">96</span></div>
+              <div class="bar"><span>marko</span><div class="track"><div class="fill" style="width:61%"></div></div><span class="num">67</span></div>
+              <div class="bar"><span>jelena</span><div class="track"><div class="fill" style="width:8%"></div></div><span class="num">9</span></div>
+            </div>
+          </div>
+          <div class="card side-card">
+            <h4>Server</h4>
+            <div class="kv">
+              <span class="k">Verzija</span><span class="mono">56261fd</span>
+              <span class="k">Radi</span><span>3 d 4 h</span>
+              <span class="k">Poslednji verify</span><span><span class="badge ok">ok</span></span>
+              <span class="k">SSH endpoint</span><span class="mono">:2222</span>
+              <span class="k">Data root</span><span class="mono" style="font-size:11.5px">/disk2/shared-storage</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FILES ---------- -->
+    <section class="page" id="p-files">
+      <div class="page-head">
+        <div><h2>Fajlovi</h2><p>Sadržaj foldera na serveru (<span class="mono">storage/</span>), samo za čitanje.</p></div>
+        <div class="spacer"></div>
+        <div class="tabs"><button class="on">Fajlovi</button><button>Trash <span class="badge">27</span></button></div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Traži u ovom folderu"></div>
+          <span class="chip">+ Ext</span>
+          <span class="chip">Filter</span>
+          <div class="spacer"></div>
+          <span class="badge ok live"><span class="dot"></span>live</span>
+          <span class="muted" style="font-size:12.5px">7 stavki</span>
+        </div>
+        <div class="crumbs"><svg class="i" viewBox="0 0 24 24" style="color:var(--brand)"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><a href="#files">projekti</a><span class="sep">/</span><span>klijenti</span></div>
+        <table>
+          <thead><tr><th>Ime</th><th class="num">Veličina</th><th>Izmenjeno</th><th>Izmenio</th><th>Hash</th></tr></thead>
+          <tbody id="filerows"></tbody>
+        </table>
+        <div class="foot-note">Sve stavke učitane · <span class="jsudc-tag">prikaz: jsudc <span class="mono">UdcDataView</span></span></div>
+      </div>
+    </section>
+
+    <!-- ---------- INSTALL ---------- -->
+    <section class="page" id="p-install">
+      <div class="page-head">
+        <div><h2>Instalacija</h2><p>Kako se uređaj priključi na ovaj folder.</p></div>
+        <div class="spacer"></div>
+        <div class="tabs"><button class="on">Klijent (shf)</button><button>Server (shfd)</button></div>
+      </div>
+      <div class="steps" style="max-width:820px">
+        <div class="step"><div class="num">1</div><div>
+          <h3>Preuzmi <span class="mono">shf</span></h3>
+          <div class="tabs os-tabs" style="display:inline-flex"><button class="on">Linux</button><button>macOS</button><button>Windows</button></div>
+          <pre><button class="copy">Kopiraj</button>curl -fsSL https://shared-storage.igor.digitalcube.work/gui/install.sh | sh</pre>
+        </div></div>
+        <div class="step"><div class="num">2</div><div>
+          <h3>Pridruži se folderu</h3>
+          <p>Token dobijaš od admina (strana <a href="#members">Članovi i tokeni</a>). Svaki uređaj treba svog člana.</p>
+          <pre><button class="copy">Kopiraj</button>shf join https://shared-storage.igor.digitalcube.work \
+    493b54d3-e884-47ef-b8b1-af062f1a3adb shf_… ~/projekti</pre>
+        </div></div>
+        <div class="step"><div class="num">3</div><div>
+          <h3>Pokreni kao servis</h3>
+          <pre><button class="copy">Kopiraj</button>shf service install
+shf status            <span class="c"># state: synced</span></pre>
+        </div></div>
+        <div class="step"><div class="num">4</div><div>
+          <div class="callout"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>
+          <div>Ako <span class="mono">shf status</span> pokazuje <b>key refused</b>, isti član je pridružen sa drugog uređaja. Napravi novog člana za ovaj uređaj.</div></div>
+        </div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const pages = ['members', 'logs', 'files', 'install'];
+function go(p) {
+  if (p === 'login') { location.hash = ''; return show(); }
+  location.hash = p;
+}
+function show() {
+  const p = location.hash.slice(1);
+  const inApp = pages.includes(p);
+  document.getElementById('login').style.display = inApp ? 'none' : '';
+  document.getElementById('app').classList.toggle('on', inApp);
+  pages.forEach(x => document.getElementById('p-' + x).classList.toggle('on', x === p));
+  document.querySelectorAll('nav.side a').forEach(a => a.classList.toggle('on', a.dataset.p === p));
+}
+addEventListener('hashchange', show);
+
+// ---- logs (mock of service.log lines) ----
+const kinds = {
+  event:    ['badge info', 'izmena'],
+  transfer: ['badge', 'transfer'],
+  key:      ['badge warn', 'ključ'],
+  denied:   ['badge err', 'odbijeno'],
+};
+const opColor = { put: '#15803d', delete: '#b91c1c', move: '#7c3aed', mkdir: '#0369a1', restore: '#b45309', upload: '#374151', download: '#374151', 'key-replaced': '#b45309', denied: '#b91c1c' };
+let seq = 4812;
+const seed = [
+  ['10:15:42', 'event', 'ana', 'put', 'klijenti/acme/ponuda-v3.pdf', seq],
+  ['10:15:41', 'transfer', 'ana', 'upload', 'tmp/u_8f21c0', ''],
+  ['10:15:02', 'key', 'marko', 'key-replaced', 'SHA256:Yp7c… ← SHA256:9aQe…', ''],
+  ['10:14:57', 'event', 'marko', 'move', 'dizajn/logo-final.svg', 4811],
+  ['10:14:57', 'event', 'marko', 'delete', 'dizajn/logo-old.svg', 4810],
+  ['10:14:30', 'transfer', 'jelena', 'download', 'storage/izvestaji/q3.xlsx', ''],
+  ['10:13:12', 'denied', '#7', 'denied', 'storage/../etc  · path outside share', ''],
+  ['10:12:55', 'event', 'ana', 'mkdir', 'klijenti/acme', 4809],
+  ['10:12:40', 'event', 'ana', 'restore', 'ugovori/2026/nda.docx', 4808],
+  ['10:11:03', 'event', 'marko', 'put', 'dizajn/brand/boje.json', 4807],
+];
+function logRow(r, fresh) {
+  const [t, k, who, op, path, s] = r;
+  const tr = document.createElement('tr');
+  if (fresh) tr.className = 'new';
+  tr.innerHTML = `<td class="t">2026-11-24 ${t}</td><td><span class="${kinds[k][0]}">${kinds[k][1]}</span></td>
+    <td>${who}</td><td><span class="op" style="color:${opColor[op]}">${op}</span></td><td class="p">${path}</td><td class="num muted">${s}</td>`;
+  return tr;
+}
+const lb = document.getElementById('logrows');
+seed.forEach(r => lb.appendChild(logRow(r)));
+const pool = [['event','ana','put','klijenti/acme/beleske.md'],['transfer','marko','upload','tmp/u_'],['event','marko','put','dizajn/mockup-02.png'],['event','jelena','delete','izvestaji/stari.csv']];
+let tick = 0;
+setInterval(() => {
+  if (location.hash !== '#logs') return;
+  const [k, who, op, p] = pool[tick++ % pool.length];
+  const d = new Date(); const t = d.toTimeString().slice(0, 8);
+  const row = k === 'event' ? [t, k, who, op, p, ++seq] : [t, k, who, op, p + Math.random().toString(16).slice(2, 8), ''];
+  lb.insertBefore(logRow(row, true), lb.firstChild);
+  if (lb.children.length > 14) lb.lastChild.remove();
+}, 2500);
+
+// ---- files (mock of storage/) ----
+const dirIc = '<svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+const fileIc = '<svg class="i" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>';
+const files = [
+  ['acme', 1, '—', '24.11.2026 10:12', 'ana', ''],
+  ['beta-doo', 1, '—', '19.11.2026 14:03', 'marko', ''],
+  ['gamma', 1, '—', '02.11.2026 09:40', 'jelena', ''],
+  ['cenovnik-2027.xlsx', 0, '48 KB', '23.11.2026 16:21', 'ana', 'b3a9…7f10'],
+  ['kontakti.csv', 0, '6,2 KB', '22.11.2026 11:08', 'jelena', '0c41…ee2a'],
+  ['ponuda-sablon.docx', 0, '212 KB', '20.11.2026 13:55', 'ana', '91d2…4a0b'],
+  ['README.md', 0, '1,4 KB', '18.11.2026 08:30', 'marko', '5e77…c3d1'],
+];
+const fb = document.getElementById('filerows');
+files.forEach(([n, d, sz, m, by, h]) => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><div class="fname ${d ? 'dir' : ''}">${d ? dirIc : fileIc}${d ? `<a href="#files">${n}</a>` : n}</div></td>
+    <td class="num ${d ? 'faint' : ''}">${sz}</td><td>${m}</td><td>${by}</td><td class="mono faint">${h || '—'}</td>`;
+  fb.appendChild(tr);
+});
+
+show();
+</script>
+</body>
+</html>

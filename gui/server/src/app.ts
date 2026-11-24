@@ -55,7 +55,7 @@ export interface GuiApp {
 
 export async function buildGui(o: AppOptions): Promise<GuiApp> {
   const base = o.base.replace(/\/+$/, "");
-  const app = Fastify({ logger: o.logger ?? false, trustProxy: true });
+  const app = Fastify({ logger: o.logger ?? false, trustProxy: true, disableRequestLogging: true });
   const shfd = new ShfdClient(o.shfdUrl, o.fetchFn);
   const sessions = new SessionStore(o.now);
   const changes = createChangeFeed();
