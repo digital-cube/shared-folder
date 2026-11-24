@@ -7,6 +7,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	"github.com/digital-cube/shared-folder/internal/server"
 )
 
 // HeadMessage is the only message of GET /v1/shares/{id}/ws: the newest
@@ -29,14 +31,15 @@ const (
 // current HEAD, then one message after every write that added events to
 // the folder's log. A slow client may skip intermediate values; the last
 // one always arrives. The server pings every ping interval and drops a
-// client that does not answer within the next one; revoking the member
-// closes its connections. Clients send nothing (a data message closes the
+// client that does not answer within the next one; revoking the member or
+// resetting its token closes its connections. Clients send nothing (a data message closes the
 // connection).
 func (a *api) ws(w http.ResponseWriter, r *http.Request) {
 	sh, m, ok := a.authenticate(w, r)
 	if !ok {
 		return
 	}
+	token := bearerToken(r)
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return // Accept has answered the request
@@ -85,8 +88,9 @@ func (a *api) ws(w http.ResponseWriter, r *http.Request) {
 			c.Close(CloseRevoked, "token revoked")
 			return
 		case <-check.C:
-			cur, err := sh.MemberByID(m.ID)
-			if err == nil && cur.RevokedAt != nil {
+			// The token itself is checked again: shfd member revoke and
+			// reset-token in another process both end it.
+			if _, err := sh.Authenticate(token); server.CodeOf(err) == server.CodeUnauthorized {
 				c.Close(CloseRevoked, "token revoked")
 				return
 			}

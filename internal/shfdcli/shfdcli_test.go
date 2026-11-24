@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digital-cube/shared-folder/internal/server"
 )
 
 func run(t *testing.T, env map[string]string, args ...string) (code int, stdout, stderr string) {
@@ -155,5 +157,80 @@ func TestServe(t *testing.T) {
 
 	if code, _, _ := run(t, env, "serve", "--tls-cert", "x"); code != 2 {
 		t.Errorf("tls-cert without key exit = %d", code)
+	}
+}
+
+func TestMemberSetRoleResetTokenReactivate(t *testing.T) {
+	root := t.TempDir()
+	env := map[string]string{EnvDataRoot: root}
+	_, out, _ := run(t, env, "share", "create", "tim")
+	id := idRE.FindStringSubmatch(out)[1]
+	_, out, _ = run(t, env, "member", "add", id, "marko")
+	oldTok := tokenRE.FindStringSubmatch(out)[1]
+
+	// set-role up and down; the last admin keeps the role.
+	code, out, errOut := run(t, env, "member", "set-role", id, "marko", "admin")
+	if code != 0 || !strings.Contains(out, "marko: role member -> admin") {
+		t.Fatalf("set-role up: %d %q %q", code, out, errOut)
+	}
+	if code, out, _ = run(t, env, "member", "set-role", id, "admin", "member"); code != 0 || !strings.Contains(out, "admin: role admin -> member") {
+		t.Fatalf("set-role down: %d %q", code, out)
+	}
+	if code, _, errOut = run(t, env, "member", "set-role", id, "marko", "member"); code != 1 || !strings.Contains(errOut, "last_admin") {
+		t.Errorf("set-role of the last admin: %d %q", code, errOut)
+	}
+	if code, _, _ = run(t, env, "member", "set-role", id, "marko", "owner"); code != 2 {
+		t.Errorf("set-role with a bad role: %d", code)
+	}
+	if code, _, errOut = run(t, env, "member", "set-role", id, "niko", "admin"); code != 1 || !strings.Contains(errOut, "unknown_member") {
+		t.Errorf("set-role of an unknown member: %d %q", code, errOut)
+	}
+
+	// reset-token prints a new token in the format of member add.
+	code, out, errOut = run(t, env, "member", "reset-token", id, "marko")
+	tok := tokenRE.FindStringSubmatch(out)
+	if code != 0 || tok == nil || tok[1] == oldTok || !strings.Contains(out, "member: marko\n") {
+		t.Fatalf("reset-token: %d %q %q", code, out, errOut)
+	}
+	srv, err := server.Open(root, server.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh, _ := srv.Share(id)
+	if _, err := sh.Authenticate(oldTok); server.CodeOf(err) != server.CodeUnauthorized {
+		t.Errorf("old token after reset: %v", err)
+	}
+	m, err := sh.Authenticate(tok[1])
+	if err != nil {
+		t.Fatalf("new token: %v", err)
+	}
+	srv.Close()
+
+	// add over an active name, revoke, reset-token of a revoked member.
+	if code, _, errOut = run(t, env, "member", "add", id, "marko"); code != 1 || !strings.Contains(errOut, "member_exists") {
+		t.Errorf("add over an active member: %d %q", code, errOut)
+	}
+	run(t, env, "member", "set-role", id, "admin", "admin")
+	run(t, env, "member", "revoke", id, "marko")
+	if code, _, errOut = run(t, env, "member", "reset-token", id, "marko"); code != 1 || !strings.Contains(errOut, "member add") {
+		t.Errorf("reset-token of a revoked member: %d %q", code, errOut)
+	}
+
+	// add brings the revoked member back.
+	code, out, errOut = run(t, env, "member", "add", id, "marko")
+	newTok := tokenRE.FindStringSubmatch(out)
+	if code != 0 || newTok == nil || !strings.Contains(out, "member: marko (reactivated)") {
+		t.Fatalf("reactivate: %d %q %q", code, out, errOut)
+	}
+	srv, _ = server.Open(root, server.Options{})
+	defer srv.Close()
+	sh, _ = srv.Share(id)
+	back, err := sh.Authenticate(newTok[1])
+	if err != nil || back.ID != m.ID || back.Role != server.RoleMember {
+		t.Errorf("reactivated: %+v %v (was id %d)", back, err, m.ID)
+	}
+	_, out, _ = run(t, env, "member", "list", id)
+	if !regexp.MustCompile(`(?m)^marko\s+member\s+active`).MatchString(out) {
+		t.Errorf("member list:\n%s", out)
 	}
 }

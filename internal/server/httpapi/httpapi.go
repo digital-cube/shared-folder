@@ -63,10 +63,10 @@ type Option func(*api)
 // (default 30 s).
 func WithPingInterval(d time.Duration) Option { return func(a *api) { a.ping = d } }
 
-// WithMemberCheck sets how often an open WebSocket re-reads its member
-// from the database, which closes it after a revocation made by another
-// process (shfd member revoke). A revocation in this process closes it at
-// once. Default 10 s.
+// WithMemberCheck sets how often an open WebSocket re-checks its member's
+// token from the database, which closes it after a revocation or a token
+// reset made by another process (shfd member revoke, reset-token). One in
+// this process closes it at once. Default 10 s.
 func WithMemberCheck(d time.Duration) Option { return func(a *api) { a.memberCheck = d } }
 
 // Handler is the API. Close disconnects the open WebSockets, which
@@ -137,11 +137,21 @@ func (a *api) auth(h handler) http.Handler {
 	})
 }
 
+// bearerToken is the token of the Authorization header, "" when there is
+// none.
+func bearerToken(r *http.Request) string {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(token)
+}
+
 // authenticate resolves the folder and member of a request, answering it
 // with an error when that fails.
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Share, *server.Member, bool) {
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || strings.TrimSpace(token) == "" {
+	token := bearerToken(r)
+	if token == "" {
 		writeErr(w, http.StatusUnauthorized, server.CodeUnauthorized, "missing bearer token")
 		return nil, nil, false
 	}
@@ -154,7 +164,7 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) (*server.Shar
 		a.fail(w, r, err)
 		return nil, nil, false
 	}
-	m, err := sh.Authenticate(strings.TrimSpace(token))
+	m, err := sh.Authenticate(token)
 	if err != nil {
 		a.fail(w, r, err)
 		return nil, nil, false

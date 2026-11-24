@@ -8,9 +8,10 @@ import "sync"
 //
 // Heads is buffered with room for one value and always holds the newest
 // HEAD: a slow reader skips intermediate values, never the last one.
-// Revoked is closed when the member's token is revoked in this process
-// (shfd member revoke runs in its own process; the WebSocket handler also
-// re-checks the member from the database for that case).
+// Revoked is closed when the member's token is revoked or replaced in this
+// process (shfd member revoke and reset-token run in their own process; the
+// WebSocket handler also re-checks the token from the database for that
+// case).
 type Watcher struct {
 	MemberID int64
 	Heads    chan int64
@@ -67,7 +68,8 @@ func (s *Share) notify(head int64) {
 	}
 }
 
-// revokeWatchers closes Revoked of every watcher of the member.
+// revokeWatchers closes Revoked of every watcher of the member (its token
+// was revoked or replaced).
 func (s *Share) revokeWatchers(memberID int64) {
 	s.watch.mu.Lock()
 	defer s.watch.mu.Unlock()

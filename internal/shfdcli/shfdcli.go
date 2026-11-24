@@ -5,6 +5,8 @@
 //	shfd share list
 //	shfd member add <share-id> <username> [--admin]
 //	shfd member revoke <share-id> <username>
+//	shfd member set-role <share-id> <username> admin|member
+//	shfd member reset-token <share-id> <username>
 //	shfd member list <share-id>
 //	shfd keys sync
 //	shfd trash list <share-id> [--path P] [--by USER] [--reason deleted|replaced] [--since DATE]
@@ -61,6 +63,8 @@ Usage:
   shfd share list
   shfd member add <share-id> <username> [--admin]
   shfd member revoke <share-id> <username>
+  shfd member set-role <share-id> <username> admin|member
+  shfd member reset-token <share-id> <username>
   shfd member list <share-id>
   shfd keys sync
   shfd trash list <share-id> [--path PREFIX] [--by USERNAME]
@@ -88,6 +92,14 @@ serve --ssh-endpoint (default $SHFD_SSH_ENDPOINT) is the address clients
 use for rsync over SSH; "shf join" learns it when it registers its key.
 rsync-gate is that forced command: it reads $SSH_ORIGINAL_COMMAND and runs
 only the rsync transfers the member may do.
+
+Members (docs/admin.md): member add prints the member's token, which is
+shown only then. A username stays taken by a revoked member; member add
+with that name brings the member back (same history, new token, role from
+--admin, no SSH key until shf join registers one). set-role refuses to take
+the admin role from the folder's last active admin. reset-token prints a
+new token for an active member; the old one stops working at once and the
+SSH key stays.
 
 Admin commands (docs/admin.md): trash, verify and stats reach a running
 serve through <data-root>/admin.sock, so they are safe while it runs; with
@@ -244,7 +256,7 @@ func shareCmd(args []string, env Env) error {
 
 func memberCmd(args []string, env Env) error {
 	if len(args) == 0 {
-		return usageError("member: want add, revoke or list")
+		return usageError("member: want add, revoke, set-role, reset-token or list")
 	}
 	var sf sshFlags
 	open := func(root, id string) (*server.Server, *server.Share, error) {
@@ -278,11 +290,18 @@ func memberCmd(args []string, env Env) error {
 			return err
 		}
 		defer srv.Close()
-		token, err := sh.AddMember(pos[1], *admin)
+		token, reactivated, err := sh.AddOrReactivateMember(pos[1], *admin)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(env.Stdout, "member: %s\ntoken:  %s\n\nThe token is shown only now; it is stored as a hash.\n", pos[1], token)
+		name := pos[1]
+		if reactivated {
+			name += " (reactivated)"
+		}
+		printToken(env, name, token)
+		if reactivated {
+			fmt.Fprintf(env.Stdout, "\n%s was revoked and is back, with the same history. The old token and\nSSH key stay invalid: run shf join with this token on the member's\nmachine, which registers its SSH key again.\n", pos[1])
+		}
 		return nil
 	case "revoke":
 		fs := flag.NewFlagSet("member revoke", flag.ContinueOnError)
@@ -300,6 +319,50 @@ func memberCmd(args []string, env Env) error {
 			return err
 		}
 		fmt.Fprintf(env.Stdout, "revoked %s\n", pos[1])
+		return nil
+	case "set-role":
+		fs := flag.NewFlagSet("member set-role", flag.ContinueOnError)
+		sf.register(fs, env)
+		root, pos, err := flags(fs, args[1:], 3, env)
+		if err != nil {
+			return err
+		}
+		if pos[2] != server.RoleAdmin && pos[2] != server.RoleMember {
+			return usageError("member set-role: role must be admin or member, not %q", pos[2])
+		}
+		srv, sh, err := open(root, pos[0])
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		old, err := sh.SetRole(pos[1], pos[2])
+		if err != nil {
+			return err
+		}
+		if old == pos[2] {
+			fmt.Fprintf(env.Stdout, "%s: role %s (unchanged)\n", pos[1], old)
+		} else {
+			fmt.Fprintf(env.Stdout, "%s: role %s -> %s\n", pos[1], old, pos[2])
+		}
+		return nil
+	case "reset-token":
+		fs := flag.NewFlagSet("member reset-token", flag.ContinueOnError)
+		sf.register(fs, env)
+		root, pos, err := flags(fs, args[1:], 2, env)
+		if err != nil {
+			return err
+		}
+		srv, sh, err := open(root, pos[0])
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		token, err := sh.ResetToken(pos[1])
+		if err != nil {
+			return err
+		}
+		printToken(env, pos[1], token)
+		fmt.Fprintf(env.Stdout, "\nThe old token no longer works. The SSH key stays; give the member this\ntoken for their shf client.\n")
 		return nil
 	case "list":
 		fs := flag.NewFlagSet("member list", flag.ContinueOnError)
@@ -329,6 +392,11 @@ func memberCmd(args []string, env Env) error {
 		return tw.Flush()
 	}
 	return usageError("member: unknown subcommand %q", args[0])
+}
+
+// printToken prints a member's new token the way member add always has.
+func printToken(env Env, name, token string) {
+	fmt.Fprintf(env.Stdout, "member: %s\ntoken:  %s\n\nThe token is shown only now; it is stored as a hash.\n", name, token)
 }
 
 func when(t *time.Time) string {

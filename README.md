@@ -45,8 +45,10 @@ preko SSH-a.
 ```sh
 export SHFD_DATA_ROOT=/var/lib/shfd        # ili --data-root uz svaku komandu
 shfd share create tim [--admin ana]        # ispisuje share-id i token prvog admina
-shfd member add <share-id> bob [--admin]   # ispisuje token člana (samo tada)
+shfd member add <share-id> bob [--admin]   # ispisuje token člana (samo tada); opozvanog bob-a vraća
 shfd member revoke <share-id> bob
+shfd member set-role <share-id> bob admin|member   # ne oduzima ulogu poslednjem adminu (last_admin)
+shfd member reset-token <share-id> bob     # nov token aktivnom članu; stari odmah prestaje, SSH ključ ostaje
 shfd member list <share-id>
 shfd share list
 shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
@@ -58,6 +60,11 @@ shfd trash purge <share-id> (--older-than 90d | --id N | --all) [--dry-run] [--y
 shfd verify <share-id> [--repair] [--json]   # izlazni kod 1 ako nađe neslaganje
 shfd stats <share-id> [--json]
 ```
+
+Username ostaje zauzet i kad je član opozvan: opozvanog člana vraća
+`shfd member add` sa istim imenom (isti id i istorija, nov token, uloga prema
+`--admin`, bez SSH ključa dok ga klijent ne registruje ponovo kroz `shf
+join`). Za ime aktivnog člana `member add` vraća `member_exists`.
 
 Admin komande su bezbedne dok `shfd serve` radi: idu kroz njegov lokalni
 socket `<data-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
@@ -226,8 +233,8 @@ verzija u trash-u, konflikt dok su oba odvojena, isti sadržaj istovremeno,
 izmena protiv brisanja (oba redosleda), povratak posle 200 promena,
 `.shfignore`, prekinut prenos od 200 MB (upload i download, klijent ubijen na
 trećini), masovno brisanje (`confirm` i `restore-local`), pridruživanje u
-neprazan folder, opoziv člana (API i SSH), vraćanje iz trash-a i pad servera
-usred uploada.
+neprazan folder, opoziv člana (API i SSH), vraćanje opozvanog člana i ponovni
+`shf join`, vraćanje iz trash-a i pad servera usred uploada.
 
 Šta treba na mašini (Linux):
 

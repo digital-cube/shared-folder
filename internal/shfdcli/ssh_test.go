@@ -69,6 +69,15 @@ func TestKeysRevokeAndGate(t *testing.T) {
 	if len(es) != 0 || !strings.HasPrefix(string(data), "# own line\n") {
 		t.Errorf("after revoke:\n%s", data)
 	}
+	// Bringing bob back does not bring his key back, not even through
+	// keys sync, until he registers one again.
+	if code, out, errOut := run(t, env, "member", "add", id, "bob"); code != 0 || !strings.Contains(out, "(reactivated)") {
+		t.Fatalf("reactivate: %d %q %q", code, out, errOut)
+	}
+	run(t, env, "keys", "sync")
+	if es, _ := (&authkeys.File{Path: ak}).Entries(); len(es) != 0 {
+		t.Errorf("after reactivation: %+v", es)
+	}
 	if code, _, _ := run(t, map[string]string{EnvDataRoot: root}, "keys", "sync"); code != 2 {
 		t.Errorf("keys sync without --authorized-keys: %d", code)
 	}

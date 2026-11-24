@@ -49,7 +49,9 @@ nestaje bez odluke admina.
 
 ### service.db
 
-- `members`: id, username (jedinstven u folderu), token_hash, ssh_pubkey, role
+- `members`: id, username (jedinstven u folderu, i za opozvane članove:
+  opozvan član se vraća istim imenom, `shfd member add`, sa istim id-jem i
+  istorijom, novim tokenom i bez SSH ključa), token_hash, ssh_pubkey, role
   (`admin` | `member`), created_at, revoked_at, last_seen_at, last_push_at,
   last_seq_acked.
 - `files`: trenutno stanje — path, kind (`file` | `dir`), hash, size, mtime,
@@ -96,13 +98,15 @@ ili ugrađen.
 - `POST /v1/shares/{id}/ops` — `delete`, `move`, `mkdir`, `rmdir`, svaki sa
   base_hash gde ima smisla.
 - `GET  /v1/shares/{id}/ws` — WebSocket; server šalje samo `{"head": N}`.
-- Admin: članovi (dodaj, opozovi), trash (lista, vrati, očisti), statistike,
+- Admin: članovi (dodaj ili vrati opozvanog, opozovi, promeni ulogu, nov
+  token), trash (lista, vrati, očisti), statistike,
   provera `storage/` prema bazi.
 
 Implementacija (TCKTHRC7PQ): `GET /admin/trash`, `POST /admin/trash/{id}/restore`,
 `POST /admin/trash/purge`, `POST /admin/verify`, `GET /admin/stats` pod
 `/v1/shares/{id}`, samo za ulogu `admin` (ostali dobijaju 403 `forbidden`).
-Članovi se i dalje dodaju i opozivaju samo komandom `shfd member`. `shfd serve`
+Članovi se i dalje dodaju, opozivaju i menjaju (uloga, nov token, vraćanje
+opozvanog) samo komandom `shfd member`, bez admin API poziva. `shfd serve`
 iste pozive služi bez tokena na lokalnom unix socket-u `<data-root>/admin.sock`
 (0600), kroz koji idu `shfd` admin komande dok server radi
 ([admin.md](admin.md)).
@@ -263,7 +267,9 @@ praćenja za te putanje ne pokreću ciklus. Intervali i pragovi su u
 `<state home>/settings.json`. Na SIGTERM tekuća stavka se završava (najduže
 60 s), pa proces izlazi. Server šalje `{"head": N}` po povezivanju i posle
 svakog upisa koji je dodao događaje, pinguje na 30 s, a opoziv člana zatvara
-njegove veze (u istom procesu odmah, iz `shfd member revoke` u roku od 10 s).
+njegove veze (u istom procesu odmah, iz `shfd member revoke` u roku od 10 s);
+isto važi za nov token (`shfd member reset-token`), jer stari tada prestaje da
+važi.
 
 ### 8.4 Zaštita od masovnog brisanja
 
@@ -295,7 +301,8 @@ ono što server javlja preko `shfd serve --ssh-endpoint`), `sync`, `status`,
 pridruženog foldera. Dodato (TCK5FHY9NF): `daemon`, `confirm`,
 `restore-local`, `service install|uninstall|status`.
 
-Admin (na serveru): `shfd serve`, `shfd share create`, `shfd member add|revoke|list`,
+Admin (na serveru): `shfd serve`, `shfd share create`,
+`shfd member add|revoke|set-role|reset-token|list`,
 `shfd trash list|restore|purge`, `shfd verify [--repair]`, `shfd stats`.
 
 Postoje (TCKTHRC7PQ): `trash list|restore|purge`, `verify [--repair]`,

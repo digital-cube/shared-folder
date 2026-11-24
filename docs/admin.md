@@ -1,8 +1,10 @@
-# Admin komande `shfd`: trash, verify, stats
+# Admin komande `shfd`: članovi, trash, verify, stats
 
-Alati za admina servera: rad sa trash-om, provera da se `storage/` slaže sa
-bazom i pregled stanja foldera (specifikacija, odeljci 3, 4 i 8.5). Članove
-dodaje i opoziva `shfd member` (vidi [README](../README.md#server)).
+Alati za admina servera: članovi foldera (uloga, novi token, vraćanje
+opozvanog), rad sa trash-om, provera da se `storage/` slaže sa bazom i
+pregled stanja foldera (specifikacija, odeljci 3, 4 i 8.5). Za članove
+postoji samo komanda `shfd member`, bez admin API poziva (vidi
+[Članovi](#članovi)).
 
 Svaka operacija postoji na dva mesta, sa istim ponašanjem:
 
@@ -35,6 +37,89 @@ servis radi:
 Komanda radi u ime najstarijeg aktivnog admina foldera; `--as <username>`
 bira drugog (mora biti admin). To ime ostaje u dnevniku: ko je vratio,
 očistio ili popravio.
+
+## Članovi
+
+```sh
+shfd member add <share-id> <username> [--admin]      # nov član, ili vraćanje opozvanog
+shfd member revoke <share-id> <username>
+shfd member set-role <share-id> <username> admin|member
+shfd member reset-token <share-id> <username>
+shfd member list <share-id>
+```
+
+Komande `shfd member` ne idu kroz `admin.sock`: upisuju direktno u
+`service.db` foldera, u kratkoj SQLite transakciji, kao `member add` i
+`revoke` od početka. Bezbedne su i dok `shfd serve` radi (baza je u WAL
+režimu, upisi čekaju jedan drugog). Ono što server drži u memoriji ne
+menjaju odmah: otvorene WebSocket veze člana kome je token opozvan ili
+zamenjen server zatvara pri sledećoj proveri, u roku od 10 s (u istom
+procesu odmah). API pozivi starim tokenom dobijaju `401` odmah.
+
+Username je jedinstven u folderu, **i za opozvane članove**: opozvan član
+ostaje u listi i u istoriji (`updated_by`, „by“ u trash-u, dnevnik).
+
+### Uloga: `set-role`
+
+```
+$ shfd member set-role 3f0c… marko admin
+marko: role member -> admin
+```
+
+Menja ulogu aktivnog člana i ispisuje staru i novu. Odbija:
+
+- opozvanog ili nepoznatog člana (`unknown_member`);
+- da poslednjem aktivnom adminu foldera oduzme ulogu (`last_admin`). Trash,
+  verify i purge rade u ime najstarijeg aktivnog admina, pa folder ne sme
+  ostati bez njega. Prvo dodeli ulogu nekom drugom, pa onda oduzmi.
+
+Nova uloga važi od sledećeg API poziva člana; klijent ne treba ništa da
+radi.
+
+### Nov token: `reset-token`
+
+```
+$ shfd member reset-token 3f0c… bob
+member: bob
+token:  shf_…
+
+The token is shown only now; it is stored as a hash.
+```
+
+Za člana koji je izgubio token ili mu je token procureo. Aktivni član dobija
+nov token (ispisuje se samo tada, kao kod `member add`), a stari odmah
+prestaje da važi: API vraća `401`, a WebSocket veze sa starim tokenom se
+zatvaraju kao kod opoziva. SSH ključ člana ostaje u `authorized_keys`, pa
+rsync radi i dalje; klijentu treba samo nov token (npr. ponovo `shf join`
+sa novim tokenom). Opozvanog člana komanda odbija (`unknown_member`): njega
+vraća `member add`.
+
+### Vraćanje opozvanog člana: `member add` sa istim imenom
+
+```
+$ shfd member revoke 3f0c… marko
+$ shfd member add 3f0c… marko --admin
+member: marko (reactivated)
+token:  shf_…
+```
+
+`member add` nad imenom opozvanog člana ne pravi novog člana nego vraća
+starog:
+
+- isti `id`, pa istorija (`updated_by`, „by“ u trash-u, dnevnik) ostaje
+  njegova;
+- nov token; stari ostaje nevažeći;
+- uloga prema `--admin` (bez njega `member`), pa je `revoke` + `add
+  --admin` takođe način da se promeni uloga;
+- bez SSH ključa: stari ključ se ne vraća u `authorized_keys` (ni kroz
+  `shfd keys sync`). Klijent ga registruje ponovo kroz `shf join` sa novim
+  tokenom;
+- `last_seq_acked` se vraća na 0, kao kod novog člana: klijent koji se
+  ponovo pridruži kreće od početka dnevnika, a `stats` iz te vrednosti
+  računa koliko član kasni (`behind`). `last_seen_at` i `last_push_at`
+  ostaju (to je istorija) i menjaju se pri sledećem pozivu, odnosno upisu.
+
+Nad imenom **aktivnog** člana `member add` i dalje odbija sa `member_exists`.
 
 ## Trash
 

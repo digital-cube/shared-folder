@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -132,25 +131,133 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// AddMember adds a member and returns the token. Only its hash is stored, so
-// this is the one time the token is visible.
+// AddMember adds a member, or brings back a revoked one of that name (see
+// AddOrReactivateMember), and returns the token. Only its hash is stored,
+// so this is the one time the token is visible.
 func (s *Share) AddMember(username string, admin bool) (string, error) {
+	token, _, err := s.AddOrReactivateMember(username, admin)
+	return token, err
+}
+
+// AddOrReactivateMember adds a member and returns the token. A username is
+// unique in the folder, revoked members included, so a name that belongs
+// to a revoked member brings that member back instead (reactivated is
+// true): the same id, so the history (updated_by, trash "by") stays
+// theirs, with a new token, the role given by admin, no SSH key (the old
+// one is not restored; the client registers one again through shf join)
+// and last_seq_acked back to 0 like a new member, since the client that
+// joins again starts from the beginning of the log. last_seen_at and
+// last_push_at are kept: they record what the member did, and the next
+// call or push replaces them. A name of an active member fails with
+// CodeMemberExists.
+func (s *Share) AddOrReactivateMember(username string, admin bool) (token string, reactivated bool, err error) {
 	if err := pathx.ValidateUsername(username); err != nil {
-		return "", errf(CodeInvalidRequest, "%v", err)
+		return "", false, errf(CodeInvalidRequest, "%v", err)
 	}
 	role := RoleMember
 	if admin {
 		role = RoleAdmin
 	}
-	token := NewToken()
-	_, err := s.db.Exec(`INSERT INTO members (username, token_hash, role, created_at) VALUES (?, ?, ?, ?)`,
-		username, HashToken(token), role, fmtTime(s.now()))
+	token = NewToken()
+	tx, err := s.db.Begin()
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return "", errf(CodeMemberExists, "member %q already exists", username)
+		return "", false, err
+	}
+	defer tx.Rollback()
+	var id int64
+	var revoked sql.NullString
+	err = tx.QueryRow(`SELECT id, revoked_at FROM members WHERE username = ?`, username).Scan(&id, &revoked)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.Exec(`INSERT INTO members (username, token_hash, role, created_at) VALUES (?, ?, ?, ?)`,
+			username, HashToken(token), role, fmtTime(s.now())); err != nil {
+			return "", false, err
 		}
+	case err != nil:
+		return "", false, err
+	case !revoked.Valid:
+		return "", false, errf(CodeMemberExists, "member %q already exists", username)
+	default:
+		reactivated = true
+		if _, err := tx.Exec(`UPDATE members SET token_hash = ?, role = ?, revoked_at = NULL, ssh_pubkey = '',
+			last_seq_acked = 0 WHERE id = ?`, HashToken(token), role, id); err != nil {
+			return "", false, err
+		}
+		// revoke removed the line, but its removal may have failed; the
+		// old key must not let the member in again. Done while the row is
+		// locked, like SetSSHKey.
+		if s.keys != nil {
+			if err := s.keys.Remove(s.ID, id); err != nil {
+				return "", false, fmt.Errorf("removing the old SSH key of %s from %s: %w", username, s.keys.Path, err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	return token, reactivated, nil
+}
+
+// SetRole changes the role of an active member and returns the role it
+// had. It refuses a revoked or unknown member (CodeUnknownMember) and
+// taking the admin role from the folder's last active admin
+// (CodeLastAdmin): trash, verify and purge act in the name of the oldest
+// active admin, so a folder must always have one.
+func (s *Share) SetRole(username, role string) (old string, err error) {
+	if role != RoleAdmin && role != RoleMember {
+		return "", errf(CodeInvalidRequest, "role must be %s or %s, not %q", RoleAdmin, RoleMember, role)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
 		return "", err
 	}
+	defer tx.Rollback()
+	var id int64
+	err = tx.QueryRow(`SELECT id, role FROM members WHERE username = ? AND revoked_at IS NULL`, username).Scan(&id, &old)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errf(CodeUnknownMember, "no active member %q", username)
+	}
+	if err != nil {
+		return "", err
+	}
+	if old == role {
+		return old, nil
+	}
+	if old == RoleAdmin {
+		var others int
+		if err := tx.QueryRow(`SELECT count(*) FROM members WHERE role = 'admin' AND revoked_at IS NULL AND id != ?`, id).Scan(&others); err != nil {
+			return "", err
+		}
+		if others == 0 {
+			return "", errf(CodeLastAdmin, "%s is the last active admin of the folder; make another member an admin first", username)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE members SET role = ? WHERE id = ?`, role, id); err != nil {
+		return "", err
+	}
+	return old, tx.Commit()
+}
+
+// ResetToken gives an active member a new token and returns it; the old
+// one stops working at once (the API answers 401) and the member's open
+// WebSockets in this process are closed as on a revocation (those of a
+// shfd serve in another process within its member check). The SSH key
+// stays. A revoked member is brought back with AddMember instead.
+func (s *Share) ResetToken(username string) (string, error) {
+	token := NewToken()
+	var id int64
+	err := s.db.QueryRow(`UPDATE members SET token_hash = ? WHERE username = ? AND revoked_at IS NULL RETURNING id`,
+		HashToken(token), username).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		if m, err := s.MemberByName(username); err == nil && m.RevokedAt != nil {
+			return "", errf(CodeUnknownMember, "member %q is revoked; bring the member back with shfd member add", username)
+		}
+		return "", errf(CodeUnknownMember, "no member %q", username)
+	}
+	if err != nil {
+		return "", err
+	}
+	s.revokeWatchers(id)
 	return token, nil
 }
 

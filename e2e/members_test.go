@@ -243,3 +243,69 @@ func (c *cluster) rsyncAs(key, from, to string, upload ...bool) (string, error) 
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
+
+// Scenario 12: a revoked member is brought back by shfd member add under
+// the same name (here as an admin, the case that started it: a member
+// added with the wrong role). The old token and SSH key stay dead; shf join
+// with the new token registers a key again and the member syncs, with
+// the history still theirs.
+func TestReactivatedMember(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t)
+	ana, bob := c.joined("ana"), c.joined("bob")
+	bob.write("by-bob.txt", "bob wrote this")
+	ana.has("by-bob.txt", "bob wrote this")
+	oldKey := filepath.Join(bob.home, c.share, "id_ed25519")
+
+	c.mustShfd("member", "revoke", c.share, "bob")
+	bob.revoked = true
+	bob.stop()
+
+	// Adding the name of an active member is still refused.
+	if out, code := c.shfd("member", "add", c.share, "ana"); code == 0 || !strings.Contains(out, "member_exists") {
+		t.Errorf("member add over an active member: exit %d\n%s", code, out)
+	}
+	out := c.mustShfd("member", "add", c.share, "bob", "--admin")
+	if !strings.Contains(out, "member: bob (reactivated)") {
+		t.Fatalf("member add did not reactivate bob:\n%s", out)
+	}
+	m := regexp.MustCompile(`token:\s+(\S+)`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no token in:\n%s", out)
+	}
+	if strings.Contains(readFile(c.ak), "shfd:bob@") {
+		t.Errorf("reactivation put bob's old key back:\n%s", readFile(c.ak))
+	}
+	if code := c.apiStatus(bob.token, "GET", "/changes?since=0"); code != http.StatusUnauthorized {
+		t.Errorf("bob's old token after reactivation: HTTP %d, want 401", code)
+	}
+	if out, err := c.rsyncAs(oldKey, "storage/by-bob.txt", filepath.Join(c.base, "probe.txt")); err == nil {
+		t.Errorf("bob's old key works after reactivation:\n%s", out)
+	}
+
+	// bob joins again with the new token, on a fresh checkout.
+	bob2 := c.clientWithToken("bob", "bob-again", m[1])
+	bob2.join()
+	bob2.start()
+	if !strings.Contains(readFile(c.ak), "shfd:bob@") {
+		t.Errorf("shf join did not register bob's key again:\n%s", readFile(c.ak))
+	}
+	bob2.has("by-bob.txt", "bob wrote this")
+	bob2.write("bob-is-back.txt", "hello again")
+	ana.has("bob-is-back.txt", "hello again")
+	ana.write("for-bob.txt", "welcome back")
+	bob2.has("for-bob.txt", "welcome back")
+	c.converged(arrive)
+
+	for _, p := range []string{"by-bob.txt", "bob-is-back.txt"} {
+		for _, e := range c.eventsOn(p) {
+			if e.Member != "bob" {
+				t.Errorf("%s: event by %q, want bob: %+v", p, e.Member, e)
+			}
+		}
+	}
+	// bob is an admin now: the admin commands can act in his name.
+	if out, code := c.shfd("stats", c.share, "--as", "bob"); code != 0 {
+		t.Errorf("stats --as bob: exit %d\n%s", code, out)
+	}
+}

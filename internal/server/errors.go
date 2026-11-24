@@ -25,7 +25,8 @@ const (
 	CodeUploadMissing    Code = "upload_missing"  // commit before the content arrived in tmp/
 	CodeUnknownUpload    Code = "unknown_upload"  // no such upload_id for this member
 	CodeUnknownMember    Code = "unknown_member"  // no such username
-	CodeMemberExists     Code = "member_exists"   // username already taken in this folder
+	CodeMemberExists     Code = "member_exists"   // username taken by an active member of this folder
+	CodeLastAdmin        Code = "last_admin"      // the change would leave the folder without an active admin
 	CodeUnauthorized     Code = "unauthorized"    // missing, unknown or revoked token
 	CodeUnknownShare     Code = "unknown_share"
 	CodeInvalidKey       Code = "invalid_key"        // not a usable OpenSSH public key

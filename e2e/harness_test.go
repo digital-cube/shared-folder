@@ -547,10 +547,17 @@ func (c *cluster) newClient(name string) *client {
 	if m == nil {
 		c.t.Fatalf("member add printed no token:\n%s", out)
 	}
-	cl := &client{c: c, name: name, token: m[1],
-		home: filepath.Join(c.base, "clients", name, "state"),
-		dir:  filepath.Join(c.base, "clients", name, "folder"),
-		log:  filepath.Join(c.base, "clients", name, "shf.log"),
+	return c.clientWithToken(name, name, m[1])
+}
+
+// clientWithToken prepares the directories of a client of member name
+// under clients/<machine>, with a token the test already has.
+func (c *cluster) clientWithToken(name, machine, token string) *client {
+	c.t.Helper()
+	cl := &client{c: c, name: name, token: token,
+		home: filepath.Join(c.base, "clients", machine, "state"),
+		dir:  filepath.Join(c.base, "clients", machine, "folder"),
+		log:  filepath.Join(c.base, "clients", machine, "shf.log"),
 		skip: func(string) bool { return false }, settings: testSettings()}
 	if err := os.MkdirAll(cl.dir, 0o755); err != nil {
 		c.t.Fatal(err)
