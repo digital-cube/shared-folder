@@ -2,7 +2,7 @@
 // table) or tile (Mreža) opens it. An image large (the 256 px thumbnail at
 // once when there is one, the original over it once loaded), the first
 // 200 KB of a text, a PDF as buttons, anything else as its data and
-// Preuzmi. Everything comes through /gui/api/files/content, which only
+// Preuzmi. Everything comes through <base>/api/files/content, which only
 // serves inline what shfd's whitelist allows (preview.ts mirrors it).
 //
 // jsudc's own folder preview (folder_options.preview) reads a filesystem

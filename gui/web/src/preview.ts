@@ -3,7 +3,7 @@
 // images, PDF and plain text; everything else only downloads. Pure
 // functions, the component is FilePreview.tsx.
 
-import { BASE } from "./api";
+import { guiUrl } from "./api";
 
 export type PreviewKind = "image" | "text" | "pdf" | "none";
 
@@ -33,10 +33,10 @@ export function previewKind(name: string, kind = "file"): PreviewKind {
 export const TEXT_PREVIEW_BYTES = 200 * 1024;
 
 /** The URL of a file's content through the GUI server. */
-export function contentUrl(path: string, download = false): string {
+export function contentUrl(path: string, download = false, base?: string): string {
   const q = new URLSearchParams({ path });
   if (download) q.set("download", "1");
-  return `${BASE}/api/files/content?${q}`;
+  return guiUrl(`/api/files/content?${q}`, base);
 }
 
 /**

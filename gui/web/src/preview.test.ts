@@ -25,8 +25,8 @@ describe("previewKind", () => {
 
 describe("contentUrl", () => {
   it("encodes the path and asks for a download", () => {
-    expect(contentUrl("docs/a b&c.txt")).toBe("/gui/api/files/content?path=docs%2Fa+b%26c.txt");
-    expect(contentUrl("čaj.pdf", true)).toBe("/gui/api/files/content?path=%C4%8Daj.pdf&download=1");
+    expect(contentUrl("docs/a b&c.txt", false, "/gui")).toBe("/gui/api/files/content?path=docs%2Fa+b%26c.txt");
+    expect(contentUrl("čaj.pdf", true, "/gui")).toBe("/gui/api/files/content?path=%C4%8Daj.pdf&download=1");
   });
 });
 

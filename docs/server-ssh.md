@@ -133,6 +133,23 @@ WantedBy=multi-user.target
 Admin komande pokrenite kao isti korisnik i sa istim okruženjem, npr.
 `sudo -u shfd env SHFD_DATA_ROOT=… SHFD_DB_ROOT=… SHFD_AUTHORIZED_KEYS=… shfd member revoke <share-id> bob`.
 
+### Reverse proxy (vhost)
+
+`shfd serve` sluša na `127.0.0.1:8443` bez TLS-a; ispred je nginx. Klijent
+koristi `/v1/…`, uključujući WebSocket `/v1/shares/{id}/ws` (nginx mora da
+prosledi `Upgrade`/`Connection` i drži vezu dugo otvorenom), a bez tokena
+idu `/healthz`, `/downloads/…` i `/v1/downloads`.
+
+- **Bez web GUI-ja** ili sa GUI-jem pod `/gui`: `location /` → `127.0.0.1:8443`
+  (sa WebSocket zaglavljima), a za GUI se doda
+  `gui/deploy/nginx-gui.conf`.
+- **Sa web GUI-jem na korenu hosta** (preporučeno, `https://<host>/` je GUI):
+  ceo vhost po `gui/deploy/nginx-gui-root.conf`: `location /v1/`,
+  `location = /healthz` i `location /downloads/` idu na shfd (8443), sve
+  ostalo na shfd-gui (8444), a `/gui/…` dobija `301` na `/…`. shfd-ov
+  `GET /` se tada spolja ne vidi; za proveru služi `/healthz`.
+  Vidi [gui.md](gui.md#base-path-koren-ili-gui).
+
 ## 4. `sshd`
 
 Ako je `authorized_keys` na podrazumevanom mestu (`~shfd/.ssh/authorized_keys`),
@@ -214,7 +231,8 @@ reda (sshd bi uvek uzeo prvi), pa se ključ koji već postoji u fajlu odbija.
 ## 6. Provera
 
 ```sh
-# shfd radi i na kojoj je verziji (bez tokena; isto daje i GET /)
+# shfd radi i na kojoj je verziji (bez tokena; isto daje i GET /, osim kad
+# je shfd-gui na korenu hosta)
 curl https://shf.example.org/healthz
 # {"service":"shfd","version":"v1.2.3","ok":true}
 # 503 i {"service":"shfd","version":"v1.2.3","ok":false,"error":"registry unavailable"}

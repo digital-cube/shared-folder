@@ -4,12 +4,12 @@
 
 import type { Row } from "@jsudc/core";
 import { useState, type ReactNode } from "react";
-import { BASE } from "./api";
+import { guiUrl } from "./api";
 import { FileIcon } from "./FileIcon";
 import { fileKind, pickVariant, type Variant } from "./filekind";
 
-export function thumbUrl(hash: string, size: Variant): string {
-  return `${BASE}/api/thumb/${hash}?size=${size}`;
+export function thumbUrl(hash: string, size: Variant, base?: string): string {
+  return guiUrl(`/api/thumb/${hash}?size=${size}`, base);
 }
 
 const dpr = () => (typeof window === "undefined" ? 1 : window.devicePixelRatio || 1);

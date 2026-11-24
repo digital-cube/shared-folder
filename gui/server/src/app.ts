@@ -1,5 +1,8 @@
 // The shfd-gui server: sign-in, the jsudc collections and actions, the
-// change feed and the built web app, all under one base path (/gui).
+// change feed and the built web app, all under one base path: "/gui", or ""
+// when the GUI is the root of its host (SHFD_GUI_BASE, docs/gui.md). Its
+// routes are <base>/api/…, <base>/udc/… and the web app; at the root it
+// leaves shfd's paths (/v1/, /healthz, /downloads/) alone.
 
 import { readFile, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -16,6 +19,7 @@ import {
   revokeMember,
   setRole,
 } from "../../shared/actions.js";
+import { BASE_META, isShfdPath, normalizeBase } from "../../shared/base.js";
 import { buildRegistry, type Ctx } from "./collections.js";
 import { toUdcError } from "./errors.js";
 import { FILE_OPS, LogFeed, summarize } from "./logs.js";
@@ -24,7 +28,8 @@ import { CONTENT_REQUEST_HEADERS, errorMessage, ShfdClient, ShfdError, type LogL
 
 export interface AppOptions {
   shfdUrl: string;
-  base: string; // "/gui"
+  base: string; // "/gui", or "" (or "/") for the root of the host
+  version?: string; // shown by <base>/api/healthz
   webDir?: string; // the built web app; none in tests
   secureCookie: boolean;
   pollMs?: number;
@@ -71,7 +76,7 @@ export interface GuiApp {
 }
 
 export async function buildGui(o: AppOptions): Promise<GuiApp> {
-  const base = o.base.replace(/\/+$/, "");
+  const base = normalizeBase(o.base);
   const app = Fastify({ logger: o.logger ?? false, trustProxy: true, disableRequestLogging: true });
   const shfd = new ShfdClient(o.shfdUrl, o.fetchFn);
   const sessions = new SessionStore(o.now);
@@ -187,6 +192,15 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     };
   });
 
+  // At the root of the host the GUI shares the path space with shfd, whose
+  // paths nginx sends to shfd; one that reaches the GUI anyway is not the
+  // GUI's to answer (nor to hide behind index.html, nor jsudc's /healthz).
+  if (base === "") {
+    app.addHook("onRequest", async (req, reply) => {
+      if (isShfdPath(req.url)) return reply.code(404).send({ error: "not found" });
+    });
+  }
+
   // The change stream must reach the browser unbuffered through every
   // reverse proxy on the way (nginx honours this header).
   app.addHook("onRequest", async (req, reply) => {
@@ -203,6 +217,13 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       if (!s) throw unauthenticatedError("Prijava je istekla.");
       return { sessionId: s.id, token: s.token, shareId: s.shareId, username: s.username };
     },
+  });
+
+  // The GUI's health. jsudc also answers <base>/healthz, kept for the
+  // checks written against /gui/healthz; at the root that path is shfd's.
+  app.get(`${base}/api/healthz`, async (_req, reply) => {
+    reply.header("cache-control", "no-store");
+    return { service: "shfd-gui", version: o.version ?? "dev", ok: true };
   });
 
   // ---- sign-in -----------------------------------------------------------
@@ -350,7 +371,7 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
 
   // ---- the web app -------------------------------------------------------
 
-  app.get(base, async (_req, reply) => reply.redirect(`${base}/`));
+  if (base !== "") app.get(base, async (_req, reply) => reply.redirect(`${base}/`));
   if (o.webDir) {
     const root = normalize(o.webDir);
     const serve = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -359,8 +380,8 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       if (file !== root && !file.startsWith(root + sep)) return reply.code(404).send();
       const st = await stat(file).catch(() => undefined);
       if (!st || st.isDirectory()) file = join(root, "index.html");
-      const body = await readFile(file);
       const ext = extname(file);
+      const body = ext === ".html" ? withBase(await readFile(file, "utf8"), base) : await readFile(file);
       reply.header("content-type", TYPES[ext] ?? "application/octet-stream");
       reply.header("x-content-type-options", "nosniff");
       if (ext === ".html") {
@@ -380,6 +401,21 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
   });
   feed.start();
   return { app, sessions, feed };
+}
+
+/**
+ * index.html with the base written in: a <base href> for its relative
+ * assets (the build is the same for every base) and the meta the web app
+ * reads its base from (web/src/api.ts).
+ */
+export function withBase(html: string, base: string): string {
+  const b = escapeAttr(base);
+  const tags = `<base href="${b}/" />\n    <meta name="${BASE_META}" content="${b}" />`;
+  return html.replace(/<head>/i, (h) => `${h}\n    ${tags}`);
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function publicSession(s: { shareId: string; shareName: string; username: string; role: string }) {

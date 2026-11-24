@@ -9,6 +9,8 @@ After=network.target shfd.service
 User=shfd
 Environment=SHFD_URL=http://127.0.0.1:8443
 Environment=SHFD_GUI_LISTEN=127.0.0.1:8444
+# The base path: empty for the root of the host (nginx-gui-root.conf),
+# /gui under a prefix (nginx-gui.conf). Same build for both.
 Environment=SHFD_GUI_BASE=/gui
 ExecStart=/opt/shfd-gui/current/bin/shfd-gui
 Restart=on-failure

@@ -9,8 +9,9 @@ Podaci u prototipu su izmišljeni.
 
 ## Cilj
 
-Uz `shfd` se instalira poseban servis, **shfd-gui**, koji na
-`https://<host>/gui` daje:
+Uz `shfd` se instalira poseban servis, **shfd-gui**, koji na korenu hosta
+(`https://<host>/`) ili pod prefiksom (`https://<host>/gui`) daje (vidi
+[Base path: koren ili /gui](#base-path-koren-ili-gui)):
 
 1. **Prijavu**: admin se prijavljuje tokenom člana.
 2. **Članovi i tokeni**: isto što radi `shfd member …`, samo iz browsera.
@@ -19,13 +20,14 @@ Uz `shfd` se instalira poseban servis, **shfd-gui**, koji na
 5. **Instalaciju**: uputstvo kako se uređaj priključi, a za admina i kako se
    podiže server.
 
-Test instalacija: `https://shared-storage.igor.digitalcube.work/gui`.
+Test instalacija: `https://shared-storage.igor.digitalcube.work/` (ranije
+`/gui`; stari linkovi se preusmeravaju).
 
 ## Arhitektura
 
 ```
-browser ──/gui/──► nginx ──► shfd-gui (Node, 127.0.0.1:8444)
-                                │  jsudc server: /gui/udc/*, SSE /gui/udc/changes
+browser ──<base>/──► nginx ──► shfd-gui (Node, 127.0.0.1:8444)
+                                │  jsudc server: <base>/udc/*, SSE <base>/udc/changes
                                 │  sesija: httpOnly cookie → token u memoriji servera
                                 ▼
                              shfd HTTP API (127.0.0.1:8443), uvek tokenom prijavljenog člana
@@ -43,9 +45,10 @@ browser ──/gui/──► nginx ──► shfd-gui (Node, 127.0.0.1:8444)
 - **Kod:** direktorijum `gui/` u ovom repou (`gui/server`, `gui/web`) i
   Makefile cilj `make gui`. Build daje jedan direktorijum za
   `/opt/shfd-gui/versions/<sha>`, isti raspored kao za shfd.
-- **Base path:** sve je ispod `/gui`: stranice, `/gui/udc/<action>` i
-  `/gui/udc/changes`. `UdcClient` dobija `httpUrl: "/gui"`. Ako jsudc ne
-  podržava prefiks, Fastify plugin se registruje sa `prefix: "/gui"`.
+- **Base path:** sve je ispod `<base>` (`""` na korenu, ili `/gui`):
+  stranice, `<base>/api/…`, `<base>/udc/<action>` i `<base>/udc/changes`.
+  `UdcClient` dobija `httpUrl: <base>`, a Fastify plugin `prefix: <base>`.
+  Detalji u [Base path: koren ili /gui](#base-path-koren-ili-gui).
 
 ## Šta treba dodati u shfd (Go)
 
@@ -82,7 +85,7 @@ Izgled je kao u prototipu: svetla tema, leva navigacija, zaglavlje sa
 folderom, statusom servera, prijavljenim članom i dugmetom za odjavu. UI je
 na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
 
-### Prijava (`/gui/`)
+### Prijava (`<base>/`)
 
 - Jedno polje, **token**. GUI zove `GET /v1/whoami`. Na `401` ispisuje
   „Token nije ispravan ili je opozvan“. Ako je `role != admin`, ispisuje
@@ -211,23 +214,11 @@ Strana bez prijave, dve kartice:
 - `shfd-gui.service`, primer u `gui/deploy/shfd-gui.service`:
   `User=shfd`, `ExecStart=/opt/shfd-gui/current/bin/shfd-gui`, okruženje
   `SHFD_URL=http://127.0.0.1:8443`, `SHFD_GUI_LISTEN=127.0.0.1:8444` i
-  `SHFD_GUI_BASE=/gui`.
-- nginx (vhost koji već prosleđuje na 8443) dobija snippet u
-  `gui/deploy/nginx-gui.conf`:
-  ```nginx
-  location /gui/ {
-      proxy_pass http://127.0.0.1:8444;
-      proxy_set_header Host $host;
-      proxy_set_header X-Forwarded-Proto $scheme;
-  }
-  location /gui/udc/changes {
-      proxy_pass http://127.0.0.1:8444;
-      proxy_buffering off;
-      proxy_read_timeout 1h;
-  }
-  ```
+  `SHFD_GUI_BASE` (prazno = koren hosta, ili `/gui`).
+- nginx: `gui/deploy/nginx-gui-root.conf` (ceo vhost, GUI na korenu) ili
+  `gui/deploy/nginx-gui.conf` (snippet, GUI pod `/gui`); vidi
+  [Instalacija na server](#instalacija-na-server).
 - Deploy je isti kao kod shfd: `versions/<sha>`, symlink `current`, restart.
-  Sve to ide u `docs/gui.md` kod izrade.
 
 ## Kriterijumi za prihvatanje
 
@@ -262,10 +253,12 @@ gui/
   shared/actions.ts       host akcije (jsudc defineHostAction), dele ih server i browser
   server/src/
     main.ts               ulaz; okruženje SHFD_URL, SHFD_GUI_LISTEN, SHFD_GUI_BASE, SHFD_GUI_WEB
-    app.ts                Fastify: /gui/api/login|logout|session, jsudc plugin (prefix /gui), statički web
+    app.ts                Fastify: <base>/api/login|logout|session|healthz, jsudc plugin (prefix <base>),
+                          statički web (index.html dobija <base href> i <meta name="shfd-gui-base">)
     sessions.ts           sesije u memoriji (cookie shfd_gui_sid, 12 h neaktivnosti)
     shfd.ts               klijent shfd HTTP API-ja + srpske rečenice za kodove grešaka
     collections.ts        jsudc kolekcije members, logs, files, trash (ArraySource + share_id scope)
+  shared/base.ts          normalizeBase (""/"/" = koren, "/gui"), isShfdPath (/v1/, /healthz, /downloads/)
   shared/filekinds.ts     tabela ekstenzija po tipu (ikonice u web-u, opcije čipa Ekstenzija na serveru)
     logs.ts               bafer service.log-a po folderu, poller (1 s), redovi tabele, pločice
   server/test/            vitest: sesije, parsiranje/mapiranje log reda, poller, login i akcije, ruta sličica (lažni shfd)
@@ -275,7 +268,7 @@ gui/
     src/ThumbGrid.tsx     renderer „thumbs“ (Mreža), klizač, tabela sa osvežavanjem
     src/thumbsize.ts      veličina pločica i poslednji jezičak (localStorage)
     src/liveThumbs.ts     ponovno učitavanje dok ima pending sličica
-  deploy/                 shfd-gui.service, nginx-gui.conf
+  deploy/                 shfd-gui.service, nginx-gui-root.conf (GUI na korenu), nginx-gui.conf (GUI pod /gui)
   scripts/build-server.mjs  esbuild: ceo server u jedan dist/server.js (bez node_modules na serveru)
 ```
 
@@ -283,15 +276,20 @@ gui/
 make gui        # = cd gui && npm ci && npm run build  →  gui/dist/{bin/shfd-gui,server.js,web/,VERSION}
 make gui-test   # = cd gui && npm ci && npm test
 cd gui && npm run dev:server   # razvoj: shfd-gui na 127.0.0.1:8444 (cookie bez Secure)
-cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 8444
+cd gui && npm run dev:web      # Vite na :5174, proxy <base>/api i <base>/udc ka 8444
+                               # (oba čitaju isti SHFD_GUI_BASE, podrazumevano /gui)
 ```
 
 ### Kako radi
 
+Putanje ispod su napisane za `/gui`; na korenu hosta su iste bez `/gui`
+(`/api/login`, `/udc/changes`, …).
+
 - **Prijava.** `POST /gui/api/login {token}` zove `GET /v1/whoami`. `401` →
   „Token nije ispravan ili je opozvan.“; `role != admin` → „Samo admin foldera
   može da koristi GUI.“, bez sesije. Inače sesija: nasumičan id (256 bita) u
-  cookie-ju `shfd_gui_sid` (`HttpOnly; SameSite=Strict; Secure; Path=/gui/`),
+  cookie-ju `shfd_gui_sid` (`HttpOnly; SameSite=Strict; Secure; Path=<base>/`,
+  dakle `Path=/gui/` ili `Path=/`; odjava ga briše sa istim `Path`),
   token samo u memoriji procesa. Kad shfd za token kaže `401` (opozvan,
   resetovan) sve sesije sa tim tokenom se brišu; kad admin sebi oduzme ulogu
   ili se opozove, njegova sesija se završava.
@@ -388,8 +386,43 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
   darwin-amd64, darwin-arm64) ili build iz izvornog koda. Paket se preuzima
   sa shfd-a (`shfd serve --downloads`, rute `/v1/downloads` i
   `/downloads/<ime>`, bez tokena; [install.md](install.md#objavljivanje-paketa-na-serveru)).
-  Ove rute idu na shfd kroz postojeći `location /` vhost-a, ne kroz
-  shfd-gui; `npm run dev:web` ih prosleđuje na `127.0.0.1:8443`.
+  Ove rute idu na shfd, ne kroz shfd-gui (sa GUI-jem na korenu kroz
+  `location /v1/` i `location /downloads/` u `nginx-gui-root.conf`, sa GUI-jem
+  pod `/gui` kroz postojeći `location /` vhost-a), pa rade isto sa obe baze;
+  `npm run dev:web` ih prosleđuje na `127.0.0.1:8443`.
+
+### Base path: koren ili /gui
+
+Jedan build (`gui/dist`) radi i na korenu hosta i pod `/gui`; bira se samo
+promenljivom `SHFD_GUI_BASE` u `shfd-gui.service`:
+
+| `SHFD_GUI_BASE` | GUI | nginx |
+|---|---|---|
+| prazno ili `/` | `https://<host>/` | ceo vhost po `gui/deploy/nginx-gui-root.conf` |
+| `/gui` (podrazumevano) | `https://<host>/gui/` | `gui/deploy/nginx-gui.conf` u postojeći shfd vhost |
+
+- **Web deo** je build-ovan sa relativnim `base: "./"`. Server pri slanju
+  `index.html` upisuje `<base href="<base>/">` (relativni `./assets/…`) i
+  `<meta name="shfd-gui-base" content="<base>">`; `web/src/api.ts` (`BASE`,
+  `guiUrl`) ga čita i svi URL-ovi (`api`, `udc`, sadržaj i sličice fajlova)
+  idu preko njega. Bez meta taga baza je direktorijum strane.
+- **Rute GUI-ja** su `<base>/api/…`, `<base>/udc/…`, `<base>/assets/…` i
+  `<base>/` (stranica; navigacija je u hash-u, `#files`, `#logs`, …).
+- **Health:** `<base>/api/healthz` → `{"service":"shfd-gui","version":…,"ok":true}`.
+  Pod `/gui` i dalje radi i stari `/gui/healthz` (`{"ok":true}`, alias).
+- **Bez sudara sa shfd-om na korenu.** shfd zadržava `/v1/…` (i WebSocket
+  `/v1/shares/{id}/ws`), `/healthz`, `/downloads/…` i `/v1/downloads`; to
+  rešava nginx (`location /v1/`, `= /healthz`, `/downloads/` → 8443, sve
+  ostalo → 8444). shfd-gui te putanje ne služi ni kad do njega stignu: odgovara
+  `404` (JSON), nikad `index.html`, a ni jsudc-ov `/healthz`.
+- **shfd-ov `GET /`** (isti JSON kao `/healthz`) se sa GUI-jem na korenu više
+  ne vidi spolja: `/` je GUI. Za proveru shfd-a koristi `/healthz`.
+- **Stari linkovi** `https://<host>/gui/…` dobijaju `301` na `/…`
+  (`/gui/` → `/`, hash ostaje u browseru). Pažnja: `/gui/healthz` tako
+  postaje shfd-ov `/healthz`; nadzor treba prebaciti na `/api/healthz`.
+- **Kolačić** sesije ima `Path=<base>/`. Pri prelasku sa `/gui` na koren
+  stara sesija (cookie sa `Path=/gui/`) se ne prenosi: treba se prijaviti
+  ponovo (restart shfd-gui ionako odjavljuje sve).
 
 ### Instalacija na server
 
@@ -411,15 +444,29 @@ sudo systemctl daemon-reload && sudo systemctl enable --now shfd-gui
 sudo systemctl restart shfd-gui                               # posle svakog novog current
 ```
 
-Stream promena (`/gui/udc/changes`, SSE) ne sme da se baferuje ni na jednom
-proxy-ju: shfd-gui šalje `X-Accel-Buffering: no`, a `nginx-gui.conf` taj
+Stream promena (`<base>/udc/changes`, SSE) ne sme da se baferuje ni na jednom
+proxy-ju: shfd-gui šalje `X-Accel-Buffering: no`, a oba nginx primera taj
 header ponovo dodaje (`add_header`), jer ga nginx inače ne prosleđuje dalje.
 Bez toga, kad je ispred VM-a još jedan nginx (TLS na hipervizoru, kao na test
 serveru), logovi stižu tek kad se bafer napuni.
 
-nginx: sadržaj `gui/deploy/nginx-gui.conf` ide u `server { }` vhost-a koji
-već prosleđuje na `127.0.0.1:8443`, pa `sudo nginx -t && sudo systemctl
-reload nginx`. Provera: `curl -s https://<host>/gui/healthz` → `{"ok":true}`.
+nginx, GUI na korenu (`SHFD_GUI_BASE=` u `shfd-gui.service`): vhost po
+`gui/deploy/nginx-gui-root.conf` (`server_name`, `listen`/TLS po hostu) umesto
+dosadašnjeg, pa `sudo nginx -t && sudo systemctl reload nginx` i
+`sudo systemctl restart shfd-gui`. Provera:
+
+```sh
+curl -s https://<host>/api/healthz          # {"service":"shfd-gui","version":…,"ok":true}
+curl -s https://<host>/healthz              # {"service":"shfd","version":…,"ok":true}
+curl -s https://<host>/v1/downloads         # JSON shfd-a
+curl -sI https://<host>/gui/ | grep -i ^location   # location: /
+curl -s https://<host>/ | grep shfd-gui-base       # <meta name="shfd-gui-base" content="" />
+```
+
+nginx, GUI pod `/gui` (`SHFD_GUI_BASE=/gui`): sadržaj `gui/deploy/nginx-gui.conf`
+ide u `server { }` vhost-a koji već prosleđuje na `127.0.0.1:8443`, pa
+`sudo nginx -t && sudo systemctl reload nginx`. Provera:
+`curl -s https://<host>/gui/api/healthz` (i stari `/gui/healthz` → `{"ok":true}`).
 
 shfd-gui mora da radi uz shfd koji ima nove admin rute (`/v1/whoami`,
 `admin/members`, `admin/log`, `admin/files`), dakle shfd iz istog commita ili

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { BASE } from "../api";
 import { useAppMaybe } from "../App";
 import { detectMacArch, dirOf, formatSize, getDownloads, pick, type Downloads, type MacArch, type Package } from "../downloads";
 import { Download, Folder } from "../icons";
@@ -310,14 +311,17 @@ sudo systemctl daemon-reload && sudo systemctl enable --now shfd-gui`}</Code>
           </Step>
           <Step n={4} title="nginx">
             <p>
-              U vhost koji već prosleđuje na <code>127.0.0.1:8443</code> dodaj <code>gui/deploy/nginx-gui.conf</code>{" "}
-              (<code>/gui/</code> i, bez baferovanja, <code>/gui/udc/changes</code>), pa{" "}
+              GUI na korenu hosta (<code>SHFD_GUI_BASE=</code>): vhost po{" "}
+              <code>gui/deploy/nginx-gui-root.conf</code> — <code>/v1/</code>, <code>/healthz</code> i{" "}
+              <code>/downloads/</code> idu shfd-u, sve ostalo GUI-ju. GUI pod <code>/gui</code>: u vhost koji već
+              prosleđuje na <code>127.0.0.1:8443</code> dodaj <code>gui/deploy/nginx-gui.conf</code>. U oba slučaja{" "}
+              <code>&lt;base&gt;/udc/changes</code> ide bez baferovanja, pa{" "}
               <code>sudo nginx -t && sudo systemctl reload nginx</code>.
             </p>
           </Step>
           <Step n={5} title="Provera">
             <Code>{`curl -s ${origin}/healthz        # {"service":"shfd","version":…,"ok":true}
-curl -s ${origin}/gui/healthz    # {"ok":true}`}</Code>
+curl -s ${origin}${BASE}/api/healthz    # {"service":"shfd-gui","ok":true}`}</Code>
           </Step>
         </div>
       )}

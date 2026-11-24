@@ -95,10 +95,13 @@ socket `<db-root>/admin.sock` i istog pisca foldera kao i klijenti. Opis i
 primeri: [docs/admin.md](docs/admin.md).
 
 Web GUI (prijava admin tokenom, članovi i tokeni, logovi uživo, fajlovi i
-trash, uputstvo za instalaciju) je poseban servis **shfd-gui** na
-`https://<host>/gui`: [docs/gui.md](docs/gui.md), build `make gui`.
+trash, uputstvo za instalaciju) je poseban servis **shfd-gui**, na korenu
+hosta (`https://<host>/`, `SHFD_GUI_BASE=`, nginx po
+`gui/deploy/nginx-gui-root.conf`) ili pod `https://<host>/gui`
+(`gui/deploy/nginx-gui.conf`); isti build za oba: [docs/gui.md](docs/gui.md),
+build `make gui`.
 
-`GET /healthz` (i `GET /`) bez tokena vraća `{"service":"shfd","version":…,"ok":true}`, a 503 kad registry baza ne odgovara ili kad pisac nekog otvorenog foldera ne odgovori u roku od 2 s (`"error":"share <id> stuck"`).
+`GET /healthz` (i `GET /`, osim kad je shfd-gui na korenu hosta) bez tokena vraća `{"service":"shfd","version":…,"ok":true}`, a 503 kad registry baza ne odgovara ili kad pisac nekog otvorenog foldera ne odgovori u roku od 2 s (`"error":"share <id> stuck"`).
 
 Bez `--tls-cert`/`--tls-key` server govori običan HTTP i očekuje TLS na
 reverse proxy-ju. Kodovi grešaka API-ja su u `internal/server/errors.go`.
