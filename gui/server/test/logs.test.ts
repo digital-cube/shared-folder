@@ -22,6 +22,8 @@ describe("log rows", () => {
     expect(kindOf(line({ type: "transfer", outcome: "denied" }))).toBe("odbijeno");
     expect(kindOf(line({ type: "transfer", outcome: "failed" }))).toBe("odbijeno");
     expect(kindOf(line({ type: "key-replaced" }))).toBe("kljuc");
+    expect(kindOf(line({ type: "sync", outcome: "ok" }))).toBe("sync");
+    expect(kindOf(line({ type: "sync", outcome: "failed" }))).toBe("odbijeno");
     expect(kindOf(line({ type: "other" }))).toBe("ostalo");
   });
 
@@ -41,6 +43,12 @@ describe("log rows", () => {
     const r = toRow(line({ type: "key-replaced", op: "key-replaced", path: "", detail: "old=SHA256:Yp7cAAAAAAAA02kd new=SHA256:9aQeBBBBBBBBzz11" }));
     expect(r.path).toBe("SHA256:Yp7c…02kd → SHA256:9aQe…zz11");
     expect(r.kind).toBe("kljuc");
+  });
+
+  it("a sync row shows its numbers; a failed one is an error", () => {
+    const r = toRow(line({ type: "sync", op: "sync", outcome: "ok", path: "", detail: "from=0 to=3 sent=3" }));
+    expect(r).toMatchObject({ kind: "sync", op: "sync", path: "from=0 to=3 sent=3", error: false });
+    expect(toRow(line({ type: "sync", op: "sync", outcome: "failed", detail: "error=x" })).error).toBe(true);
   });
 
   it("an unparsed line keeps its raw text", () => {

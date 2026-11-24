@@ -288,7 +288,7 @@ const logsSchema = SchemaDocSchema.parse({
     share_id: { type: "string" },
     pos: { type: "integer" },
     ts: { type: "datetime" },
-    kind: { type: "enum", values: ["izmena", "transfer", "kljuc", "odbijeno", "ostalo"] },
+    kind: { type: "enum", values: ["izmena", "transfer", "kljuc", "sync", "odbijeno", "ostalo"] },
     member: { type: "string" },
     op: { type: "string" },
     path: { type: "string" },

@@ -385,7 +385,9 @@ vraća poslednjih `limit` redova (podrazumevano 200, najviše 5000); sa
 `{offset, ts, type, seq?, member, op, path, old_path?, dir?, outcome?, detail?, raw}`;
 `type` je `event` (izmena u folderu, `op` je `put`, `delete`, `move`, …),
 `transfer` (rsync-gate; `op` = `dir` = `upload`/`download`/`-`, `outcome`
-`ok`/`denied`/`failed`), `key-replaced` (`detail` = `old=… new=…`) ili
+`ok`/`denied`/`failed`), `key-replaced` (`detail` = `old=… new=…`), `sync`
+(izveštaj klijenta posle ciklusa; `outcome` `ok`/`failed`, `detail` =
+`from=… to=… sent=… received=… conflicts=… took=…` i `error`) ili
 `other` (red koji nije parsiran, samo `raw`). `offset` je bajt-pozicija reda
 u fajlu i služi kao njegov id.
 

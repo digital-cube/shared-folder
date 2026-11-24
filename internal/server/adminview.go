@@ -240,6 +240,7 @@ const (
 	LogEvent       = "event"
 	LogTransfer    = "transfer"
 	LogKeyReplaced = "key-replaced"
+	LogSync        = "sync"  // a client's sync report (POST /sync-report)
 	LogOther       = "other" // a line that could not be parsed; only raw is set
 )
 
@@ -256,8 +257,8 @@ type LogLine struct {
 	Path    string    `json:"path"`
 	OldPath string    `json:"old_path,omitempty"`
 	Dir     string    `json:"dir,omitempty"`     // transfer: upload, download or "-"
-	Outcome string    `json:"outcome,omitempty"` // transfer: ok, denied, failed
-	Detail  string    `json:"detail,omitempty"`  // transfer: reason; key-replaced: "old=… new=…"
+	Outcome string    `json:"outcome,omitempty"` // transfer: ok, denied, failed; sync: ok, failed
+	Detail  string    `json:"detail,omitempty"`  // transfer: reason; key-replaced: "old=… new=…"; sync: the numbers and the error
 	Raw     string    `json:"raw"`
 }
 
@@ -410,6 +411,7 @@ func readLogTail(f *os.File, size int64, limit int, page *LogPage) error {
 //	<ts> seq=N member=M op=O path="P" [old_path="Q"]
 //	<ts> transfer member=M dir=D path="P" outcome=X [detail="Y"]
 //	<ts> key-replaced member=M old=FP new=FP
+//	<ts> sync member=M from=N to=N sent=N received=N conflicts=N took=D [error="E"]
 //
 // Anything else is a line of type "other" with only Raw set.
 func ParseLogLine(offset int64, raw string) LogLine {
@@ -445,6 +447,19 @@ func ParseLogLine(offset int64, raw string) LogLine {
 	case "key-replaced":
 		l.Type, l.Op = LogKeyReplaced, LogKeyReplaced
 		l.Detail = "old=" + kv["old"] + " new=" + kv["new"]
+	case "sync":
+		l.Type, l.Op, l.Outcome = LogSync, LogSync, "ok"
+		var parts []string
+		for _, k := range []string{"from", "to", "sent", "received", "conflicts", "took"} {
+			if v, ok := kv[k]; ok {
+				parts = append(parts, k+"="+v)
+			}
+		}
+		if e := kv["error"]; e != "" {
+			l.Outcome = "failed"
+			parts = append(parts, "error="+strconv.Quote(e))
+		}
+		l.Detail = strings.Join(parts, " ")
 	default:
 		return other
 	}

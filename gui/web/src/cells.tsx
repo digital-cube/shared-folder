@@ -74,6 +74,7 @@ const KIND: Record<string, [string, string]> = {
   izmena: ["izmena", "info"],
   transfer: ["transfer", ""],
   kljuc: ["ključ", "warn"],
+  sync: ["sync", ""],
   odbijeno: ["odbijeno", "err"],
   ostalo: ["ostalo", ""],
 };
@@ -97,6 +98,7 @@ export const OP_COLORS: Record<string, string> = {
   denied: "#b91c1c",
   failed: "#b91c1c",
   "key-replaced": "#b45309",
+  sync: "#6b7280",
 };
 
 function Op({ value }: CellProps) {
@@ -110,7 +112,7 @@ function Op({ value }: CellProps) {
 
 function LogPath({ value, row }: CellProps) {
   const v = str(value) || (row.kind === "ostalo" ? str(row.raw) : "");
-  const detail = row.kind === "odbijeno" || row.kind === "ostalo" ? str(row.detail) : "";
+  const detail = (row.kind === "odbijeno" && row.op !== "sync") || row.kind === "ostalo" ? str(row.detail) : "";
   const full = detail ? `${v} · ${detail}` : v;
   return (
     <span className="mono" style={{ fontSize: 12.5 }} title={str(row.raw)}>

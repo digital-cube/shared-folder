@@ -36,7 +36,7 @@ export interface TokenResponse {
 export interface LogLine {
   offset: number;
   ts: string;
-  type: "event" | "transfer" | "key-replaced" | "other";
+  type: "event" | "transfer" | "key-replaced" | "sync" | "other";
   seq?: number;
   member: string;
   op: string;

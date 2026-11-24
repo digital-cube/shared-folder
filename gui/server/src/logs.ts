@@ -10,7 +10,7 @@ import type { SessionStore } from "./sessions.js";
 export const BUFFER_LINES = 5000;
 
 /** What the logs table shows in the "Tip" column. */
-export type LogKind = "izmena" | "transfer" | "kljuc" | "odbijeno" | "ostalo";
+export type LogKind = "izmena" | "transfer" | "kljuc" | "sync" | "odbijeno" | "ostalo";
 
 export interface LogRow {
   id: string; // byte offset in service.log
@@ -37,6 +37,8 @@ export function kindOf(l: LogLine): LogKind {
       return l.outcome === "ok" ? "transfer" : "odbijeno";
     case "key-replaced":
       return "kljuc";
+    case "sync":
+      return l.outcome === "failed" ? "odbijeno" : "sync";
     default:
       return "ostalo";
   }
@@ -45,6 +47,7 @@ export function kindOf(l: LogLine): LogKind {
 /** One row of the logs collection. */
 export function toRow(l: LogLine): LogRow {
   let path = l.path ?? "";
+  if (l.type === "sync") path = l.detail ?? "";
   if (l.type === "event" && l.old_path) path = `${l.old_path} → ${l.path}`;
   if (l.type === "key-replaced") {
     const m = /old=(\S*) new=(\S*)/.exec(l.detail ?? "");
@@ -61,7 +64,7 @@ export function toRow(l: LogLine): LogRow {
     seq: l.seq ?? null,
     outcome,
     detail: l.type === "key-replaced" ? (l.detail ?? "") : (l.detail ?? ""),
-    error: l.type === "transfer" && outcome !== "" && outcome !== "ok",
+    error: (l.type === "transfer" || l.type === "sync") && outcome !== "" && outcome !== "ok",
     raw: l.raw,
   };
 }
