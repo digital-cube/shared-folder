@@ -139,7 +139,7 @@ main { overflow: auto; background: var(--g-bg); min-width: 0; }
 
 /* install */
 .steps { display: grid; gap: 14px; }
-.step { display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
+.step { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 14px; } /* minmax: a long command scrolls in its <pre> instead of widening the page */
 .step .num { width: 30px; height: 30px; border-radius: 50%; background: var(--g-brand-soft); color: var(--g-brand-text); display: grid; place-items: center; font-weight: 700; }
 .step h3 { margin: 4px 0 4px; font-size: 15px; }
 .step p { margin: 0 0 8px; color: #374151; }

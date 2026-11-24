@@ -152,12 +152,16 @@ na srpskom (latinica). jsudc i18n neka ostane na `sr`, ako ga ima.
 
 ### Instalacija
 
-Statička strana, dve kartice:
+Strana bez prijave, dve kartice:
 
 - **Klijent (shf):** instalacija (Linux / macOS / Windows; gotov paket iz
   `make release` ili build iz izvornog koda, po [install.md](install.md); na
-  macOS-u skidanje karantina sa `xattr`), `shf join …`, `shf service
-  install`, `shf status` i napomena o „key refused“ (jedan član = jedan
+  macOS-u skidanje karantina sa `xattr`). Za gotov paket strana pita shfd
+  (`GET /v1/downloads`, bez tokena) i daje link „Preuzmi …“ na
+  `/downloads/<ime>` za izabrani OS (na macOS-u i Apple čip / Intel), link
+  na `SHA256SUMS` i komande sa tačnim imenom i SHA-256 paketa; kad shfd nema
+  `--downloads` ili paketa za tu platformu, kaže to i upućuje na admina.
+  Zatim `shf join …`, `shf service install`, `shf status` i napomena o „key refused“ (jedan član = jedan
   uređaj). Ime hosta se popunjava iz trenutnog URL-a. U v1 nema `install.sh`;
   ako ga dodamo kasnije, ova strana ga prikazuje.
 - **Server (shfd + shfd-gui):** sažetak iz `docs/server-ssh.md` i odeljka
@@ -284,9 +288,11 @@ cd gui && npm run dev:web      # Vite na :5174, proxy /gui/api i /gui/udc ka 844
 - `admin/members` vraća `{head, members}`; član ima i `status`
   (`active`/`pending`/`revoked`) i `connected`.
 - Strana Instalacija nudi gotov paket (`make release`: linux-amd64,
-  darwin-amd64, darwin-arm64) ili build iz izvornog koda. Paketi se ne
-  serviraju sa servera: daje ih admin, pa komande rade nad
-  `~/Downloads/shared-folder-*-<os>-<arch>.tar.gz`.
+  darwin-amd64, darwin-arm64) ili build iz izvornog koda. Paket se preuzima
+  sa shfd-a (`shfd serve --downloads`, rute `/v1/downloads` i
+  `/downloads/<ime>`, bez tokena; [install.md](install.md#objavljivanje-paketa-na-serveru)).
+  Ove rute idu na shfd kroz postojeći `location /` vhost-a, ne kroz
+  shfd-gui; `npm run dev:web` ih prosleđuje na `127.0.0.1:8443`.
 
 ### Instalacija na server
 

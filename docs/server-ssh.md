@@ -116,6 +116,8 @@ Environment=SHFD_DATA_ROOT=/var/lib/shfd/data
 Environment=SHFD_DB_ROOT=/var/lib/shfd/db
 Environment=SHFD_AUTHORIZED_KEYS=/var/lib/shfd/.ssh/authorized_keys
 Environment=SHFD_BINARY=/usr/local/bin/shfd
+# paketi za preuzimanje (make release), docs/install.md; može i bez
+Environment=SHFD_DOWNLOADS=/var/lib/shfd/downloads
 ExecStart=/usr/local/bin/shfd serve --listen 127.0.0.1:8443
 Restart=on-failure
 

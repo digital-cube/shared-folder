@@ -30,6 +30,7 @@
 package shfdcli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -40,6 +41,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -58,13 +60,14 @@ const (
 	EnvAuthorizedKeys = "SHFD_AUTHORIZED_KEYS" // --authorized-keys
 	EnvBinary         = "SHFD_BINARY"          // --shfd-binary
 	EnvSSHEndpoint    = "SHFD_SSH_ENDPOINT"    // serve --ssh-endpoint
+	EnvDownloads      = "SHFD_DOWNLOADS"       // serve --downloads
 )
 
 const usage = `shfd — shared folder server
 
 Usage:
   shfd serve --data-root DIR [--listen ADDR] [--tls-cert FILE --tls-key FILE]
-             [--ssh-endpoint USER@HOST[:PORT]]
+             [--ssh-endpoint USER@HOST[:PORT]] [--downloads DIR]
   shfd share create <name> [--admin USERNAME]
   shfd share list
   shfd member add <share-id> <username> [--admin]
@@ -93,7 +96,11 @@ databases should not (serve warns when they are). db move copies the
 databases of a stopped server to --to with SQLite's backup API, checks
 each copy and prints what to change in the systemd unit (docs/admin.md).
 serve speaks plain HTTP unless --tls-cert and --tls-key are given (TLS can
-also come from a reverse proxy).
+also come from a reverse proxy). serve --downloads DIR (default
+$SHFD_DOWNLOADS) serves the packages of "make release" copied into DIR
+(shared-folder-<version>-<os>-<arch>.tar.gz and SHA256SUMS) without a
+token: GET /v1/downloads lists them, GET /downloads/<name> sends one; the
+Install page of shfd-gui links to them (docs/install.md).
 
 rsync over SSH (docs/server-ssh.md): serve, member and keys take
 --authorized-keys FILE (default $SHFD_AUTHORIZED_KEYS), the authorized_keys
@@ -454,6 +461,7 @@ func serve(args []string, env Env) error {
 	cert := fs.String("tls-cert", "", "TLS certificate (PEM)")
 	key := fs.String("tls-key", "", "TLS private key (PEM)")
 	sshEP := fs.String("ssh-endpoint", env.Getenv(EnvSSHEndpoint), "user@host[:port] of sshd, told to clients that register a key")
+	downloads := fs.String("downloads", env.Getenv(EnvDownloads), "directory of the release packages (make release) served at /downloads/")
 	var sf sshFlags
 	sf.register(fs, env)
 	root, _, err := flags(fs, args, 0, env)
@@ -469,6 +477,14 @@ func serve(args []string, env Env) error {
 	}
 	if opts.SSH, err = server.ParseSSHEndpoint(*sshEP); err != nil {
 		return usageError("serve: %v", err)
+	}
+	if *downloads != "" {
+		if *downloads, err = filepath.Abs(*downloads); err != nil {
+			return err
+		}
+		if fi, err := os.Stat(*downloads); err != nil || !fi.IsDir() {
+			return usageError("serve: --downloads %s is not a directory", *downloads)
+		}
 	}
 	srv, err := root.open(opts)
 	if err != nil {
@@ -495,7 +511,7 @@ func serve(args []string, env Env) error {
 	} else {
 		defer stopAdmin()
 	}
-	api := httpapi.New(srv, log)
+	api := httpapi.New(srv, log, httpapi.WithDownloads(*downloads))
 	hs := &http.Server{
 		Handler:           api,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -524,7 +540,7 @@ func serve(args []string, env Env) error {
 	if opts.AuthorizedKeys != nil {
 		akeys = opts.AuthorizedKeys.Path
 	}
-	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "version", version.Version)
+	log.Info("shfd listening", "addr", ln.Addr().String(), "scheme", scheme, "data_root", srv.Root(), "db_root", srv.DBRoot(), "authorized_keys", akeys, "downloads", cmp.Or(*downloads, "-"), "version", version.Version)
 	if env.Ready != nil {
 		env.Ready(ln.Addr().String())
 	}

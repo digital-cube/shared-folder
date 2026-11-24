@@ -12,6 +12,8 @@
 //	POST /v1/shares/{id}/sync-report
 //	PUT  /v1/shares/{id}/ssh-key
 //	GET  /v1/shares/{id}/ws            (WebSocket, see ws.go)
+//	GET  /v1/downloads                 (no token; packages, see downloads.go)
+//	GET  /downloads/{name}             (no token)
 //	     /v1/shares/{id}/admin/...     (admin role only, see admin.go)
 //
 // Errors are {"error": {"code": "...", "message": "..."}}; the code is one
@@ -104,6 +106,7 @@ func New(srv *server.Server, log *slog.Logger, opts ...Option) *Handler {
 	mux.HandleFunc("GET /v1/shares/{id}/ws", a.ws)
 	mux.HandleFunc("GET /v1/whoami", a.whoami)
 	registerAdmin(mux, a.admin)
+	registerDownloads(mux, a)
 	// Without a method in the pattern: the catch-all "/" below matches
 	// every method, so the mux would answer 404 instead of 405.
 	mux.HandleFunc("/healthz", a.health)
@@ -119,6 +122,7 @@ type api struct {
 	log *slog.Logger
 
 	ping, memberCheck time.Duration
+	downloads         string          // directory of the packages, "" = none (downloads.go)
 	ctx               context.Context // canceled by Handler.Close
 	cancel            context.CancelFunc
 }

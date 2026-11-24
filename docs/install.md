@@ -32,6 +32,28 @@ Paketi se zovu `shared-folder-<verzija>-<os>-<arch>.tar.gz`, uz njih ide
 
 Za Windows i ostale platforme nema paketa: build iz izvornog koda (dole).
 
+### Odakle se preuzima
+
+Sa servera foldera, ako ih je admin tamo postavio (vidi
+[Objavljivanje paketa na serveru](#objavljivanje-paketa-na-serveru)):
+
+- **GUI:** strana **Instalacija** (`https://<host>/gui/#install`, radi i bez
+  prijave), kartica Klijent → Gotov paket: dugme „Preuzmi …“ za izabrani OS
+  (na macOS-u još Apple čip / Intel), link na `SHA256SUMS`, a komande ispod
+  već imaju tačno ime paketa i njegov SHA-256 iz `SHA256SUMS`.
+- **Direktno:** `https://<host>/downloads/<ime-paketa>` i
+  `https://<host>/downloads/SHA256SUMS`; spisak svih paketa (JSON, najnoviji
+  prvi): `https://<host>/v1/downloads`. Token ne treba.
+
+```sh
+curl -s https://<host>/v1/downloads              # {"enabled":true,"packages":[{"name":…,"url":"/downloads/…","sha256":…}],…}
+curl -fLO https://<host>/downloads/shared-folder-<verzija>-linux-amd64.tar.gz
+curl -fLO https://<host>/downloads/SHA256SUMS
+```
+
+Ako strana kaže „Ovaj server ne nudi pakete za preuzimanje“, server nije
+pokrenut sa `--downloads`; paket tada daje admin (ili build iz izvornog koda).
+
 ### Linux
 
 ```sh
@@ -177,3 +199,37 @@ make release VERSION=v0.1.0                 # verzija u imenu paketa i u `shf ve
 Verzija je `git describe --tags --always --dirty` (kratak SHA dok nema
 tagova). Paketi nisu potpisani za macOS (nema Apple Developer ID-a), pa na
 Mac-u važi korak sa karantinom iznad.
+
+### Objavljivanje paketa na serveru
+
+`shfd serve --downloads DIR` (ili `SHFD_DOWNLOADS=DIR` u systemd jedinici)
+služi pakete iz `DIR` bez tokena: `GET /v1/downloads` (spisak) i
+`GET /downloads/<ime>` (fajl), a strana Instalacija u GUI-ju na njih linkuje.
+Služi se samo ono što liči na izlaz `make release`:
+`shared-folder-<verzija>-<os>-<arch>.tar.gz` i `SHA256SUMS`; ostali fajlovi,
+poddirektorijumi i symlink-ovi van `DIR`-a se ne vide. `DIR` mora postojati
+kad `shfd serve` krene; ne treba da bude u data-root-u.
+
+Objavljivanje je **ručno**: posle `make release` admin prekopira `dist/` na
+server, jednom komandom, bez restarta `shfd`-a (spisak se čita pri svakom
+zahtevu):
+
+```sh
+make release VERSION=v0.2.0
+rsync -av dist/ <server>:/var/lib/shfd/downloads/    # ili scp dist/* …
+# na serveru, prvi put:
+sudo install -d -o shfd -g shfd -m 755 /var/lib/shfd/downloads
+# u shfd.service: Environment=SHFD_DOWNLOADS=/var/lib/shfd/downloads, pa
+sudo systemctl daemon-reload && sudo systemctl restart shfd
+curl -s https://<host>/v1/downloads                  # paketi i njihov sha256
+```
+
+- Stari paketi mogu ostati: GUI za svaku platformu nudi najnoviji (po vremenu
+  izmene fajla), `/v1/downloads` vraća sve. `SHA256SUMS` je jedan fajl, onaj
+  iz poslednjeg `make release`, pa stariji paketi u spisku nemaju `sha256`;
+  ko ih ne želi, obriše ih (`rsync --delete dist/ …`).
+- `rsync` bez `-t` (ili `cp` bez `-p`) daje fajlovima vreme kopiranja; to je
+  u redu dok se kopira ceo `dist/` odjednom.
+- Zašto ne automatski (CI uz GitHub release): paketi se prave sa iste mašine
+  kao deploy servera i server ih nudi samo svojim korisnicima; CI korak se
+  može dodati kasnije, i on bi samo puštao isti `rsync` u `DIR`.

@@ -54,6 +54,7 @@ shfd member list <share-id>                # i otisak trenutnog SSH ključa (ure
 shfd share list
 shfd keys sync                             # blok u authorized_keys iz baza (uz --authorized-keys)
 shfd serve --listen :8443 [--tls-cert cert.pem --tls-key key.pem] [--ssh-endpoint shfd@host:22]
+           [--downloads /var/lib/shfd/downloads]   # paketi iz make release na /downloads/ (SHFD_DOWNLOADS)
 
 shfd trash list <share-id> [--path P] [--by U] [--reason deleted|replaced] [--since 2026-11-01]
 shfd trash restore <share-id> <trash-id> [--to <putanja>]
@@ -262,7 +263,8 @@ docs/            specifikacija, instalacija, postavljanje servera, admin komande
 ## Instalacija
 
 Gotovi paketi za Linux x86-64, macOS Intel i macOS Apple Silicon
-(`make release`), šta treba na uređaju (rsync 3.2.4+, ssh), korak sa
+(`make release`; preuzimaju se sa strane Instalacija u GUI-ju ili sa
+`https://<host>/downloads/` kad server radi sa `--downloads`), šta treba na uređaju (rsync 3.2.4+, ssh), korak sa
 karantinom na macOS-u (`xattr -d com.apple.quarantine "$(command -v shf)"`)
 i build iz izvornog koda po OS-u: [docs/install.md](docs/install.md).
 

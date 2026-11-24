@@ -101,6 +101,10 @@ ili ugrađen.
 - Admin: članovi (dodaj ili vrati opozvanog, opozovi, promeni ulogu, nov
   token), trash (lista, vrati, očisti), statistike,
   provera `storage/` prema bazi.
+- Bez tokena, kad je `shfd serve` dobio `--downloads DIR`: `GET /v1/downloads`
+  (paketi iz `make release` u `DIR`, najnoviji prvi, sa `sha256` iz
+  `SHA256SUMS`) i `GET /downloads/<ime>` (paket ili `SHA256SUMS`)
+  ([install.md](install.md#objavljivanje-paketa-na-serveru)).
 
 Implementacija (TCKTHRC7PQ): `GET /admin/trash`, `POST /admin/trash/{id}/restore`,
 `POST /admin/trash/purge`, `POST /admin/verify`, `GET /admin/stats` pod

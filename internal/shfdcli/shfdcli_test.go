@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -96,6 +98,11 @@ func TestServe(t *testing.T) {
 	_, out, _ := run(t, env, "share", "create", "tim", "--admin", "ana")
 	id := idRE.FindStringSubmatch(out)[1]
 	tok := tokenRE.FindStringSubmatch(out)[1]
+	dl := t.TempDir() // --downloads from $SHFD_DOWNLOADS
+	if err := os.WriteFile(filepath.Join(dl, "SHA256SUMS"), []byte("sums\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env[EnvDownloads] = dl
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan string, 1)
@@ -133,6 +140,15 @@ func TestServe(t *testing.T) {
 		t.Errorf("changes status %d", resp.StatusCode)
 	}
 
+	resp, err = http.Get("http://" + addr + "/downloads/SHA256SUMS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("downloads status %d", resp.StatusCode)
+	}
+
 	// Members can be added while the server runs, and work at once.
 	_, out, _ = run(t, env, "member", "add", id, "bob")
 	req.Header.Set("Authorization", "Bearer "+tokenRE.FindStringSubmatch(out)[1])
@@ -157,6 +173,9 @@ func TestServe(t *testing.T) {
 
 	if code, _, _ := run(t, env, "serve", "--tls-cert", "x"); code != 2 {
 		t.Errorf("tls-cert without key exit = %d", code)
+	}
+	if code, _, errOut := run(t, env, "serve", "--downloads", filepath.Join(dl, "missing")); code != 2 || !strings.Contains(errOut, "not a directory") {
+		t.Errorf("--downloads of a missing directory: %d %s", code, errOut)
 	}
 }
 
