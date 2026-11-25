@@ -72,6 +72,9 @@
 .tgrid[data-compact] .tile-check { top: 3px; left: 3px; width: 15px; height: 15px; }
 /* The table: the ".." row (the parent folder) cannot be selected (bulk.ts). */
 .files-view tr[data-row-id=".."] [data-testid="cell-select"] > * { visibility: hidden; pointer-events: none; }
+/* A member who is not an admin: the bar offers only Preuzmi (Obriši is not there, not just disabled). */
+.files-view.read-only span:has(> [data-testid="bulk-action-remove"]),
+.files-view.read-only [data-testid="bulk-action-remove"] { display: none; }
 /* The failures of a bulk Obriši, item by item. */
 .bulk-failed { max-height: 220px; overflow: auto; margin: 0 0 12px; padding-left: 18px; font-size: 13px; line-height: 1.5; }
 .bulk-failed code { overflow-wrap: anywhere; }

@@ -538,7 +538,8 @@ export class FakeShfd {
       const attach = !inline || url.searchParams.get("download") === "1";
       const headers: Record<string, string> = {
         "content-type": inline ?? "application/octet-stream",
-        "content-disposition": `${attach ? "attachment" : "inline"}; filename="${name}"`,
+        // As shfd: an ASCII name, and the exact UTF-8 one when the two differ.
+        "content-disposition": `${attach ? "attachment" : "inline"}; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"${/[^\x20-\x7e]/.test(name) ? `; filename*=UTF-8''${encodeURIComponent(name)}` : ""}`,
         etag: `"${"cc".repeat(32)}"`,
         "cache-control": "private, no-cache",
         "content-security-policy": "sandbox",

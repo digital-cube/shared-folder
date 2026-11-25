@@ -193,7 +193,10 @@ describe("collections and actions", () => {
     const files = await udc(app, cookie, "describe", { collection: "files" });
     const trash = await udc(app, cookie, "describe", { collection: "trash" });
     const views = { files: files.payload.view, trash: trash.payload.view };
-    expect(views.files.bulk_actions).toEqual([{ kind: "remove", label: "Obriši", icon: "lucide:trash-2", variant: "destructive" }]);
+    expect(views.files.bulk_actions).toEqual([
+      { kind: "download", label: "Preuzmi", icon: "lucide:download" },
+      { kind: "remove", label: "Obriši", icon: "lucide:trash-2", variant: "destructive", when: { field: "can_edit", op: "eq", value: true } },
+    ]);
     expect(views.trash.bulk_actions).toEqual([{ kind: "restore", label: "Vrati", icon: "lucide:undo-2" }]);
   });
 });

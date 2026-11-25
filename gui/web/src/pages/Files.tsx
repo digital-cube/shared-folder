@@ -9,7 +9,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import type { Row } from "@jsudc/core";
 import { useMemo, useState } from "react";
-import { restoreTrash, restoreTrashMany } from "../../../shared/actions";
+import { filesZip, restoreTrash, restoreTrashMany } from "../../../shared/actions";
 import { inChunks, selectedRows, sumRestore } from "../bulk";
 import { getLang } from "../lang";
 import { isAdmin } from "../access";
@@ -20,6 +20,8 @@ import { messageOf } from "./Members";
 import { BulkRemoveDialog, FileActionsProvider } from "../FileMenu";
 import { filesTableRenderer, thumbsRenderer } from "../ThumbGrid";
 import { savedFilesTab, saveFilesTab } from "../thumbsize";
+import { contentUrl } from "../preview";
+import { downloadPlan, filterOfState, listDir, startDownload, zipUrl } from "../zipDownload";
 
 // The Files view's own tabs: the table (refreshing while thumbnails are
 // pending) and the Grid. Trash keeps the provider's table.
@@ -60,6 +62,21 @@ export function Files() {
   const [removing, setRemoving] = useState<{ rows: Row[] | null; clear: () => void } | null>(null);
   const filesActions = useMemo(
     () => ({
+      // Preuzmi, for every member: one file as itself, anything else as one
+      // ZIP. The folder is the list's (its filter's path condition), not a
+      // row's; the selection stays, for what comes next.
+      download: async (ctx: BulkActionContext) => {
+        const rows = await selectedRows(client, ctx);
+        const dir = listDir(ctx.filter ?? filterOfState(filesState.get()));
+        const plan = downloadPlan(rows, dir, getLang());
+        if (plan.kind === "error") throw new Error(plan.message);
+        if (plan.kind === "file") {
+          startDownload(contentUrl(plan.path, true), plan.name);
+          return;
+        }
+        const zip = await client.call(filesZip, { dir: plan.dir, paths: plan.paths });
+        startDownload(zipUrl(zip.id), zip.name);
+      },
       remove: async (ctx: BulkActionContext) => {
         if (!ctx.filter) {
           setRemoving({ rows: await selectedRows(client, ctx), clear: ctx.clearSelection });
@@ -75,7 +92,7 @@ export function Files() {
         }
       },
     }),
-    [client],
+    [client, filesState],
   );
 
   // Vrati: a row's action (one entry, as before) or the bar's (the selection).
@@ -118,12 +135,12 @@ export function Files() {
             {tr("Sadržaj foldera kako ga server vidi", "The folder's content as the server sees it")} (<code>storage/</code>).{" "}
             {admin
               ? tr(
-                  "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled, preuzimanje, preimenovanje i brisanje.",
-                  "A click on a file opens its preview; a right-click (or the menu key) gives info, view, download, rename and delete.",
+                  "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled, preuzimanje, preimenovanje i brisanje. Izaberi više fajlova i foldera da ih preuzmeš kao jedan ZIP ili obrišeš odjednom.",
+                  "A click on a file opens its preview; a right-click (or the menu key) gives info, view, download, rename and delete. Select several files and folders to download them as one ZIP or delete them at once.",
                 )
               : tr(
-                  "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled i preuzimanje. Menjaš ih na svom uređaju (shf).",
-                  "A click on a file opens its preview; a right-click (or the menu key) gives info, view and download. You change files on your device (shf).",
+                  "Klik na fajl otvara pregled; desni klik (ili taster menija) daje informacije, pregled i preuzimanje. Izaberi više fajlova i foldera da ih preuzmeš kao jedan ZIP. Menjaš ih na svom uređaju (shf).",
+                  "A click on a file opens its preview; a right-click (or the menu key) gives info, view and download. Select several files and folders to download them as one ZIP. You change files on your device (shf).",
                 )}
           </p>
         </div>
@@ -152,7 +169,7 @@ export function Files() {
         <BulkRemoveDialog rows={removing.rows} onDone={removing.clear} onClose={() => setRemoving(null)} />
       ) : null}
       {tab === "files" || !admin ? (
-        <div className="view-card files-view">
+        <div className={`view-card files-view${admin ? "" : " read-only"}`}>
           <FileActionsProvider canEdit={admin}>
             <UdcDataView
               key="files"
@@ -160,7 +177,7 @@ export function Files() {
               urlState={filesState}
               chrome={FILES_CHROME}
               renderers={FILES_RENDERERS}
-              selectable={admin}
+              selectable
               actions={filesActions}
             />
           </FileActionsProvider>

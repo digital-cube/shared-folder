@@ -37,6 +37,7 @@ import { menuItems, placeMenu, stemRange, type MenuAction } from "./filemenu";
 import { Download, Eye, FolderOpen, Info, Pencil, Trash2 } from "./icons";
 import { messageOf } from "./pages/Members";
 import { contentUrl } from "./preview";
+import { startDownload } from "./zipDownload";
 import { Thumb } from "./Thumb";
 
 /** Where a menu was asked for: a mouse event, or the menu key on a focused element. */
@@ -71,13 +72,7 @@ interface OpenMenuState {
 
 /** Starts a download of a file, as the preview's Preuzmi does. */
 function download(row: Row) {
-  const a = document.createElement("a");
-  a.href = contentUrl(str(row.path), true);
-  a.download = str(row.name);
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  startDownload(contentUrl(str(row.path), true), str(row.name));
 }
 
 /** canEdit: Preimenuj and Obriši in the menu (an admin of the folder); without it only reading. */

@@ -28,7 +28,9 @@ import {
   searchUsers,
   setRole,
   type MemberDeviceRow,
+  filesZip,
 } from "../../shared/actions.js";
+import { attachmentDisposition, tooManyEntries, zipName, zipRequestProblem } from "../../shared/zip.js";
 import { removeSummary, restoreSummary } from "../../shared/bulk.js";
 import { BASE_META, isShfdPath, normalizeBase } from "../../shared/base.js";
 import { renameTarget } from "../../shared/rename.js";
@@ -40,6 +42,7 @@ import { langOf, tr, type Lang } from "./lang.js";
 import { FILE_OPS, LogFeed, summarize } from "./logs.js";
 import { COOKIE, readCookie, SessionStore } from "./sessions.js";
 import { CONTENT_REQUEST_HEADERS, errorMessage, ShfdClient, ShfdError, type LogLine, type MemberInfo, type ThumbSize } from "./shfd.js";
+import { planZip, TooManyEntries, ZipJobs, zipStream } from "./zip.js";
 
 export { LOGIN_BAD_PASSWORD, LOGIN_BAD_PASSWORD_EN, LOGIN_INVALID, LOGIN_INVALID_EN, LOGIN_NOT_ADMIN, LOGIN_NOT_ADMIN_EN } from "./account.js";
 
@@ -339,6 +342,37 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     }
     return { removed, unchanged, failed, message: removeSummary(ctx.lang, { removed, unchanged, failed: failed.length }) };
   });
+  // A ZIP of the selection, prepared for one download (zip.ts): every
+  // member may, as every member may download a file.
+  const zips = new ZipJobs(o.now);
+  // A refusal of shfd about one path that skips it (gone since, …); a dead
+  // session, a role taken away or an unreachable shfd is no such refusal.
+  const skipReason = (err: unknown, lang: Lang): string | null =>
+    err instanceof ShfdError && err.status !== 401 && err.status !== 403 && err.status < 500 && err.code !== "unreachable"
+      ? errorMessage(err.code, err.message, lang)
+      : null;
+  dispatcher.register(filesZip, async ({ dir, paths }, ctx: Ctx) => {
+    const d = dir.replace(/^\/+|\/+$/g, "");
+    const problem = zipRequestProblem(d, paths, ctx.lang);
+    if (problem) throw new UdcError("validation_error", problem);
+    const plan = await guard(ctx, () =>
+      planZip(
+        async (x) => (await shfd.files(ctx.token, ctx.shareId, x)).entries,
+        d,
+        [...new Set(paths)],
+        (err) => (err instanceof ShfdError && err.code === "not_found" ? errorMessage(err.code, err.message, ctx.lang) : null),
+      ).catch((err) => {
+        if (err instanceof TooManyEntries) throw new UdcError("validation_error", tooManyEntries(ctx.lang), { code: "too_many_entries" });
+        throw err;
+      }),
+    );
+    if (plan.entries.length === 0) {
+      throw new UdcError("not_found", tr(ctx.lang, "Izabrani fajlovi više ne postoje.", "The selected files no longer exist."));
+    }
+    const name = zipName(d, sessions.get(ctx.sessionId)?.shareName || ctx.shareId);
+    const job = zips.put({ sessionId: ctx.sessionId, shareId: ctx.shareId, name, lang: ctx.lang, ...plan });
+    return { id: job.id, name };
+  });
   dispatcher.register(overview, async (_p, ctx: Ctx) => {
     if (ctx.role !== "admin") {
       const health = await shfd.health().catch(() => ({ service: "shfd", version: "?", ok: false }));
@@ -513,6 +547,52 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       return reply.send();
     }
     return reply.send(Readable.fromWeb(r.body as import("node:stream/web").ReadableStream<Uint8Array>));
+  });
+
+  // ---- a ZIP of the selection --------------------------------------------
+
+  // The archive shfd.files_zip prepared, streamed as it is made (zip.ts):
+  // the id is this session's and this folder's, and works once. No
+  // content-length (the size is known only at the end); a download that
+  // breaks off is a cut connection, never a ZIP that ends as if whole.
+  app.get(`${base}/api/files/zip`, async (req, reply) => {
+    const s = sessionOf(req);
+    reply.header("cache-control", "no-store");
+    if (!s) return reply.code(401).send({ error: "not signed in" });
+    if (!s.shareId || s.mustChange) return reply.code(409).send({ error: noFolder(langOf(req)), code: "no_folder" });
+    const id = String((req.query as { id?: unknown }).id ?? "");
+    // A HEAD (a download manager's probe) does not use the id up.
+    const job = req.method === "HEAD" ? zips.peek(id, s.id, s.shareId) : zips.take(id, s.id, s.shareId);
+    if (!job) {
+      const lang = langOf(req);
+      return reply.code(404).send({ error: tr(lang, "Ovaj ZIP više nije dostupan; pokreni preuzimanje ponovo.", "This ZIP is no longer available; start the download again.") });
+    }
+    reply.header("content-type", "application/zip");
+    reply.header("content-disposition", attachmentDisposition(job.name));
+    reply.header("x-content-type-options", "nosniff");
+    // nginx sends it on as it comes (gui/deploy/nginx-gui*.conf).
+    reply.header("x-accel-buffering", "no");
+    if (req.method === "HEAD") return reply.send();
+    const ctl = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableFinished) ctl.abort(new Error("the browser left"));
+    });
+    const token = s.token;
+    const shareId = s.shareId;
+    const stream = zipStream(job, {
+      open: (path, signal) => shfd.content(token, shareId, path, { download: true, signal }),
+      skip: (err) => skipReason(err, job.lang),
+      signal: ctl.signal,
+      lang: job.lang,
+      onFail: (err) => {
+        if (err instanceof ShfdError && err.status === 401) sessions.dropToken(token);
+        if (!ctl.signal.aborted) req.log.warn({ err: (err as Error).message }, "zip download broken off");
+        ctl.abort();
+        // Cut, so the browser shows a failed download.
+        reply.raw.destroy();
+      },
+    });
+    return reply.send(stream);
   });
 
   // ---- the web app -------------------------------------------------------

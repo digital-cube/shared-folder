@@ -4,6 +4,7 @@
 import { defineHostAction } from "@jsudc/core";
 import { z } from "zod";
 import { BULK_MAX } from "./bulk.js";
+import { ZIP_MAX_PATHS } from "./zip.js";
 
 const member = z.object({ username: z.string().min(1) });
 
@@ -170,4 +171,15 @@ export const revokeMemberDevice = defineHostAction({
   name: "shfd.member_device_revoke",
   request: z.object({ username: z.string().min(1), device: z.number().int().positive() }),
   response: z.object({ username: z.string(), account: z.string(), devices: z.array(memberDevice) }),
+});
+
+/**
+ * A ZIP of files and folders of the list's folder `dir` ("" for the root),
+ * prepared for one download: GET <base>/api/files/zip?id=<id> streams it,
+ * once, within a minute, in the same session and folder. Every member may.
+ */
+export const filesZip = defineHostAction({
+  name: "shfd.files_zip",
+  request: z.object({ dir: z.string().max(4096), paths: z.array(z.string().min(1).max(4096)).min(1).max(ZIP_MAX_PATHS) }),
+  response: z.object({ id: z.string(), name: z.string() }),
 });

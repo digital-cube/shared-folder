@@ -227,6 +227,7 @@ class FilesSource extends ArraySource {
       hash_full: f.hash,
       seq: f.seq,
       thumb: f.kind === "file" ? (f.thumb ?? "") : "",
+      can_edit: c.role === "admin",
     }));
     const head: Row[] = [];
     if (dir) {
@@ -245,6 +246,7 @@ class FilesSource extends ArraySource {
         hash_full: "",
         seq: null,
         thumb: "",
+        can_edit: false,
       } as Row);
     }
     return { rows: rows as Row[], filter: rest, head };
@@ -402,6 +404,9 @@ const filesSchema = SchemaDocSchema.parse({
     hash_full: { type: "string" },
     seq: { type: "integer" },
     thumb: { type: "string" },
+    // May this session change the row (an admin of the folder)? Not a
+    // column: the "when" of Obriši, so a member's bar offers only Preuzmi.
+    can_edit: { type: "bool" },
   },
 });
 
@@ -427,7 +432,12 @@ const filesView = ViewConfigSchema.parse({
   // The selection and its bar are jsudc's; the GUI runs the action (Files.tsx).
   // "remove", not "delete": delete is jsudc's built-in mutate_many path, and
   // this source is read-only.
-  bulk_actions: [{ kind: "remove", label: "Obriši", icon: "lucide:trash-2", variant: "destructive" }],
+  // Preuzmi is every member's (one file as itself, more as one ZIP); Obriši
+  // an admin's (when: can_edit; the server refuses a member anyway).
+  bulk_actions: [
+    { kind: "download", label: "Preuzmi", icon: "lucide:download" },
+    { kind: "remove", label: "Obriši", icon: "lucide:trash-2", variant: "destructive", when: { field: "can_edit", op: "eq", value: true } },
+  ],
 });
 
 const trashSchema = SchemaDocSchema.parse({

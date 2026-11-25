@@ -54,6 +54,7 @@ export const messages: Messages = {
     SEARCH_PLACEHOLDER: t("Traži u folderu", "Search this folder"),
     EMPTY_PLAIN: t("Folder je prazan.", "The folder is empty."),
     // the bulk action of the server's view (collections.ts)
+    ACTION_DOWNLOAD: t("Preuzmi", "Download"),
     ACTION_REMOVE: t("Obriši", "Delete"),
   },
   TBL_TRASH: {

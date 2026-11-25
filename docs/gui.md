@@ -235,6 +235,38 @@ ispod, ostala je kao skrivena opcija.
   odgovaraju“ (u korenu nudi). Zaobilaženje: skrolovanjem se učita ceo
   folder, pa checkbox u zaglavlju bira sve. Trajno rešenje je u jsudc-u
   (red koji se ne može izabrati).
+- **Preuzmi više fajlova kao ZIP** (TCKCFD3MM3, svaki član foldera). Izbor
+  redova sada ima i član koji nije admin; traka nudi **Preuzmi** (ispred
+  **Obriši**), a član vidi samo Preuzmi (red ima polje `can_edit` iz uloge
+  sesije, akcija `remove` ima `when: can_edit`, a `.files-view.read-only`
+  sakriva dugme; server i dalje odbija `shfd.files_remove` članu).
+  Tačno jedan izabran fajl se preuzima sam (`/api/files/content?download=1`),
+  bez ZIP-a. Sve ostalo (više fajlova, folder) je **jedan ZIP**: host
+  akcija `shfd.files_zip` (`{dir, paths}`, `dir` je folder liste — uslov
+  `path eq` iz filtera view-a, ne putanja reda) pripremi arhivu, pa skriveni
+  link `<base>/api/files/zip?id=…` pokrene preuzimanje koje browser sam
+  strimuje na disk. Izbor ostaje posle preuzimanja; greška pripreme se
+  prikazuje na traci.
+  - **Sadržaj ZIP-a:** izabrani fajlovi i folderi, folderi rekurzivno sa
+    svojim unosom (pa i prazni podfolderi), putanje **relativne u odnosu na
+    folder liste** (iz `docs` izabran `docs/a.txt` je `a.txt`, folder
+    `docs/slike` je `slike/…`), UTF-8 imena (flag 11), `mtime` iz liste.
+    Ime arhive je ime foldera liste (u korenu ime deljenog foldera) +
+    `.zip`.
+  - **Bez kompresije (store).** Brzina i mali CPU servera su važniji od
+    veličine, a najveći fajlovi (slike, video, PDF, Office) su već
+    kompresovani. ZIP64 se koristi sam kad treba (fajl ili arhiva > 4 GB).
+  - **Ograničenja:** najviše 2000 izabranih putanja po pozivu (više: poruka
+    da se izabere manje ili ceo folder iz nadređenog, bez tihog
+    odsecanja) i najviše 20 000 unosa u arhivi (fajlova i foldera, sa
+    sadržajem foldera) — preko toga priprema odbija porukom, pre nego što
+    preuzimanje počne.
+  - **Preskočeno:** fajl koji shfd odbije usred posla (obrisan u
+    međuvremenu, `not_found`) se preskače, a na kraj arhive ide
+    `_preskoceno.txt` (`_skipped.txt` na engleskom) sa putanjom i razlogom.
+    Ako shfd postane nedostupan, strim fajla pukne ili sesija istekne,
+    konekcija se **prekida**: browser prijavi neuspelo preuzimanje, nikad
+    arhivu koja izgleda ispravno a nije potpuna.
 - Kartica **Trash**: lista iz postojećeg `GET …/admin/trash` (putanja, razlog,
   ko, kad, veličina) i akcija **Vrati** (`POST …/trash/{id}/restore`), uz
   poruku koju API vrati (npr. `.restored-…` ime). Više unosa se bira kao u
@@ -682,7 +714,8 @@ Kad svi članovi pređu na naloge (spec §8, korak 5), postavi
 | Članovi, Logovi, Trash | da | ne | ne |
 | Fajlovi: pregled, preuzimanje, sličice | da | da | ne |
 | Fajlovi: preimenovanje i brisanje | da | ne | ne |
-| Fajlovi: izbor više redova, bulk brisanje; Trash: vraćanje više unosa | da | ne (nema izbora) | ne |
+| Fajlovi: izbor više redova i preuzimanje više fajlova (ZIP) | da | da | ne |
+| Fajlovi: bulk brisanje; Trash: vraćanje više unosa | da | ne (nema dugmeta Obriši) | ne |
 | Moji folderi, Moj nalog | da | da | da |
 | Instalacija | da | da | da |
 
@@ -773,6 +806,8 @@ u `server/src/csrf.ts`, a testovi su u `server/test/accounts.test.ts`.
 | `DELETE /api/me/devices/:id` | opoziv svog uređaja; `{signed_out}` kad je to ova sesija |
 | `PUT /api/me/avatar` | slika kao telo (`Content-Type: image/*`), najviše 5 MB → `PUT /v1/me/avatar`; `{ok, avatar_url, session}` |
 | `DELETE /api/me/avatar` | uklanja sliku → `{ok, avatar_url: null, session}` |
+| `GET /api/files/content?path=[&download=1]` | sadržaj jednog fajla, strimovan sa zaglavljima shfd-a (gore, „Sadržaj fajla“) |
+| `GET /api/files/zip?id=` | ZIP koji je pripremio `shfd.files_zip`, strimovan dok se pravi (`application/zip`, `attachment` sa `filename*=UTF-8''…`, `no-store`, `nosniff`, bez `content-length`); `401` bez sesije, `409` bez foldera, `404` za `id` druge sesije ili foldera, iskorišćen ili istekao |
 | `GET /api/avatar/:username?v=` | slika naloga sa kredencijalom sesije (nalog ili token člana), sa `ETag` i `Cache-Control` kako ih je shfd postavio (`immutable` za tačnu verziju); `404` bez slike |
 
 Nove jsudc akcije: `shfd.member_add_account`, `shfd.users_search`,
@@ -784,3 +819,36 @@ Bulk akcije Fajlova i Trash-a (samo admin; `POST <base>/udc/<akcija>`):
 |---|---|
 | `shfd.files_remove` | `{items: [{path, kind: "file"\|"dir", base_hash}]}` (1–500) → `{removed, unchanged, failed: [{path, message}], message}` |
 | `shfd.trash_restore_many` | `{ids: string[]}` (1–500) → `{restored, renamed, unchanged, failed: [{id, message}], message}` |
+
+Preuzimanje više fajlova (svaki član foldera; `POST <base>/udc/<akcija>`):
+
+| Akcija | Zahtev → odgovor |
+|---|---|
+| `shfd.files_zip` | `{dir, paths: string[]}` (1–2000, sve unutar `dir`, bez `..` i praznih segmenata) → `{id, name}`; `id` važi jednom, 60 s, za istu sesiju i folder |
+
+#### Kako se pravi ZIP (`gui/server/src/zip.ts`)
+
+- **Dva koraka.** `shfd.files_zip` proveri putanje, obiđe izabrane foldere
+  (`GET /v1/shares/{id}/files?dir=` za svaki) i zapamti plan u memoriji
+  (vezan za `sessionId` + `shareId`, rok 60 s, jednokratan, najviše 4 na
+  čekanju po sesiji — peti istiskuje najstariji; `id` je 18 slučajnih
+  bajtova). Obilazak je u ovom koraku namerno: prevelik izbor (> 20 000
+  unosa) se odbija porukom koju strana prikaže, a ne kao prekinuto
+  preuzimanje. Cena: fajl dodat između pripreme i preuzimanja (najviše
+  minut) nije u arhivi, a obrisan se preskače.
+- **Strim.** `GET /api/files/zip` uzme plan i piše arhivu
+  ([yazl](https://github.com/thejoshwolfe/yazl), MIT, bez kompresije):
+  fajlovi idu jedan po jedan kroz `shfd.content(…, { signal })`, sledeći se
+  traži tek kad je prethodni pročitan do kraja, a pipe prema odgovoru drži
+  backpressure — nijedan fajl se ne čita ceo u memoriju. Kad browser ode
+  (zatvoren `reply.raw`), `AbortController` prekida i čitanje iz shfd-a;
+  `401` od shfd-a gasi sesije tog tokena.
+- **nginx.** Odgovor nosi `X-Accel-Buffering: no` (nginx ga ne baferuje), a
+  `gui/deploy/nginx-gui*.conf` imaju `location` za `<base>/api/files/` sa
+  `proxy_buffering off` i `proxy_read_timeout 1h`: između dva fajla shfd
+  može da ćuti dok hešira veliki fajl (do 120 s), a podrazumevanih 60 s bi
+  prekinulo preuzimanje. Isto važi i za `/api/files/content` (dugo
+  preuzimanje jednog fajla).
+- **Sledeći korak (van ovog tiketa):** „Preuzmi kao ZIP“ u kontekstnom
+  meniju foldera — `shfd.files_zip` sa `dir` = roditelj i `paths` = [folder]
+  to već podržava.
