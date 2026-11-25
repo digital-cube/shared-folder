@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { getConfig, signIn, signInWithToken, type Me } from "../api";
+import { useFieldProblem } from "../fieldProblem";
+import { loginProblem } from "../forms";
 import { useTr } from "../i18n";
 import { Folder } from "../icons";
 import { Prefs } from "../Prefs";
@@ -37,11 +39,16 @@ export function Login({
   }, []);
 
   const shown = error ?? (showExpired ? tr("Sesija je istekla ili je opozvana. Prijavi se ponovo.", "The session expired or was revoked. Sign in again.") : null);
-  const ready = mode === "password" ? !!username.trim() && !!password : !!token.trim();
+  const fp = useFieldProblem({ username: "username", password: "password", token: "token" });
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ready) return;
+    if (busy) return;
+    if (fp.check(loginProblem(mode, username, password, token))) {
+      setError(null);
+      setShowExpired(false);
+      return;
+    }
     setBusy(true);
     setError(null);
     setShowExpired(false);
@@ -60,6 +67,7 @@ export function Login({
   const switchTo = (m: "password" | "token") => {
     setMode(m);
     setError(null);
+    fp.clear();
   };
 
   return (
@@ -67,7 +75,7 @@ export function Login({
       <div className="login-prefs">
         <Prefs />
       </div>
-      <form className="login-card" onSubmit={submit} autoComplete={mode === "password" ? "on" : "off"} data-testid="login-form">
+      <form className="login-card" noValidate onSubmit={submit} autoComplete={mode === "password" ? "on" : "off"} data-testid="login-form">
         <div className="logo">
           <div className="logo-mark">
             <Folder size={18} />
@@ -91,9 +99,14 @@ export function Login({
                 autoCapitalize="none"
                 spellCheck={false}
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  fp.typed("username");
+                }}
                 autoFocus={!initialUsername}
+                {...fp.aria("username")}
               />
+              {fp.hint("username")}
             </div>
             <div className="field">
               <label htmlFor="password">{tr("Lozinka", "Password")}</label>
@@ -104,9 +117,14 @@ export function Login({
                 type="password"
                 autoComplete="current-password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  fp.typed("password");
+                }}
                 autoFocus={!!initialUsername}
+                {...fp.aria("password")}
               />
+              {fp.hint("password")}
               <span className="hint">
                 {tr("Nalog i privremenu lozinku daje admin servera.", "The server's admin gives you the account and a temporary password.")}{" "}
                 <a href="#forgot" data-testid="forgot-link">
@@ -120,7 +138,20 @@ export function Login({
             <p className="sub">{tr("Za stare članove bez naloga: token admina jednog foldera.", "For members without an account: the token of a folder admin.")}</p>
             <div className="field">
               <label htmlFor="token">Token</label>
-              <input id="token" className="input mono" type="password" placeholder="shf_…" value={token} onChange={(e) => setToken(e.target.value)} autoFocus />
+              <input
+                id="token"
+                className="input mono"
+                type="password"
+                placeholder="shf_…"
+                value={token}
+                onChange={(e) => {
+                  setToken(e.target.value);
+                  fp.typed("token");
+                }}
+                autoFocus
+                {...fp.aria("token")}
+              />
+              {fp.hint("token")}
               <span className="hint">
                 {tr("Token člana foldera sa ulogom", "The token of a folder member with the role")} <b>admin</b>.
               </span>
@@ -137,7 +168,7 @@ export function Login({
             {shown}
           </div>
         ) : null}
-        <button className="btn primary block" disabled={busy || !ready}>
+        <button className="btn primary block" disabled={busy}>
           {busy ? tr("Proveravam…", "Checking…") : tr("Prijavi se", "Sign in")}
         </button>
         <div className="foot">

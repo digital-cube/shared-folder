@@ -1,4 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useFieldProblem } from "./fieldProblem";
+import { memberPick, tokenMemberProblem } from "./forms";
 import { useTr } from "./i18n";
 
 export function Modal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
@@ -75,6 +77,7 @@ export function AddMember({
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const fp = useFieldProblem({ q: "user-q", name: "new-name" });
 
   // The search follows the typing, a moment after it stops.
   useEffect(() => {
@@ -97,11 +100,39 @@ export function AddMember({
     };
   }, [q, advanced, search]);
 
+  // Enter or "Dodaj" without a click in the results: the typed name is
+  // looked up now (the list may be a moment behind the typing) and added
+  // when exactly one account has it; otherwise the field says what is wrong.
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
+    if (busy) return;
     setError(null);
-    const err = advanced ? await onAddToken(name.trim(), admin) : picked ? await onAddAccount(picked.username, admin) : null;
+    if (advanced) {
+      if (fp.check(tokenMemberProblem(name))) return;
+      setBusy(true);
+      const err = await onAddToken(name.trim(), admin);
+      setBusy(false);
+      return err ? setError(err) : onClose();
+    }
+    setBusy(true);
+    let users: UserRef[] = [];
+    if (!picked && q.trim()) {
+      try {
+        users = await search(q.trim());
+        setFound(users);
+      } catch (err) {
+        setBusy(false);
+        return setError((err as Error).message);
+      }
+    }
+    const pick = memberPick(q, users, picked);
+    if ("field" in pick) {
+      setBusy(false);
+      fp.check({ field: pick.field, text: pick.text });
+      return;
+    }
+    fp.clear();
+    const err = await onAddAccount(pick.user.username, admin);
     setBusy(false);
     if (err) setError(err);
     else onClose();
@@ -109,7 +140,7 @@ export function AddMember({
 
   return (
     <Modal title={tr("Dodaj člana", "Add a member")} onClose={onClose}>
-      <form onSubmit={submit} data-testid="add-member">
+      <form onSubmit={submit} noValidate data-testid="add-member">
         {!advanced ? (
           <>
             <p>
@@ -127,18 +158,31 @@ export function AddMember({
                 onChange={(e) => {
                   setPicked(null);
                   setQ(e.target.value);
+                  fp.typed("q");
                 }}
                 placeholder={tr("korisničko ime…", "username…")}
                 autoComplete="off"
                 autoFocus
+                {...fp.aria("q")}
               />
+              {fp.hint("q")}
               {!picked && found ? (
                 <div className="user-results" role="listbox" data-testid="user-results">
                   {found.length === 0 ? (
-                    <div className="faint small">{tr("Nema naloga sa tim imenom.", "No account by that name.")}</div>
+                    fp.problem ? null : <div className="faint small">{tr("Nema naloga sa tim imenom.", "No account by that name.")}</div>
                   ) : (
                     found.map((u) => (
-                      <button type="button" role="option" aria-selected={false} key={u.username} className="ctx-item" onClick={() => setPicked(u)}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={false}
+                        key={u.username}
+                        className="ctx-item"
+                        onClick={() => {
+                          setPicked(u);
+                          fp.clear();
+                        }}
+                      >
                         <span className="avatar sm">{u.username.slice(0, 1).toUpperCase()}</span>
                         <b>{u.username}</b>
                         {u.display_name ? <span className="muted">{u.display_name}</span> : null}
@@ -162,7 +206,19 @@ export function AddMember({
             </p>
             <div className="field">
               <label htmlFor="new-name">{tr("Ime", "Name")}</label>
-              <input id="new-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={tr("npr. marko-laptop", "e.g. marko-laptop")} autoFocus />
+              <input
+                id="new-name"
+                className="input"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  fp.typed("name");
+                }}
+                placeholder={tr("npr. marko-laptop", "e.g. marko-laptop")}
+                autoFocus
+                {...fp.aria("name")}
+              />
+              {fp.hint("name")}
               <span className="hint">{tr("Slova, brojevi, tačka, crtica i donja crta.", "Letters, digits, dot, dash and underscore.")}</span>
             </div>
           </>
@@ -176,6 +232,7 @@ export function AddMember({
           onToggle={(e) => {
             setAdvanced((e.target as HTMLDetailsElement).open);
             setError(null);
+            fp.clear();
           }}
         >
           <summary>{tr("Napredno: član sa tokenom (bez naloga)", "Advanced: a member with a token (no account)")}</summary>
@@ -189,8 +246,14 @@ export function AddMember({
           <button type="button" className="btn" onClick={onClose}>
             {tr("Otkaži", "Cancel")}
           </button>
-          <button className="btn primary" disabled={busy || (advanced ? !name.trim() : !picked)} data-testid="add-member-submit">
-            {advanced ? tr("Napravi token", "Create a token") : tr("Dodaj", "Add")}
+          <button className="btn primary" disabled={busy} data-testid="add-member-submit">
+            {advanced
+              ? busy
+                ? tr("Pravim…", "Creating…")
+                : tr("Napravi token", "Create a token")
+              : busy
+                ? tr("Dodajem…", "Adding…")
+                : tr("Dodaj", "Add")}
           </button>
         </div>
       </form>

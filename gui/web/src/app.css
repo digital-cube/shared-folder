@@ -117,6 +117,14 @@
 .preview-audio audio { flex: 1; min-width: 0; }
 .hint.err-hint { color: var(--g-err); }
 
+/* ---------- forms: a disabled button looks disabled, a wrong field is red (docs/gui.md, "Pravila za klik i forme") ---------- */
+.btn:disabled, .btn:disabled:hover { opacity: .5; cursor: default; filter: none; }
+.btn:not(.primary):disabled:hover { background: var(--g-bg); }
+.btn.primary:disabled:hover { background: var(--g-brand); }
+.btn.ghost:disabled:hover { background: transparent; color: var(--g-muted); }
+.input[aria-invalid="true"] { border-color: var(--g-err); }
+.input[aria-invalid="true"]:focus { outline-color: var(--g-err-soft); border-color: var(--g-err); }
+
 /* ---------- language and theme (Prefs.tsx) ---------- */
 .prefs { display: flex; align-items: center; gap: 4px; }
 .lang-switch { display: inline-flex; padding: 2px; border: 1px solid var(--g-line); border-radius: 8px; background: var(--g-bg-soft); }

@@ -5,6 +5,8 @@ import { changePassword, removeAvatar, revokeDevice, setMyEmail, uploadAvatar, t
 import { Avatar } from "../Avatar";
 import { useAccount, useSession } from "../App";
 import { Confirm } from "../dialogs";
+import { useFieldProblem } from "../fieldProblem";
+import { emailProblem, type FieldProblem } from "../forms";
 import { ago, stamp } from "../format";
 import { useTr } from "../i18n";
 import { tr as trNow } from "../lang";
@@ -22,18 +24,31 @@ export function rulesHint(r: PasswordRules | undefined): string {
 }
 
 /**
- * What is wrong with a new password before it is sent, by the server's
- * rules; null when nothing is. The server checks again (and has the last word).
+ * What is wrong with the password form before it is sent, and in which
+ * field, by the server's rules; null when nothing is. `forced` is the screen
+ * of a required change, where the old password is the temporary one. The
+ * server checks again (and has the last word).
  */
-export function passwordProblem(username: string, oldPw: string, newPw: string, repeat: string, r?: PasswordRules): string | null {
+export function passwordProblem(
+  username: string,
+  oldPw: string,
+  newPw: string,
+  repeat: string,
+  r?: PasswordRules,
+  forced = false,
+): FieldProblem<"old" | "new" | "repeat"> {
+  const bad = (field: "old" | "new" | "repeat", text: string) => ({ field, text });
+  if (!oldPw) return bad("old", forced ? trNow("Upiši privremenu lozinku.", "Enter the temporary password.") : trNow("Upiši staru lozinku.", "Enter the old password."));
+  if (!newPw) return bad("new", trNow("Upiši novu lozinku.", "Enter the new password."));
   const n = [...newPw].length;
   const min = r?.min_len ?? 12;
-  if (n < min) return trNow(`Nova lozinka mora imati bar ${min} znakova.`, `The new password must have at least ${min} characters.`);
-  if (r?.max_len && n > r.max_len) return trNow(`Nova lozinka može imati najviše ${r.max_len} znakova.`, `The new password may have at most ${r.max_len} characters.`);
+  if (n < min) return bad("new", trNow(`Nova lozinka mora imati bar ${min} znakova.`, `The new password must have at least ${min} characters.`));
+  if (r?.max_len && n > r.max_len) return bad("new", trNow(`Nova lozinka može imati najviše ${r.max_len} znakova.`, `The new password may have at most ${r.max_len} characters.`));
   if ((r?.not_username ?? true) && newPw.toLowerCase() === username.toLowerCase())
-    return trNow("Lozinka ne sme biti isto što i korisničko ime.", "The password may not be the username.");
-  if (newPw === oldPw) return trNow("Nova lozinka mora da se razlikuje od stare.", "The new password must differ from the old one.");
-  if (newPw !== repeat) return trNow("Ponovljena lozinka nije ista.", "The repeated password does not match.");
+    return bad("new", trNow("Lozinka ne sme biti isto što i korisničko ime.", "The password may not be the username."));
+  if (newPw === oldPw) return bad("new", trNow("Nova lozinka mora da se razlikuje od stare.", "The new password must differ from the old one."));
+  if (!repeat) return bad("repeat", trNow("Ponovi novu lozinku.", "Repeat the new password."));
+  if (newPw !== repeat) return bad("repeat", trNow("Ponovljena lozinka nije ista.", "The repeated password does not match."));
   return null;
 }
 
@@ -54,15 +69,19 @@ function PasswordForm({ forced, onDone }: { forced?: boolean; onDone?: () => voi
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const qc = useQueryClient();
+  const fp = useFieldProblem({ old: "pw-old", new: "pw-new", repeat: "pw-repeat" });
 
   return (
     <form
       className="pw-form"
       data-testid="password-form"
+      noValidate
       onSubmit={async (e) => {
         e.preventDefault();
-        const problem = passwordProblem(me.username, oldPw, newPw, repeat, rules);
-        if (problem) return setError(problem);
+        if (busy) return;
+        setDone(false);
+        setError(null);
+        if (fp.check(passwordProblem(me.username, oldPw, newPw, repeat, rules, forced))) return;
         setBusy(true);
         setError(null);
         const r = await changePassword(oldPw, newPw);
@@ -80,16 +99,53 @@ function PasswordForm({ forced, onDone }: { forced?: boolean; onDone?: () => voi
       <input type="text" name="username" autoComplete="username" value={me.username} readOnly hidden />
       <div className="field">
         <label htmlFor="pw-old">{forced ? tr("Privremena lozinka", "Temporary password") : tr("Stara lozinka", "Old password")}</label>
-        <input id="pw-old" className="input" type="password" autoComplete="current-password" value={oldPw} onChange={(e) => setOld(e.target.value)} autoFocus={forced} />
+        <input
+          id="pw-old"
+          className="input"
+          type="password"
+          autoComplete="current-password"
+          value={oldPw}
+          onChange={(e) => {
+            setOld(e.target.value);
+            fp.typed("old");
+          }}
+          autoFocus={forced}
+          {...fp.aria("old")}
+        />
+        {fp.hint("old")}
       </div>
       <div className="field">
         <label htmlFor="pw-new">{tr("Nova lozinka", "New password")}</label>
-        <input id="pw-new" className="input" type="password" autoComplete="new-password" value={newPw} onChange={(e) => setNew(e.target.value)} />
+        <input
+          id="pw-new"
+          className="input"
+          type="password"
+          autoComplete="new-password"
+          value={newPw}
+          onChange={(e) => {
+            setNew(e.target.value);
+            fp.typed("new");
+          }}
+          {...fp.aria("new")}
+        />
+        {fp.hint("new")}
         <span className="hint">{rulesHint(rules)}</span>
       </div>
       <div className="field">
         <label htmlFor="pw-repeat">{tr("Ponovi novu lozinku", "Repeat the new password")}</label>
-        <input id="pw-repeat" className="input" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} />
+        <input
+          id="pw-repeat"
+          className="input"
+          type="password"
+          autoComplete="new-password"
+          value={repeat}
+          onChange={(e) => {
+            setRepeat(e.target.value);
+            fp.typed("repeat");
+          }}
+          {...fp.aria("repeat")}
+        />
+        {fp.hint("repeat")}
       </div>
       {error ? (
         <div className="err-text" role="alert">
@@ -101,7 +157,7 @@ function PasswordForm({ forced, onDone }: { forced?: boolean; onDone?: () => voi
           {tr("Lozinka je promenjena.", "The password was changed.")}
         </div>
       ) : null}
-      <button className={`btn primary ${forced ? "block" : ""}`} disabled={busy || !oldPw || !newPw || !repeat}>
+      <button className={`btn primary ${forced ? "block" : ""}`} disabled={busy}>
         {busy ? tr("Menjam…", "Changing…") : tr("Promeni lozinku", "Change the password")}
       </button>
     </form>
@@ -120,13 +176,21 @@ function EmailForm({ current }: { current: string }) {
   const [busy, setBusy] = useState(false);
   const value = email ?? current;
   const changed = value.trim().toLowerCase() !== current;
+  const fp = useFieldProblem({ addr: "email-addr", pw: "email-pw" });
 
   return (
     <form
       className="pw-form"
       data-testid="email-form"
+      noValidate
       onSubmit={async (e) => {
         e.preventDefault();
+        if (busy) return;
+        if (fp.check(emailProblem(current, value, pw))) {
+          setError(null);
+          setDone(null);
+          return;
+        }
         setBusy(true);
         setError(null);
         setDone(null);
@@ -149,8 +213,14 @@ function EmailForm({ current }: { current: string }) {
           autoComplete="email"
           placeholder={tr("nema", "none")}
           value={value}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            // The password's message depends on the address (add, change, remove), so any typing here takes both away.
+            fp.clear();
+          }}
+          {...fp.aria("addr")}
         />
+        {fp.hint("addr")}
         <span className="hint">
           {tr(
             "Na nju stiže link kad zaboraviš lozinku. Prazno polje uklanja adresu.",
@@ -161,7 +231,20 @@ function EmailForm({ current }: { current: string }) {
       {changed ? (
         <div className="field">
           <label htmlFor="email-pw">{tr("Tvoja lozinka", "Your password")}</label>
-          <input id="email-pw" className="input" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} />
+          <input
+            id="email-pw"
+            className="input"
+            type="password"
+            autoComplete="current-password"
+            value={pw}
+            onChange={(e) => {
+              setPw(e.target.value);
+              fp.typed("pw");
+            }}
+            {...fp.aria("pw")}
+          />
+          {fp.hint("pw")}
+          <span className="hint">{tr("Promenu adrese potvrđuješ lozinkom naloga.", "You confirm the change with your account password.")}</span>
         </div>
       ) : null}
       {error ? (
@@ -174,7 +257,7 @@ function EmailForm({ current }: { current: string }) {
           {done}
         </div>
       ) : null}
-      <button className="btn primary" disabled={busy || !changed || !pw}>
+      <button className="btn primary" disabled={busy}>
         {busy ? tr("Čuvam…", "Saving…") : tr("Sačuvaj email", "Save the email")}
       </button>
     </form>

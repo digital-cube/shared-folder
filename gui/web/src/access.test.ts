@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allowedPages, autoFolder, defaultPage, pageFor, rememberedFolder, rememberFolder } from "./access";
+import { setLang } from "./lang";
 import { kindLabel, passwordProblem, rulesHint } from "./pages/Account";
 
 const admin = { kind: "account" as const, role: "admin", share_id: "s1" };
@@ -61,14 +62,27 @@ describe("the folder choice", () => {
 
 describe("the password form", () => {
   const rules = { min_len: 12, max_len: 256, not_username: true, differ_from_old: true };
-  it("checks the server's rules before sending", () => {
-    expect(passwordProblem("ana", "stara-lozinka", "kratka", "kratka", rules)).toBe("Nova lozinka mora imati bar 12 znakova.");
-    expect(passwordProblem("ana-marija-x", "stara", "Ana-Marija-X", "Ana-Marija-X", rules)).toMatch(/korisničko ime/);
-    expect(passwordProblem("ana", "ista-lozinka-1", "ista-lozinka-1", "ista-lozinka-1", rules)).toMatch(/razlikuje od stare/);
-    expect(passwordProblem("ana", "stara", "nova-dugacka-lozinka", "nova-dugacka-lozinkA", rules)).toBe("Ponovljena lozinka nije ista.");
+  it("checks the server's rules before sending, and says which field", () => {
+    expect(passwordProblem("ana", "stara-lozinka", "kratka", "kratka", rules)).toEqual({ field: "new", text: "Nova lozinka mora imati bar 12 znakova." });
+    expect(passwordProblem("ana-marija-x", "stara", "Ana-Marija-X", "Ana-Marija-X", rules)?.text).toMatch(/korisničko ime/);
+    expect(passwordProblem("ana", "ista-lozinka-1", "ista-lozinka-1", "ista-lozinka-1", rules)?.text).toMatch(/razlikuje od stare/);
+    expect(passwordProblem("ana", "stara", "nova-dugacka-lozinka", "nova-dugacka-lozinkA", rules)).toEqual({ field: "repeat", text: "Ponovljena lozinka nije ista." });
     expect(passwordProblem("ana", "stara", "nova-dugacka-lozinka", "nova-dugacka-lozinka", rules)).toBeNull();
     // Characters, not bytes: 12 letters with diacritics are enough.
     expect(passwordProblem("ana", "stara", "čćžšđčćžšđčć", "čćžšđčćžšđčć", rules)).toBeNull();
+  });
+
+  it("says which field is empty, in order, instead of a dead button", () => {
+    expect(passwordProblem("ana", "", "", "", rules)).toEqual({ field: "old", text: "Upiši staru lozinku." });
+    expect(passwordProblem("ana", "", "", "", rules, true)).toEqual({ field: "old", text: "Upiši privremenu lozinku." });
+    expect(passwordProblem("ana", "stara", "", "", rules)).toEqual({ field: "new", text: "Upiši novu lozinku." });
+    // The rules of the new password come before the empty repeat.
+    expect(passwordProblem("ana", "stara", "kratka", "", rules)?.field).toBe("new");
+    expect(passwordProblem("ana", "stara", "nova-dugacka-lozinka", "", rules)).toEqual({ field: "repeat", text: "Ponovi novu lozinku." });
+    setLang("en");
+    expect(passwordProblem("ana", "", "", "", rules, true)).toEqual({ field: "old", text: "Enter the temporary password." });
+    expect(passwordProblem("ana", "stara", "nova-dugacka-lozinka", "", rules)).toEqual({ field: "repeat", text: "Repeat the new password." });
+    setLang("sr");
   });
 
   it("says the rules and the kinds of devices", () => {

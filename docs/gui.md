@@ -413,6 +413,30 @@ i svetao. Skripta u `index.html` postavlja temu i `lang` pre prvog crtanja.
   GUI-ja su promenljive `--g-*` u `proto.css`, sa tamnim vrednostima pod
   `.dark`, a površine prate tamne boje jsudc tabela.
 
+### Pravila za klik i forme
+
+Važe za ceo GUI; nova forma ih poštuje od početka.
+
+1. **Svaki klik ima vidljiv ishod**: akciju ili poruku šta fali. Nema
+   „mrtvog" dugmeta.
+2. Dugme za slanje forme se **ne gasi** zbog praznog ili neispravnog polja.
+   Provera ide na klik i na Enter (`onSubmit`); poruka stoji uz polje
+   (`.hint.err-hint`, `role="alert"`, polje dobija `aria-invalid` i
+   `aria-describedby`), fokus prelazi na prvo polje sa greškom, a poruka
+   nestaje kad korisnik počne da kuca u tom polju. Greške servera ostaju
+   ispod forme (`.err-text`).
+3. `disabled` ostaje **samo dok zahtev traje** (`busy`), uz tekst tipa
+   „Čuvam…"; `.btn:disabled` (`app.css`) je bleđe, bez ruke i bez hover
+   efekta, u obe teme.
+4. Poruke su na jeziku GUI-ja (`tr`). Forme imaju `noValidate`, da browser
+   ne iskače svojim balonom (npr. na `type="email"`) na svom jeziku.
+
+Provere su čiste funkcije koje vraćaju `{ field, text } | null`
+(`web/src/forms.ts`, `passwordProblem` u `pages/Account.tsx`, `resetProblem`
+u `reset.ts`) i imaju vitest testove; komponenta ih prikazuje kroz
+`useFieldProblem` (`web/src/fieldProblem.tsx`: `check` na submit, `typed` u
+`onChange`, `aria` i `hint` na polju).
+
 ### Odstupanja od specifikacije
 
 - `member revoke` (CLI i API) sada odbija poslednjeg aktivnog admina

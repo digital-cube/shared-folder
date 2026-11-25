@@ -2,6 +2,7 @@
 // form that asks for a link) and #reset?token=… (where the mailed link
 // leads). Pure helpers; the pages are in pages/Reset.tsx.
 
+import type { FieldProblem } from "./forms";
 import { tr } from "./lang";
 
 export type AuthPage = "forgot" | "reset";
@@ -23,13 +24,15 @@ export function resetToken(hash: string): string {
 export const MIN_PASSWORD = 12;
 
 /**
- * What is wrong with a new password of the reset page before it is sent;
- * null when nothing is. The page does not know the username, so that rule
- * (and the rest) is the server's to check.
+ * What is wrong with a new password of the reset page before it is sent,
+ * and in which field; null when nothing is. The page does not know the
+ * username, so that rule (and the rest) is the server's to check.
  */
-export function resetProblem(pw: string, repeat: string, min = MIN_PASSWORD): string | null {
-  if ([...pw].length < min) return tr(`Nova lozinka mora imati bar ${min} znakova.`, `The new password must have at least ${min} characters.`);
-  if (pw !== repeat) return tr("Ponovljena lozinka nije ista.", "The repeated password does not match.");
+export function resetProblem(pw: string, repeat: string, min = MIN_PASSWORD): FieldProblem<"pw" | "repeat"> {
+  if (!pw) return { field: "pw", text: tr("Upiši novu lozinku.", "Enter the new password.") };
+  if ([...pw].length < min) return { field: "pw", text: tr(`Nova lozinka mora imati bar ${min} znakova.`, `The new password must have at least ${min} characters.`) };
+  if (!repeat) return { field: "repeat", text: tr("Ponovi novu lozinku.", "Repeat the new password.") };
+  if (pw !== repeat) return { field: "repeat", text: tr("Ponovljena lozinka nije ista.", "The repeated password does not match.") };
   return null;
 }
 

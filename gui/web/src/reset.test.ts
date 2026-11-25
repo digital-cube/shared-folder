@@ -20,13 +20,16 @@ describe("the pages of a forgotten password", () => {
   });
 
   it("checks the new password twice before it goes out", () => {
-    expect(resetProblem("kratka", "kratka")).toBe("Nova lozinka mora imati bar 12 znakova.");
-    expect(resetProblem("dovoljno-duga-1", "dovoljno-duga-2")).toBe("Ponovljena lozinka nije ista.");
+    expect(resetProblem("", "")).toEqual({ field: "pw", text: "Upiši novu lozinku." });
+    expect(resetProblem("kratka", "kratka")).toEqual({ field: "pw", text: "Nova lozinka mora imati bar 12 znakova." });
+    expect(resetProblem("dovoljno-duga-1", "")).toEqual({ field: "repeat", text: "Ponovi novu lozinku." });
+    expect(resetProblem("dovoljno-duga-1", "dovoljno-duga-2")).toEqual({ field: "repeat", text: "Ponovljena lozinka nije ista." });
     expect(resetProblem("dovoljno-duga-1", "dovoljno-duga-1")).toBeNull();
     // Characters, not bytes: 12 letters with diacritics are enough.
     expect(resetProblem("čćžšđčćžšđčć", "čćžšđčćžšđčć")).toBeNull();
     setLang("en");
-    expect(resetProblem("short", "short")).toBe("The new password must have at least 12 characters.");
+    expect(resetProblem("short", "short")?.text).toBe("The new password must have at least 12 characters.");
+    expect(resetProblem("", "")?.text).toBe("Enter the new password.");
     expect(resetDoneNote("ana")).toBe("The password of ana was changed. Sign in with the new password.");
   });
 });

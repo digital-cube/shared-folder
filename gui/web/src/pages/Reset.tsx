@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { forgotPassword, resetPassword } from "../api";
+import { useFieldProblem } from "../fieldProblem";
+import { forgotProblem } from "../forms";
 import { useTr } from "../i18n";
 import { ArrowLeft, Folder } from "../icons";
 import { Prefs } from "../Prefs";
@@ -50,6 +52,7 @@ export function ForgotPassword() {
   const [sent, setSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const fp = useFieldProblem({ login: "forgot-login" });
 
   if (sent) {
     return (
@@ -65,9 +68,11 @@ export function ForgotPassword() {
   return (
     <Card testid="forgot-form">
       <form
+        noValidate
         onSubmit={async (e) => {
           e.preventDefault();
-          if (!login.trim()) return;
+          if (busy) return;
+          if (fp.check(forgotProblem(login))) return setError(null);
           setBusy(true);
           setError(null);
           const r = await forgotPassword(login.trim());
@@ -92,16 +97,21 @@ export function ForgotPassword() {
             autoCapitalize="none"
             spellCheck={false}
             value={login}
-            onChange={(e) => setLogin(e.target.value)}
+            onChange={(e) => {
+              setLogin(e.target.value);
+              fp.typed("login");
+            }}
             autoFocus
+            {...fp.aria("login")}
           />
+          {fp.hint("login")}
         </div>
         {error ? (
           <div className="err-text" role="alert">
             {error}
           </div>
         ) : null}
-        <button className="btn primary block" disabled={busy || !login.trim()}>
+        <button className="btn primary block" disabled={busy}>
           {busy ? tr("Šaljem…", "Sending…") : tr("Pošalji link", "Send the link")}
         </button>
       </form>
@@ -120,6 +130,7 @@ export function ResetPassword({ token, onDone }: { token: string; onDone: (usern
   const [repeat, setRepeat] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const fp = useFieldProblem({ pw: "reset-new", repeat: "reset-repeat" });
 
   if (!token) {
     return (
@@ -137,10 +148,11 @@ export function ResetPassword({ token, onDone }: { token: string; onDone: (usern
   return (
     <Card testid="reset-form">
       <form
+        noValidate
         onSubmit={async (e) => {
           e.preventDefault();
-          const problem = resetProblem(pw, repeat);
-          if (problem) return setError(problem);
+          if (busy) return;
+          if (fp.check(resetProblem(pw, repeat))) return setError(null);
           setBusy(true);
           setError(null);
           const r = await resetPassword(token, pw);
@@ -160,14 +172,39 @@ export function ResetPassword({ token, onDone }: { token: string; onDone: (usern
         </p>
         <div className="field">
           <label htmlFor="reset-new">{tr("Nova lozinka", "New password")}</label>
-          <input id="reset-new" className="input" type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} autoFocus />
+          <input
+            id="reset-new"
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={pw}
+            onChange={(e) => {
+              setPw(e.target.value);
+              fp.typed("pw");
+            }}
+            autoFocus
+            {...fp.aria("pw")}
+          />
+          {fp.hint("pw")}
           <span className="hint">
             {tr(`Najmanje ${MIN_PASSWORD} znakova; ne sme biti korisničko ime.`, `At least ${MIN_PASSWORD} characters; not the username.`)}
           </span>
         </div>
         <div className="field">
           <label htmlFor="reset-repeat">{tr("Ponovi novu lozinku", "Repeat the new password")}</label>
-          <input id="reset-repeat" className="input" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} />
+          <input
+            id="reset-repeat"
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={repeat}
+            onChange={(e) => {
+              setRepeat(e.target.value);
+              fp.typed("repeat");
+            }}
+            {...fp.aria("repeat")}
+          />
+          {fp.hint("repeat")}
         </div>
         {error ? (
           <div className="err-text" role="alert">
@@ -180,7 +217,7 @@ export function ResetPassword({ token, onDone }: { token: string; onDone: (usern
             ) : null}
           </div>
         ) : null}
-        <button className="btn primary block" disabled={busy || !pw || !repeat}>
+        <button className="btn primary block" disabled={busy}>
           {busy ? tr("Menjam…", "Changing…") : tr("Postavi novu lozinku", "Set the new password")}
         </button>
       </form>

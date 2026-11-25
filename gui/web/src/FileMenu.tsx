@@ -25,9 +25,9 @@ import {
   type ReactNode,
 } from "react";
 import { removeFile, renameFile } from "../../shared/actions";
-import { renameTarget } from "../../shared/rename";
-import { getLang } from "./lang";
 import { Modal } from "./dialogs";
+import { useFieldProblem } from "./fieldProblem";
+import { renameProblem } from "./forms";
 import { FileMeta, FilePreview, PreviewContext } from "./FilePreview";
 import { useTr } from "./i18n";
 import { menuItems, placeMenu, stemRange, type MenuAction, type MenuItem } from "./filemenu";
@@ -315,9 +315,7 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
     // Only when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const target = renameTarget(path, name, getLang());
-  const invalid = typeof target === "string" ? null : target.error;
-  const same = target === path;
+  const fp = useFieldProblem({ name: "rename-name" });
   return (
     <Modal title={tr("Preimenuj", "Rename")} onClose={onClose}>
       <p>
@@ -327,9 +325,10 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
         )}
       </p>
       <form
+        noValidate
         onSubmit={async (e) => {
           e.preventDefault();
-          if (invalid || same || busy) return;
+          if (busy || fp.check(renameProblem(path, name))) return;
           setBusy(true);
           await act(() => client.call(renameFile, { path, name: name.trim(), base_hash: str(row.hash_full) }), onClose, setError);
           setBusy(false);
@@ -345,12 +344,14 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
             onChange={(e) => {
               setName(e.target.value);
               setError(null);
+              fp.typed("name");
             }}
             autoFocus
             spellCheck={false}
             data-testid="rename-input"
+            {...fp.aria("name")}
           />
-          {invalid && name !== "" ? <span className="hint err-hint">{invalid}</span> : null}
+          {fp.hint("name")}
         </div>
         {error ? (
           <div className="err-text" style={{ marginTop: 10 }} role="alert">
@@ -361,8 +362,8 @@ function RenameDialog({ row, onClose }: { row: Row; onClose: () => void }) {
           <button type="button" className="btn" onClick={onClose}>
             {tr("Otkaži", "Cancel")}
           </button>
-          <button className="btn primary" disabled={busy || !!invalid || same} data-testid="rename-save">
-            {tr("Preimenuj", "Rename")}
+          <button className="btn primary" disabled={busy} data-testid="rename-save">
+            {busy ? tr("Preimenujem…", "Renaming…") : tr("Preimenuj", "Rename")}
           </button>
         </div>
       </form>
