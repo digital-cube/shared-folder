@@ -196,7 +196,8 @@ ispod, ostala je kao skrivena opcija.
   Mreže (i taster menija / Shift+F10 na fokusiranom imenu ili pločici)
   otvara meni kod pokazivača. Fajl: **Informacije** (ime, tip, putanja,
   veličina i u bajtovima, izmenjen, poslao, seq, ceo hash), **Prikaži**
-  (pregled iznad; sivo za tip bez pregleda), **Preuzmi**, **Preimenuj** i
+  (pregled iznad; za tip bez pregleda isti dijalog kao klik na ime:
+  podaci i Preuzmi), **Preuzmi**, **Preimenuj** i
   **Obriši**. Folder: **Otvori**, **Informacije** i **Obriši** (samo prazan
   folder; shfd folder ne preimenuje). `..` nema meni. Strelice, Home/End,
   Enter i Esc rade u meniju.
@@ -430,6 +431,18 @@ Važe za ceo GUI; nova forma ih poštuje od početka.
    efekta, u obe teme.
 4. Poruke su na jeziku GUI-ja (`tr`). Forme imaju `noValidate`, da browser
    ne iskače svojim balonom (npr. na `type="email"`) na svom jeziku.
+5. **Stanje nije dugme.** Šta je već izabrano kaže bedž ili kvačica; dugme
+   u tom redu nešto radi (u Mojim folderima, za otvoren folder, „Prikaži"
+   vodi na njegovu početnu stranu). Stavka menija se ne gasi: „Prikaži" za
+   fajl bez pregleda otvara isti dijalog kao klik na ime (podaci i
+   Preuzmi).
+6. Dugme čiji zahtev traje **piše šta radi** („Otvaram…", „Brišem…",
+   „Uklanjam…"); u tabeli to piše dugme u redu na koji se odnosi
+   („Opozivam…"), ne samo baner na vrhu strane.
+7. **Kopiranje** ide kroz `copyText` (`web/src/clipboard.ts`), koja vraća
+   da li je uspelo; neuspeh (stranica preko http, odbijena dozvola) se vidi:
+   na Instalaciji se komanda označi i dugme piše „Označeno, pritisni
+   Ctrl+C" (⌘C na macOS-u), na Članovima poruka.
 
 Provere su čiste funkcije koje vraćaju `{ field, text } | null`
 (`web/src/forms.ts`, `passwordProblem` u `pages/Account.tsx`, `resetProblem`

@@ -30,7 +30,7 @@ import { useFieldProblem } from "./fieldProblem";
 import { renameProblem } from "./forms";
 import { FileMeta, FilePreview, PreviewContext } from "./FilePreview";
 import { useTr } from "./i18n";
-import { menuItems, placeMenu, stemRange, type MenuAction, type MenuItem } from "./filemenu";
+import { menuItems, placeMenu, stemRange, type MenuAction } from "./filemenu";
 import { Download, Eye, FolderOpen, Info, Pencil, Trash2 } from "./icons";
 import { messageOf } from "./pages/Members";
 import { contentUrl } from "./preview";
@@ -151,9 +151,9 @@ function ContextMenu({ state, canEdit, onChoose, onClose }: { state: OpenMenuSta
     const r = el.getBoundingClientRect();
     setPos({ ...placeMenu(state.x, state.y, r.width, r.height, window.innerWidth, window.innerHeight), ready: true });
   }, [state.x, state.y]);
-  // Once visible (a hidden element takes no focus), the first enabled item gets the focus.
+  // Once visible (a hidden element takes no focus), the first item gets the focus.
   useEffect(() => {
-    if (pos.ready) ref.current?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')?.focus({ preventScroll: true });
+    if (pos.ready) ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
   }, [pos.ready]);
 
   // Anything else (a click elsewhere, a scroll, a resize, leaving the window) closes it.
@@ -186,7 +186,7 @@ function ContextMenu({ state, canEdit, onChoose, onClose }: { state: OpenMenuSta
   }, [onClose]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
-    const all = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') ?? []);
+    const all = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
     const i = all.indexOf(document.activeElement as HTMLElement);
     const go = (n: number) => all[(n + all.length) % all.length]?.focus();
     if (e.key === "ArrowDown") go(i + 1);
@@ -199,9 +199,6 @@ function ContextMenu({ state, canEdit, onChoose, onClose }: { state: OpenMenuSta
     e.stopPropagation();
   };
 
-  const run = (it: MenuItem) => {
-    if (!it.disabled) onChoose(it.action);
-  };
   return (
     <div
       ref={ref}
@@ -225,11 +222,10 @@ function ContextMenu({ state, canEdit, onChoose, onClose }: { state: OpenMenuSta
               type="button"
               role="menuitem"
               className={`ctx-item${it.danger ? " danger" : ""}`}
-              aria-disabled={it.disabled || undefined}
               title={it.hint}
               data-testid={`file-menu-${it.action}`}
               tabIndex={-1}
-              onClick={() => run(it)}
+              onClick={() => onChoose(it.action)}
             >
               <Icon size={15} />
               <span>{it.label}</span>
@@ -253,7 +249,6 @@ function InfoDialog({ row, onClose, onView }: { row: Row; onClose: () => void; o
   useEscape(onClose);
   const tr = useTr();
   const file = row.kind === "file";
-  const viewable = menuItems(row).some((i) => i.action === "view" && !i.disabled);
   return (
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal file-info" role="dialog" aria-label={`${tr("Informacije", "Info")}: ${str(row.name)}`} data-testid="file-info">
@@ -263,7 +258,7 @@ function InfoDialog({ row, onClose, onView }: { row: Row; onClose: () => void; o
         </div>
         <FileMeta row={row} full />
         <div className="row">
-          {viewable ? (
+          {file ? (
             <button className="btn" onClick={onView}>
               <Eye size={14} /> {tr("Prikaži", "View")}
             </button>
@@ -423,7 +418,7 @@ function RemoveDialog({ row, onClose }: { row: Row; onClose: () => void }) {
             setBusy(false);
           }}
         >
-          <Trash2 size={14} /> {tr("Obriši", "Delete")}
+          <Trash2 size={14} /> {busy ? tr("Brišem…", "Deleting…") : tr("Obriši", "Delete")}
         </button>
       </div>
     </Modal>

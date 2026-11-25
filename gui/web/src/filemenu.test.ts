@@ -6,7 +6,7 @@ import { setLang } from "./lang";
 afterEach(() => setLang("sr"));
 
 const row = (name: string, kind = "file") => ({ __meta: { id: name }, name, kind, path: name }) as unknown as Row;
-const actions = (r: Row) => menuItems(r).map((i) => `${i.action}${i.disabled ? "(off)" : ""}`);
+const actions = (r: Row) => menuItems(r).map((i) => i.action);
 
 describe("menuItems", () => {
   it("a file: info, view, download, rename, remove", () => {
@@ -14,9 +14,9 @@ describe("menuItems", () => {
     expect(actions(row("film.mp4"))).toEqual(["info", "view", "download", "rename", "remove"]);
     expect(actions(row("pesma.mp3"))).toEqual(["info", "view", "download", "rename", "remove"]);
   });
-  it("a file with no preview has Prikaži off, with the reason", () => {
-    expect(actions(row("noi.html"))).toEqual(["info", "view(off)", "download", "rename", "remove"]);
-    expect(menuItems(row("peca-gaga-mare")).find((i) => i.action === "view")?.hint).toMatch(/nema pregleda/);
+  it("a file with no preview still has Prikaži: it opens the data and Preuzmi", () => {
+    expect(actions(row("noi.html"))).toEqual(["info", "view", "download", "rename", "remove"]);
+    expect(actions(row("peca-gaga-mare"))).toEqual(["info", "view", "download", "rename", "remove"]);
   });
   it("a folder: open, info, remove; .. has no menu", () => {
     expect(actions(row("123", "dir"))).toEqual(["open", "info", "remove"]);

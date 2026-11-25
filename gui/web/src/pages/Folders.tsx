@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useAccount, useSession } from "../App";
+import { defaultPage } from "../access";
+import { useAccount, usePage, useSession } from "../App";
 import { ago, stamp } from "../format";
 import { useTr } from "../i18n";
 import { FolderOpen } from "../icons";
@@ -10,6 +11,7 @@ export function Folders() {
   const tr = useTr();
   const { me, openFolder } = useSession();
   const account = useAccount();
+  const [, go] = usePage();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const folders = account.data?.folders ?? [];
@@ -83,9 +85,16 @@ export function Folders() {
                     </td>
                     <td title={stamp(f.last_change_at)}>{f.last_change_at ? ago(f.last_change_at) : tr("bez promena", "no changes")}</td>
                     <td className="right">
-                      <button className="btn sm primary" disabled={busy !== null || current} onClick={() => void open(f.share_id)} data-testid={`open-${f.name}`}>
-                        {current ? tr("Otvoren", "Open") : tr("Otvori", "Open")}
-                      </button>
+                      {current ? (
+                        // Already open (the badge says so): the click goes to its first page.
+                        <button className="btn sm" onClick={() => go(defaultPage(me))} data-testid={`show-${f.name}`}>
+                          {tr("Prikaži", "Show")}
+                        </button>
+                      ) : (
+                        <button className="btn sm primary" disabled={busy !== null} onClick={() => void open(f.share_id)} data-testid={`open-${f.name}`}>
+                          {busy === f.share_id ? tr("Otvaram…", "Opening…") : tr("Otvori", "Open")}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

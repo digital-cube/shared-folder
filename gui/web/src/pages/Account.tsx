@@ -373,7 +373,7 @@ export function AvatarForm({ username, displayName, current }: { username: strin
                 finish(await removeAvatar(), tr("Slika je uklonjena.", "The picture was removed."));
               }}
             >
-              {tr("Ukloni", "Remove")}
+              {busy ? tr("Uklanjam…", "Removing…") : tr("Ukloni", "Remove")}
             </button>
           ) : null}
         </div>
@@ -448,18 +448,25 @@ export function Account() {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState<Device | null>(null);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  // The device being revoked: its row says so until the answer is back.
+  const [revoking, setRevoking] = useState<number | null>(null);
   const devices = account.data?.devices ?? [];
   const user = account.data?.user;
 
   const revoke = async (d: Device) => {
+    setBanner(null);
+    setRevoking(d.id);
     const r = await revokeDevice(d.id);
     if (!r.ok) {
+      setRevoking(null);
       if (r.status === 401) return signedOut();
       return setBanner({ ok: false, text: r.error });
     }
     if (r.data.signed_out) return signedOut();
     setBanner({ ok: true, text: tr(`Uređaj ${d.name} je opozvan.`, `The device ${d.name} was revoked.`) });
-    void qc.invalidateQueries({ queryKey: ["account"] });
+    // The row keeps "Opozivam…" until the fresh list drops it.
+    await qc.invalidateQueries({ queryKey: ["account"] });
+    setRevoking(null);
   };
 
   return (
@@ -527,8 +534,8 @@ export function Account() {
                   </td>
                   <td title={stamp(d.last_seen_at)}>{ago(d.last_seen_at)}</td>
                   <td className="right">
-                    <button className="btn sm danger" onClick={() => setConfirm(d)} data-testid={`revoke-device-${d.id}`}>
-                      {tr("Opozovi", "Revoke")}
+                    <button className="btn sm danger" disabled={revoking === d.id} onClick={() => setConfirm(d)} data-testid={`revoke-device-${d.id}`}>
+                      {revoking === d.id ? tr("Opozivam…", "Revoking…") : tr("Opozovi", "Revoke")}
                     </button>
                   </td>
                 </tr>

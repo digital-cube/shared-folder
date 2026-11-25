@@ -101,9 +101,6 @@
 .ctx-item:hover, .ctx-item:focus-visible, .ctx-item:focus { background: var(--g-bg-sunk); outline: none; }
 .ctx-item.danger, .ctx-item.danger svg { color: var(--g-err); }
 .ctx-item.danger:hover, .ctx-item.danger:focus { background: var(--g-err-soft); }
-.ctx-item[aria-disabled="true"] { color: var(--g-faint); cursor: default; }
-.ctx-item[aria-disabled="true"] svg { color: var(--g-faint); }
-.ctx-item[aria-disabled="true"]:hover { background: transparent; }
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--g-line); }
 .modal.file-info { width: min(480px, calc(100vw - 48px)); }
 .file-info-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; min-width: 0; }

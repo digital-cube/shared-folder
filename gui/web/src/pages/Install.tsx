@@ -1,5 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { BASE } from "../api";
+import { copyKeys, copyText, selectText } from "../clipboard";
 import { useAppMaybe } from "../App";
 import { detectMacArch, dirOf, formatSize, getDownloads, pick, type Downloads, type MacArch, type Package } from "../downloads";
 import { useTr } from "../i18n";
@@ -8,22 +9,33 @@ import { tr } from "../lang";
 import { detectOs, type Os } from "../os";
 import { Prefs } from "../Prefs";
 
+/**
+ * A command with Kopiraj. Without a clipboard (a page over http, a refusal)
+ * the click selects the command and the button says which keys copy it.
+ */
 function Code({ children }: { children: string }) {
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState<"copied" | "selected" | null>(null);
+  const text = useRef<HTMLSpanElement>(null);
   const tr = useTr();
+  const copy = async () => {
+    if (await copyText(children.replace(/\s+#.*$/gm, ""))) {
+      setDone("copied");
+      setTimeout(() => setDone(null), 1200);
+    } else {
+      selectText(text.current);
+      setDone("selected");
+      setTimeout(() => setDone(null), 4000);
+    }
+  };
   return (
     <pre>
-      {children}
-      <button
-        className="copy"
-        onClick={() =>
-          void navigator.clipboard?.writeText(children.replace(/\s+#.*$/gm, "")).then(() => {
-            setDone(true);
-            setTimeout(() => setDone(false), 1200);
-          })
-        }
-      >
-        {done ? tr("Kopirano", "Copied") : tr("Kopiraj", "Copy")}
+      <span ref={text}>{children}</span>
+      <button className="copy" onClick={() => void copy()}>
+        {done === "copied"
+          ? tr("Kopirano", "Copied")
+          : done === "selected"
+            ? tr(`Označeno, pritisni ${copyKeys()}`, `Selected, press ${copyKeys()}`)
+            : tr("Kopiraj", "Copy")}
       </button>
     </pre>
   );

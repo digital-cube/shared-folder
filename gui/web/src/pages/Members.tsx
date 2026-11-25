@@ -16,6 +16,7 @@ import {
   type MemberDeviceRow,
 } from "../../../shared/actions";
 import { useApp } from "../App";
+import { copyText } from "../clipboard";
 import { AddMember, Confirm, Modal } from "../dialogs";
 import { ago, joinCommand, stamp } from "../format";
 import { useTr } from "../i18n";
@@ -123,11 +124,10 @@ export function Members() {
   };
 
   const copy = async (text: string, what: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(text)) {
       setCopied(what);
       setTimeout(() => setCopied(null), 1500);
-    } catch {
+    } else {
       toast({ title: tr("Kopiranje nije uspelo; označi tekst i kopiraj ga ručno.", "Copying failed; select the text and copy it by hand."), variant: "warning" });
     }
   };

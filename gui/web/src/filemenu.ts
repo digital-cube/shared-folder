@@ -4,15 +4,13 @@
 import type { Row } from "@jsudc/core";
 import { fileKind, type FileKind } from "./filekind";
 import { tr } from "./lang";
-import { previewKind } from "./preview";
 
 export type MenuAction = "open" | "info" | "view" | "download" | "rename" | "remove";
 
 export interface MenuItem {
   action: MenuAction;
   label: string;
-  /** Shown, but not to be chosen; `hint` says why. */
-  disabled?: boolean;
+  /** The item's title (a tooltip): what else to know about it. */
   hint?: string;
   danger?: boolean;
   /** A line above the item. */
@@ -48,17 +46,11 @@ function allItems(row: Row): MenuItem[] {
       },
     ];
   }
-  const view = previewKind(name, str(row.kind));
+  // Prikaži is always there: for a file with no preview the dialog shows its
+  // data and Preuzmi, the same as a click on its name in the table.
   return [
     { action: "info", label: tr("Informacije", "Info") },
-    view === "none"
-      ? {
-          action: "view",
-          label: tr("Prikaži", "View"),
-          disabled: true,
-          hint: tr("Za ovaj tip fajla nema pregleda; preuzmi ga.", "There is no preview for this type of file; download it."),
-        }
-      : { action: "view", label: tr("Prikaži", "View") },
+    { action: "view", label: tr("Prikaži", "View") },
     { action: "download", label: tr("Preuzmi", "Download") },
     { action: "rename", label: tr("Preimenuj", "Rename"), separator: true },
     { action: "remove", label: tr("Obriši", "Delete"), danger: true },
