@@ -209,9 +209,38 @@ ispod, ostala je kao skrivena opcija.
   (vraća se karticom **Trash**), a svi uređaji foldera dobiju događaj i
   urade isto. Preimenovanje menja samo ime u istom folderu (bez `/` i `\`);
   zauzeto ime je `dest_exists`. Nema upload-a.
+- **Izbor više redova i Obriši** (TCKKWCK3YE, samo admin). Izbor i traka su
+  jsudc-ovi: view `files` ima `bulk_actions` (`remove`, „Obriši“), pa Tabela
+  dobija kolonu sa checkbox-ima, checkbox u zaglavlju (učitani redovi),
+  shift-klik za opseg, i traku iznad liste (broj izabranih, **Obriši**,
+  poništi izbor, „Izaberi sve N koji odgovaraju“ kad ima više redova nego
+  što je učitano). U Mreži svaka pločica ima checkbox u gornjem levom uglu
+  (vidi se na prelaz mišem/fokus i uvek dok je nešto izabrano; shift-klik
+  bira opseg po redosledu pločica), Ctrl/Cmd+klik na pločicu menja njen
+  izbor, Ctrl/Cmd+A u mreži bira sve učitane pločice, Esc briše izbor.
+  Običan klik i Enter rade kao ranije (pregled, ulazak u folder). Izbor je
+  jedan za oba prikaza (prelazak Tabela ↔ Mreža ga čuva); briše se kad se
+  promeni pretraga, čip ili folder. **Obriši** otvara dijalog („Obriši N
+  stavki“, koliko fajlova i foldera), pa host akciju `shfd.files_remove`
+  (do 500 stavki po pozivu; više ide u komadima): svaka stavka kao
+  pojedinačno brisanje (`delete` sa `base_hash`, `rmdir` samo za prazan
+  folder), redom, a svi uređaji dobiju događaj. Stavka koju shfd odbije
+  (izmenjena verzija, folder nije prazan) ostaje u dijalogu sa porukom,
+  ostale se brišu; istekla sesija ili shfd koji ne odgovara prekidaju
+  poziv. Rezime stiže kao toast.
+- **Red `..` se ne bira.** Nema checkbox, ne ulazi u „izaberi stranu“ ni u
+  broj, i nikad ne stiže do servera (omotač izbora u `web/src/bulk.ts`).
+  **Ograničenje:** pošto `..` nikad nije izabran, jsudc u podfolderu ne
+  vidi stranu kao celu izabranu, pa tamo ne nudi „Izaberi sve N koji
+  odgovaraju“ (u korenu nudi). Zaobilaženje: skrolovanjem se učita ceo
+  folder, pa checkbox u zaglavlju bira sve. Trajno rešenje je u jsudc-u
+  (red koji se ne može izabrati).
 - Kartica **Trash**: lista iz postojećeg `GET …/admin/trash` (putanja, razlog,
   ko, kad, veličina) i akcija **Vrati** (`POST …/trash/{id}/restore`), uz
-  poruku koju API vrati (npr. `.restored-…` ime). **Purge nije u v1**, jer
+  poruku koju API vrati (npr. `.restored-…` ime). Više unosa se bira kao u
+  Tabeli Fajlova i vraća dugmetom **Vrati** na traci (`shfd.trash_restore_many`,
+  bez potvrde); banner kaže koliko je vraćeno, koliko pod imenom
+  `.restored-…` i koliko nije moglo. **Purge nije u v1**, jer
   nepovratno briše.
 
 ### Instalacija
@@ -653,6 +682,7 @@ Kad svi članovi pređu na naloge (spec §8, korak 5), postavi
 | Članovi, Logovi, Trash | da | ne | ne |
 | Fajlovi: pregled, preuzimanje, sličice | da | da | ne |
 | Fajlovi: preimenovanje i brisanje | da | ne | ne |
+| Fajlovi: izbor više redova, bulk brisanje; Trash: vraćanje više unosa | da | ne (nema izbora) | ne |
 | Moji folderi, Moj nalog | da | da | da |
 | Instalacija | da | da | da |
 
@@ -747,3 +777,10 @@ u `server/src/csrf.ts`, a testovi su u `server/test/accounts.test.ts`.
 
 Nove jsudc akcije: `shfd.member_add_account`, `shfd.users_search`,
 `shfd.member_devices`, `shfd.member_device_revoke`.
+
+Bulk akcije Fajlova i Trash-a (samo admin; `POST <base>/udc/<akcija>`):
+
+| Akcija | Zahtev → odgovor |
+|---|---|
+| `shfd.files_remove` | `{items: [{path, kind: "file"\|"dir", base_hash}]}` (1–500) → `{removed, unchanged, failed: [{path, message}], message}` |
+| `shfd.trash_restore_many` | `{ids: string[]}` (1–500) → `{restored, renamed, unchanged, failed: [{id, message}], message}` |

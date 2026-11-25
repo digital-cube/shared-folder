@@ -424,6 +424,10 @@ const filesView = ViewConfigSchema.parse({
   // A select chip offers only the options listed here (jsudc reads no
   // distinct values): the extensions the type icons know.
   filters: [{ field: "ext", kind: "select", label: "Ekstenzija", options: knownExtensions() }],
+  // The selection and its bar are jsudc's; the GUI runs the action (Files.tsx).
+  // "remove", not "delete": delete is jsudc's built-in mutate_many path, and
+  // this source is read-only.
+  bulk_actions: [{ kind: "remove", label: "Obriši", icon: "lucide:trash-2", variant: "destructive" }],
 });
 
 const trashSchema = SchemaDocSchema.parse({
@@ -454,6 +458,7 @@ const trashView = ViewConfigSchema.parse({
   ],
   search: { fields: ["orig_path", "by"] },
   row_action_defs: [{ kind: "restore", label: "Vrati" }],
+  bulk_actions: [{ kind: "restore", label: "Vrati", icon: "lucide:undo-2" }],
 });
 
 export function buildRegistry(shfd: ShfdClient, feed: LogFeed, onRefused: OnRefused = () => {}): CollectionRegistry {

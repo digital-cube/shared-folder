@@ -20,7 +20,9 @@ import {
 } from "@jsudc/react";
 import { Pager, tableRenderer } from "@jsudc/react/table";
 import { LayoutGrid } from "lucide-react";
-import { useEffect, useRef, type CSSProperties, type KeyboardEvent } from "react";
+import type { RowSelection } from "@jsudc/react";
+import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
+import { rangeIds, selectableOnly, UP_ID } from "./bulk";
 import type React from "react";
 import { useAppMaybe } from "./App";
 import { bytes } from "./format";
@@ -57,6 +59,19 @@ function shortDate(ts: unknown): string {
 // the new listing, so Enter, Enter, … walks down a tree without the mouse.
 let focusAfterOpen = false;
 
+/**
+ * The view's selection without the ".." row (bulk.ts), for the table and
+ * the Grid alike; undefined while the view does not select (a member who
+ * is not an admin).
+ */
+function useSelection(props: RendererProps): RowSelection | undefined {
+  const { selection, data } = props;
+  return useMemo(() => (selection ? selectableOnly(selection, data.rows) : undefined), [selection, data.rows]);
+}
+
+/** Is a dialog or the context menu open? Then Esc is theirs, not the selection's. */
+const overlayOpen = () => document.querySelector(".modal-back, .ctx-menu, [role='dialog']") !== null;
+
 /** The live list polls for pending thumbnails, paused with the rest of "uživo". */
 function useLive(props: RendererProps) {
   const app = useAppMaybe();
@@ -65,6 +80,7 @@ function useLive(props: RendererProps) {
 
 function ThumbGrid(props: RendererProps) {
   const { data, folder, mode, collection } = props;
+  const selection = useSelection(props);
   const size = useThumbSize();
   const { t, intlLocale } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -111,9 +127,44 @@ function ThumbGrid(props: RendererProps) {
   const compact = size < THUMB_COMPACT_BELOW;
   const style = { "--thumb": `${size}px` } as CSSProperties;
 
+  // The anchor of a shift-click range: the tile toggled last. The range is
+  // over the tiles as drawn (gridOrder), not over the list's order.
+  const anchor = useRef<string | null>(null);
+  useEffect(() => {
+    anchor.current = null;
+  }, [props.resetKey]);
+  const toggle = (id: string, range: boolean) => {
+    if (!selection || id === UP_ID) return;
+    if (range && selection.mode === "ids" && anchor.current !== null) {
+      const span = rangeIds(rows, anchor.current, id);
+      const on = selection.isSelected(anchor.current);
+      const ids = new Set(selection.ids);
+      for (const x of span) {
+        if (on) ids.add(x);
+        else ids.delete(x);
+      }
+      selection.setIds([...ids]);
+      return;
+    }
+    selection.toggle(id, { range });
+    anchor.current = id;
+  };
+  const onGridKeyDown = (e: KeyboardEvent) => {
+    if (!selection) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a") {
+      // Every loaded tile, ".." left out (selectableOnly).
+      e.preventDefault();
+      selection.setPage(true);
+    } else if (e.key === "Escape" && !selection.isEmpty && !overlayOpen()) {
+      e.preventDefault();
+      selection.clear();
+      anchor.current = null;
+    }
+  };
+
   return (
     <div className="tgrid-frame">
-      <div className="tgrid-scroll" ref={scrollRef} data-testid="thumb-grid">
+      <div className="tgrid-scroll" ref={scrollRef} data-testid="thumb-grid" onKeyDown={onGridKeyDown}>
         {data.isFetching && !data.isLoading && !isFetchingNextPage ? <div className="tgrid-busy" aria-hidden /> : null}
         {loading ? (
           <div className="tgrid" style={style} aria-busy="true">
@@ -128,9 +179,24 @@ function ThumbGrid(props: RendererProps) {
         {showError && data.error ? <ErrorState error={data.error} onRetry={data.refetch} /> : null}
         {showEmpty ? <EmptyState collection={collection} filtered={props.filtered} onClear={props.onClearFilters} /> : null}
         {rows.length > 0 ? (
-          <div className="tgrid" style={style} data-compact={compact || undefined} role="list">
+          <div
+            className="tgrid"
+            style={style}
+            data-compact={compact || undefined}
+            data-selecting={selection ? (selection.isEmpty ? "idle" : "on") : undefined}
+            role="list"
+          >
             {rows.map((row) => (
-              <Tile key={row.__meta.id} row={row} px={size} dir={isDir(row)} folder={folder} compact={compact} />
+              <Tile
+                key={row.__meta.id}
+                row={row}
+                px={size}
+                dir={isDir(row)}
+                folder={folder}
+                compact={compact}
+                selected={selection ? selection.isSelected(String(row.__meta.id)) : undefined}
+                onToggle={selection ? (range) => toggle(String(row.__meta.id), range) : undefined}
+              />
             ))}
           </div>
         ) : null}
@@ -152,9 +218,23 @@ function ThumbGrid(props: RendererProps) {
   );
 }
 
-function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: boolean; folder?: FolderNav; compact: boolean }) {
+interface TileProps {
+  row: Row;
+  px: number;
+  dir: boolean;
+  folder?: FolderNav;
+  compact: boolean;
+  /** Set while the view selects: is this tile selected? */
+  selected?: boolean;
+  /** Flips the tile's selection; `range` from the last one toggled (shift). */
+  onToggle?: (range: boolean) => void;
+}
+
+function Tile({ row, px, dir, folder, compact, selected, onToggle }: TileProps) {
   const name = String(row.name ?? "");
   const up = dir && name === "..";
+  const { t } = useI18n();
+  const selectable = !!onToggle && !up;
   const path = folder ? String(row[folder.options.path_field] ?? "") : String(row.path ?? "");
   const preview = usePreview();
   const menu = useFileMenu();
@@ -171,6 +251,15 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
       open();
     }
   };
+  const onClick = (e: MouseEvent) => {
+    // Ctrl/Cmd+click selects; a plain click opens, as before.
+    if (selectable && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      onToggle(false);
+      return;
+    }
+    open?.();
+  };
   const tr = useTr();
   const meta = up ? tr("Nazad", "Back") : dir ? "Folder" : [bytes(row.size as number | null), shortDate(row.mtime)].filter(Boolean).join(" · ");
   return (
@@ -182,7 +271,8 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
       aria-label={up ? tr("Gornji folder", "Parent folder") : dir ? `Folder ${name}` : name}
       data-testid={dir ? "tile-folder" : "tile-file"}
       data-path={path}
-      onClick={open}
+      data-selected={selectable && selected ? "true" : undefined}
+      onClick={onClick}
       onKeyDown={onKeyDown}
       onContextMenu={
         menu && !up
@@ -193,6 +283,23 @@ function Tile({ row, px, dir, folder, compact }: { row: Row; px: number; dir: bo
           : undefined
       }
     >
+      {selectable ? (
+        <input
+          type="checkbox"
+          className="tile-check"
+          aria-label={t("APP", "SELECT_ROW")}
+          checked={!!selected}
+          onChange={() => {}}
+          onClick={(e) => {
+            // The checkbox selects; it never opens the preview or the folder.
+            e.stopPropagation();
+            onToggle(e.shiftKey);
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          data-testid="tile-select"
+        />
+      ) : null}
       <Thumb row={row} px={px} />
       <span className="tile-name">{name}</span>
       {compact ? null : <span className="tile-meta">{meta}</span>}
@@ -261,9 +368,10 @@ function LiveTable(props: RendererProps) {
   useLive(props);
   const menu = useFileMenu();
   const onMenu = tableContextMenu(props, menu);
+  const selection = useSelection(props);
   return (
     <div className="ctx-scope" onContextMenu={onMenu} onKeyDown={onMenu}>
-      <Table {...props} />
+      <Table {...props} {...(selection ? { selection } : {})} />
     </div>
   );
 }

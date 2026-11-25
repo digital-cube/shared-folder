@@ -3,6 +3,7 @@
 
 import { defineHostAction } from "@jsudc/core";
 import { z } from "zod";
+import { BULK_MAX } from "./bulk.js";
 
 const member = z.object({ username: z.string().min(1) });
 
@@ -42,6 +43,23 @@ export const restoreTrash = defineHostAction({
   name: "shfd.trash_restore",
   request: z.object({ id: z.string().min(1) }),
   response: z.object({ path: z.string(), status: z.string(), renamed: z.boolean(), message: z.string() }),
+});
+
+/**
+ * Several trash entries restored in one call, each as shfd.trash_restore
+ * would; an entry refused goes to failed and the rest go on. The trash and
+ * the files are reported changed once, at the end.
+ */
+export const restoreTrashMany = defineHostAction({
+  name: "shfd.trash_restore_many",
+  request: z.object({ ids: z.array(z.string().min(1)).min(1).max(BULK_MAX) }),
+  response: z.object({
+    restored: z.number(),
+    renamed: z.number(),
+    unchanged: z.number(),
+    failed: z.array(z.object({ id: z.string(), message: z.string() })),
+    message: z.string(),
+  }),
 });
 
 /** What the header, the sidebar and the log tiles show. */
@@ -91,6 +109,27 @@ export const removeFile = defineHostAction({
   name: "shfd.file_remove",
   request: z.object({ path: z.string().min(1), kind: z.enum(["file", "dir"]), base_hash: z.string() }),
   response: z.object({ path: z.string(), status: z.string(), message: z.string() }),
+});
+
+const removeItem = z.object({ path: z.string().min(1), kind: z.enum(["file", "dir"]), base_hash: z.string() });
+export type RemoveItem = z.infer<typeof removeItem>;
+
+/**
+ * Several files and folders removed in one call (the selection of the Files
+ * page): each, in order, as shfd.file_remove would. An item shfd refuses (a
+ * version changed since, a folder not empty) goes to failed and the rest go
+ * on; a dead session or an unreachable shfd ends the call. Every device is
+ * told once, at the end.
+ */
+export const removeFiles = defineHostAction({
+  name: "shfd.files_remove",
+  request: z.object({ items: z.array(removeItem).min(1).max(BULK_MAX) }),
+  response: z.object({
+    removed: z.number(),
+    unchanged: z.number(),
+    failed: z.array(z.object({ path: z.string(), message: z.string() })),
+    message: z.string(),
+  }),
 });
 
 /** An account added to the folder as a member (admin/members {user, admin}); no token. */

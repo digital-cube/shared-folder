@@ -24,12 +24,15 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { removeFile, renameFile } from "../../shared/actions";
+import { removeFile, removeFiles, renameFile } from "../../shared/actions";
+import { srPlural } from "../../shared/bulk";
+import { inChunks, removeItems, removeOrder, sumRemove } from "./bulk";
 import { Modal } from "./dialogs";
 import { useFieldProblem } from "./fieldProblem";
 import { renameProblem } from "./forms";
 import { FileMeta, FilePreview, PreviewContext } from "./FilePreview";
 import { useTr } from "./i18n";
+import { getLang } from "./lang";
 import { menuItems, placeMenu, stemRange, type MenuAction } from "./filemenu";
 import { Download, Eye, FolderOpen, Info, Pencil, Trash2 } from "./icons";
 import { messageOf } from "./pages/Members";
@@ -420,6 +423,106 @@ function RemoveDialog({ row, onClose }: { row: Row; onClose: () => void }) {
         >
           <Trash2 size={14} /> {busy ? tr("Brišem…", "Deleting…") : tr("Obriši", "Delete")}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * "Obriši N stavki": the confirmation of the Files page's bulk Obriši (the
+ * bar's button, jsudc's BulkBar). The rows come resolved (`bulk.ts`
+ * selectedRows: never ".."); the call goes in chunks of shfd.files_remove.
+ * A partial failure stays here, item by item; the selection is cleared
+ * either way (the removed rows are gone).
+ */
+export function BulkRemoveDialog({ rows, onDone, onClose }: { rows: readonly Row[] | null; onDone: () => void; onClose: () => void }) {
+  const client = useUdcClient();
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState<{ path: string; message: string }[] | null>(null);
+  const tr = useTr();
+  const close = useCallback(() => {
+    if (!busy) onClose();
+  }, [busy, onClose]);
+  useEscape(close);
+  const dirs = rows ? rows.filter((r) => r.kind === "dir").length : 0;
+  const files = rows ? rows.length - dirs : 0;
+  const n = rows?.length ?? 0;
+  const count = (k: number, sr: [string, string, string], en: [string, string]) =>
+    `${k} ${tr(srPlural(k, ...sr), k === 1 ? en[0] : en[1])}`;
+  const title =
+    failed !== null
+      ? tr("Nije sve obrisano", "Not everything was deleted")
+      : rows === null
+        ? tr("Obriši izabrano", "Delete the selection")
+        : tr(`Obriši ${n} ${srPlural(n, "stavku", "stavke", "stavki")}`, `Delete ${n} ${n === 1 ? "item" : "items"}`);
+
+  const run = async () => {
+    if (!rows || busy) return;
+    setBusy(true);
+    setError(null);
+    const { parts, error: err } = await inChunks(removeOrder(removeItems(rows)), (items) => client.call(removeFiles, { items }));
+    const sum = sumRemove(parts, getLang());
+    setBusy(false);
+    void qc.invalidateQueries();
+    if (parts.length > 0) {
+      onDone();
+      toast({ title: sum.message, variant: sum.failed.length > 0 || err ? "warning" : "success" });
+    }
+    if (err) setError(messageOf(err));
+    if (sum.failed.length > 0) setFailed(sum.failed);
+    else if (!err) onClose();
+  };
+
+  return (
+    <Modal title={title} onClose={close}>
+      {failed !== null ? (
+        <>
+          <p>
+            {tr(
+              "Ove stavke nisu obrisane; ostale jesu. Fajl izmenjen u međuvremenu obriši ponovo kad se lista osveži; folder prvo isprazni.",
+              "These items were not deleted; the rest were. Delete a file changed meanwhile again once the list refreshes; empty a folder first.",
+            )}
+          </p>
+          <ul className="bulk-failed" data-testid="bulk-failed">
+            {failed.map((f) => (
+              <li key={f.path}>
+                <code>{f.path}</code>: {f.message}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : rows === null ? (
+        <p>{tr("Skupljam izabrane stavke…", "Collecting the selected items…")}</p>
+      ) : (
+        <p data-testid="bulk-remove-text">
+          {tr("Briše se", "Deleting")} {count(files, ["fajl", "fajla", "fajlova"], ["file", "files"])} {tr("i", "and")}{" "}
+          {count(dirs, ["folder", "foldera", "foldera"], ["folder", "folders"])}{" "}
+          {tr("sa svih uređaja foldera. Fajlovi idu u Trash, odakle se mogu vratiti. Briše se samo prazan folder.", "from every device of the folder. Files go to the Trash, where they can be restored from. Only an empty folder is deleted.")}
+        </p>
+      )}
+      {error ? (
+        <div className="err-text" role="alert">
+          {error}
+        </div>
+      ) : null}
+      <div className="row">
+        {failed !== null ? (
+          <button className="btn primary" autoFocus onClick={onClose} data-testid="bulk-remove-close">
+            {tr("Zatvori", "Close")}
+          </button>
+        ) : (
+          <>
+            <button className="btn" onClick={close} disabled={busy}>
+              {tr("Otkaži", "Cancel")}
+            </button>
+            <button className="btn danger" autoFocus disabled={busy || !rows || n === 0} data-testid="bulk-remove-confirm" onClick={run}>
+              <Trash2 size={14} /> {busy ? tr("Brišem…", "Deleting…") : tr("Obriši", "Delete")}
+            </button>
+          </>
+        )}
       </div>
     </Modal>
   );

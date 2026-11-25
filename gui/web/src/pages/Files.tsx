@@ -7,14 +7,17 @@ import {
   type UrlStateAdapter,
 } from "@jsudc/react";
 import { useQueryClient } from "@tanstack/react-query";
+import type { Row } from "@jsudc/core";
 import { useMemo, useState } from "react";
-import { restoreTrash } from "../../../shared/actions";
+import { restoreTrash, restoreTrashMany } from "../../../shared/actions";
+import { inChunks, selectedRows, sumRestore } from "../bulk";
+import { getLang } from "../lang";
 import { isAdmin } from "../access";
 import { useApp } from "../App";
 import { useTr } from "../i18n";
 import { Folder, Trash2, X } from "../icons";
 import { messageOf } from "./Members";
-import { FileActionsProvider } from "../FileMenu";
+import { BulkRemoveDialog, FileActionsProvider } from "../FileMenu";
 import { filesTableRenderer, thumbsRenderer } from "../ThumbGrid";
 import { savedFilesTab, saveFilesTab } from "../thumbsize";
 
@@ -52,11 +55,52 @@ export function Files() {
   // A member who is not an admin browses and downloads: no Trash, no rename or delete.
   const admin = isAdmin(me);
 
-  const actions = {
-    restore: async ({ row }: BulkActionContext) => {
+  // Obriši of the Files bar: our confirmation, over the rows the selection
+  // stands for (resolved while the dialog is open; ".." never among them).
+  const [removing, setRemoving] = useState<{ rows: Row[] | null; clear: () => void } | null>(null);
+  const filesActions = useMemo(
+    () => ({
+      remove: async (ctx: BulkActionContext) => {
+        if (!ctx.filter) {
+          setRemoving({ rows: await selectedRows(client, ctx), clear: ctx.clearSelection });
+          return;
+        }
+        setRemoving({ rows: null, clear: ctx.clearSelection });
+        try {
+          const rows = await selectedRows(client, ctx);
+          setRemoving((r) => (r ? { ...r, rows } : r));
+        } catch (err) {
+          setRemoving(null);
+          throw err;
+        }
+      },
+    }),
+    [client],
+  );
+
+  // Vrati: a row's action (one entry, as before) or the bar's (the selection).
+  const trashActions = {
+    restore: async (ctx: BulkActionContext) => {
+      const { row } = ctx;
+      if (row) {
+        try {
+          const r = await client.call(restoreTrash, { id: String(row.__meta.id) });
+          setBanner({ ok: true, text: r.message });
+        } catch (err) {
+          setBanner({ ok: false, text: messageOf(err) });
+        } finally {
+          void qc.invalidateQueries();
+        }
+        return;
+      }
       try {
-        const r = await client.call(restoreTrash, { id: String(row?.__meta.id ?? "") });
-        setBanner({ ok: true, text: r.message });
+        const ids = (await selectedRows(client, ctx)).map((r) => String(r.__meta.id));
+        const { parts, error } = await inChunks(ids, (chunk) => client.call(restoreTrashMany, { ids: chunk }));
+        const sum = sumRestore(parts, getLang());
+        if (parts.length > 0) ctx.clearSelection();
+        const failed = sum.failed.length > 0 ? ` ${sum.failed.map((f) => f.message).filter((m, i, a) => a.indexOf(m) === i).join(" ")}` : "";
+        const text = parts.length > 0 ? sum.message + failed : "";
+        setBanner(error ? { ok: false, text: [text, messageOf(error)].filter(Boolean).join(" ") } : { ok: sum.failed.length === 0, text });
       } catch (err) {
         setBanner({ ok: false, text: messageOf(err) });
       } finally {
@@ -104,6 +148,9 @@ export function Files() {
           </button>
         </div>
       ) : null}
+      {removing ? (
+        <BulkRemoveDialog rows={removing.rows} onDone={removing.clear} onClose={() => setRemoving(null)} />
+      ) : null}
       {tab === "files" || !admin ? (
         <div className="view-card files-view">
           <FileActionsProvider canEdit={admin}>
@@ -113,6 +160,8 @@ export function Files() {
               urlState={filesState}
               chrome={FILES_CHROME}
               renderers={FILES_RENDERERS}
+              selectable={admin}
+              actions={filesActions}
             />
           </FileActionsProvider>
         </div>
@@ -127,7 +176,7 @@ export function Files() {
             <code>.restored-…</code>. {tr("Trajno brisanje (purge) nije u GUI-ju.", "Permanent deletion (purge) is not in the GUI.")}
           </p>
           <div className="view-card">
-            <UdcDataView key="trash" collection="trash" urlState="memory" chrome="embedded" actions={actions} />
+            <UdcDataView key="trash" collection="trash" urlState="memory" chrome="embedded" actions={trashActions} />
           </div>
         </>
       )}

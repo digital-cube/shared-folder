@@ -1,6 +1,6 @@
 // A fake shfd for tests: just enough of the HTTP API, behind a fetch.
 
-import type { Device, FileEntry, LogLine, MemberDevice, MemberInfo } from "../src/shfd.js";
+import type { Device, FileEntry, LogLine, MemberDevice, MemberInfo, TrashEntry } from "../src/shfd.js";
 
 export interface FakeMember extends MemberInfo {
   token: string;
@@ -53,6 +53,9 @@ export class FakeShfd {
       { path: "docs/plan.md", name: "plan.md", kind: "file", size: 7, mtime: "2026-11-24T10:00:00Z", hash: "bb".repeat(32), seq: 3, updated_by: "ana", thumb: "" },
     ],
   };
+  /** The trash: a deleted file lands here, with the file's entry to restore. */
+  trash: (TrashEntry & { file: FileEntry })[] = [];
+  private trashId = 0;
   /** Thumbnails by content hash; every size gets the same bytes. */
   thumbs = new Map<string, Uint8Array>();
   /** File contents by path; a function makes the body (a stream, say). */
@@ -380,6 +383,7 @@ export class FakeShfd {
     if (cur.hash !== req.base_hash) return err(409, "stale_base");
     if (req.op === "delete") {
       list.splice(i, 1);
+      this.trash.push({ id: ++this.trashId, orig_path: cur.path, hash: cur.hash, size: cur.size, reason: "deleted", by: "ana", at: "2026-11-24T11:00:00Z", file: cur });
       return json(200, { status: "applied", path: req.path, events: [], head: 4 });
     }
     const to = req.new_path ?? "";
@@ -555,7 +559,24 @@ export class FakeShfd {
       }
       return new Response(c, { status: 200, headers: { ...headers, "content-length": String(c.length) } });
     }
-    if (rest === "trash") return json(200, { entries: [], count: 0, total_size: 0 });
+    if (rest === "trash") {
+      const entries = this.trash.map(({ file: _f, ...t }) => t);
+      return json(200, { entries, count: entries.length, total_size: entries.reduce((n, t) => n + t.size, 0) });
+    }
+    const rs = /^trash\/(\d+)\/restore$/.exec(rest);
+    if (rs && method === "POST") {
+      // As shfd: back at the old path; the same content there is unchanged,
+      // other content there gives the file a .restored-<id> name.
+      const k = this.trash.findIndex((t) => t.id === Number(rs[1]));
+      if (k < 0) return err(404, "not_found");
+      const t = this.trash[k];
+      const [list, i] = this.find(t.orig_path);
+      if (i >= 0 && list[i].hash === t.hash) return json(200, { trash_id: t.id, status: "unchanged", path: t.orig_path });
+      this.trash.splice(k, 1);
+      const path = i >= 0 ? `${t.orig_path}.restored-${t.id}` : t.orig_path;
+      list.push({ ...t.file, path, name: path.split("/").pop()! });
+      return json(200, { trash_id: t.id, status: "applied", path, renamed: i >= 0 });
+    }
     return err(404, "not_found");
   };
 }

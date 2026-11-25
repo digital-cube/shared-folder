@@ -186,6 +186,171 @@ describe("collections and actions", () => {
     const ov = await udc(app, cookie, "shfd.overview", {});
     expect(ov.payload).toMatchObject({ version: "abc1234", server_ok: true, head: 3, members: 2, connected: 0 });
   });
+
+  it("files and trash offer their bulk actions in describe", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const files = await udc(app, cookie, "describe", { collection: "files" });
+    const trash = await udc(app, cookie, "describe", { collection: "trash" });
+    const views = { files: files.payload.view, trash: trash.payload.view };
+    expect(views.files.bulk_actions).toEqual([{ kind: "remove", label: "Obriši", icon: "lucide:trash-2", variant: "destructive" }]);
+    expect(views.trash.bulk_actions).toEqual([{ kind: "restore", label: "Vrati", icon: "lucide:undo-2" }]);
+  });
+});
+
+describe("bulk actions", () => {
+  const A = "aa".repeat(32);
+  const B = "bb".repeat(32);
+  const C = "cc".repeat(32);
+  const more = (fake: FakeShfd) => {
+    fake.files[""].push(
+      { path: "b.txt", name: "b.txt", kind: "file", size: 1, mtime: null, hash: C, seq: 4, updated_by: "ana", thumb: "" },
+      { path: "prazan", name: "prazan", kind: "dir", size: 0, mtime: null, hash: "", seq: 5, updated_by: "ana", thumb: "" },
+    );
+    fake.files.prazan = [];
+  };
+
+  it("files_remove: everything, in one call, in order; files land in the trash", async () => {
+    const { fake, app } = await setup();
+    more(fake);
+    const { cookie } = await login(app, fake.members[0].token);
+    const r = await udc(app, cookie, "shfd.files_remove", {
+      items: [
+        { path: "a.txt", kind: "file", base_hash: A },
+        { path: "docs/plan.md", kind: "file", base_hash: B },
+        { path: "docs", kind: "dir", base_hash: "" },
+        { path: "prazan", kind: "dir", base_hash: "" },
+      ],
+    });
+    expect(r.kind).toBe("udc.shfd.files_remove.ok");
+    expect(r.payload).toEqual({ removed: 4, unchanged: 0, failed: [], message: "Obrisano: 4 stavke; fajlovi se mogu vratiti iz Trash-a." });
+    expect(fake.ops).toEqual([
+      { op: "delete", path: "a.txt", base_hash: A },
+      { op: "delete", path: "docs/plan.md", base_hash: B },
+      { op: "rmdir", path: "docs" },
+      { op: "rmdir", path: "prazan" },
+    ]);
+    expect(fake.files[""].map((f) => f.name)).toEqual(["b.txt"]);
+    const trash = await udc(app, cookie, "list", { collection: "trash" });
+    expect(trash.payload.rows.map((t: any) => t.orig_path).sort()).toEqual(["a.txt", "docs/plan.md"]);
+  });
+
+  it("files_remove: a changed version and a full folder fail on their own; the rest are removed", async () => {
+    const { fake, app } = await setup();
+    more(fake);
+    const { cookie } = await login(app, fake.members[0].token);
+    const r = await udc(app, cookie, "shfd.files_remove", {
+      items: [
+        { path: "a.txt", kind: "file", base_hash: "00".repeat(32) },
+        { path: "docs", kind: "dir", base_hash: "" },
+        { path: "b.txt", kind: "file", base_hash: C },
+        { path: "prazan", kind: "dir", base_hash: "" },
+        { path: "nema.txt", kind: "file", base_hash: A },
+      ],
+    });
+    expect(r.kind).toBe("udc.shfd.files_remove.ok");
+    expect(r.payload.removed).toBe(2);
+    expect(r.payload.unchanged).toBe(1);
+    expect(r.payload.failed).toEqual([
+      { path: "a.txt", message: expect.stringMatching(/u međuvremenu izmenjen/) },
+      { path: "docs", message: "Folder nije prazan; prvo obriši fajlove u njemu." },
+    ]);
+    expect(r.payload.message).toBe("Obrisano 3 od 5 (1 već nije postojalo); 2 nije moglo.");
+    expect(fake.ops.map((o) => `${o.op} ${o.path}`)).toEqual(["delete a.txt", "rmdir docs", "delete b.txt", "rmdir prazan", "delete nema.txt"]);
+    expect(fake.files[""].map((f) => f.name)).toEqual(["docs", "a.txt"]);
+  });
+
+  it("files_remove answers in the session's language", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const res = await app.inject({
+      method: "POST",
+      url: "/gui/udc/shfd.files_remove",
+      payload: { items: [{ path: "a.txt", kind: "file", base_hash: A }, { path: "docs", kind: "dir", base_hash: "" }] },
+      headers: { cookie, "x-shfd-lang": "en" },
+    });
+    const r = res.json();
+    expect(r.payload.message).toBe("Deleted 1 of 2; 1 could not be.");
+    expect(r.payload.failed[0].message).not.toMatch(/prazan/);
+  });
+
+  it("files_remove: more than 500 items, or none, is a validation error; no op", async () => {
+    const { fake, app } = await setup();
+    const { cookie } = await login(app, fake.members[0].token);
+    const items = Array.from({ length: 501 }, (_, i) => ({ path: `f${i}.txt`, kind: "file", base_hash: A }));
+    const big = await udc(app, cookie, "shfd.files_remove", { items });
+    expect(big.kind).toBe("udc.shfd.files_remove.err");
+    expect(big.payload.code).toBe("validation_error");
+    const none = await udc(app, cookie, "shfd.files_remove", { items: [] });
+    expect(none.payload.code).toBe("validation_error");
+    expect(fake.ops).toEqual([]);
+  });
+
+  it("files_remove: without a session it is refused; no op", async () => {
+    const { fake, app } = await setup();
+    const r = await udc(app, "", "shfd.files_remove", { items: [{ path: "a.txt", kind: "file", base_hash: A }] });
+    expect(r.kind).toBe("udc.shfd.files_remove.err");
+    expect(fake.ops).toEqual([]);
+  });
+
+  it("files_remove: a member who is not an admin is refused (forbidden); no op", async () => {
+    const { fake, app } = await setup();
+    fake.user("bob", "bobova-lozinka-1");
+    fake.members = fake.members.filter((m) => m.username !== "bob");
+    fake.addAccountMember("bob", "member");
+    const res = await app.inject({ method: "POST", url: "/gui/api/auth/login", payload: { username: "bob", password: "bobova-lozinka-1" } });
+    const cookie = String(res.headers["set-cookie"] ?? "").split(";")[0];
+    const ch = await app.inject({ method: "POST", url: "/gui/api/folder", payload: { share_id: fake.share }, headers: { cookie } });
+    expect(ch.json().role).toBe("member");
+    const r = await udc(app, cookie, "shfd.files_remove", { items: [{ path: "a.txt", kind: "file", base_hash: A }] });
+    expect(r.kind).toBe("udc.shfd.files_remove.err");
+    expect(r.payload.code).toBe("forbidden");
+    expect(fake.ops).toEqual([]);
+  });
+
+  it("files_remove: a dead token ends the call and the session", async () => {
+    const { fake, app } = await setup();
+    more(fake);
+    const { cookie } = await login(app, fake.members[0].token);
+    fake.members[0].token = "shf_new";
+    const r = await udc(app, cookie, "shfd.files_remove", {
+      items: [
+        { path: "a.txt", kind: "file", base_hash: A },
+        { path: "b.txt", kind: "file", base_hash: C },
+      ],
+    });
+    expect(r.kind).toBe("udc.shfd.files_remove.err");
+    expect(r.payload.details.reason).toBe("unauthenticated");
+    expect(fake.ops).toEqual([]);
+    expect((await app.inject({ method: "GET", url: "/gui/api/session", headers: { cookie } })).statusCode).toBe(401);
+  });
+
+  it("trash_restore_many: restored, renamed, and an unknown id in failed", async () => {
+    const { fake, app } = await setup();
+    more(fake);
+    const { cookie } = await login(app, fake.members[0].token);
+    await udc(app, cookie, "shfd.files_remove", {
+      items: [
+        { path: "a.txt", kind: "file", base_hash: A },
+        { path: "b.txt", kind: "file", base_hash: C },
+      ],
+    });
+    const [ta, tb] = fake.trash.map((t) => String(t.id));
+    // Another a.txt meanwhile: the restored one gets a .restored- name.
+    fake.files[""].push({ path: "a.txt", name: "a.txt", kind: "file", size: 2, mtime: null, hash: "dd".repeat(32), seq: 9, updated_by: "bob", thumb: "" });
+    const r = await udc(app, cookie, "shfd.trash_restore_many", { ids: [ta, tb, "999"] });
+    expect(r.kind).toBe("udc.shfd.trash_restore_many.ok");
+    expect(r.payload.restored).toBe(2);
+    expect(r.payload.renamed).toBe(1);
+    expect(r.payload.unchanged).toBe(0);
+    expect(r.payload.failed).toEqual([{ id: "999", message: expect.any(String) }]);
+    expect(r.payload.message).toBe("Vraćeno: 2 stavke (1 pod imenom .restored-…); 1 nije moglo.");
+    expect(fake.files[""].map((f) => f.path).sort()).toEqual(["a.txt", `a.txt.restored-${ta}`, "b.txt", "docs", "prazan"]);
+    expect(fake.trash).toEqual([]);
+    const bad = await udc(app, cookie, "shfd.trash_restore_many", { ids: ["x"] });
+    expect(bad.payload.failed).toEqual([{ id: "x", message: "Neispravan unos trash-a." }]);
+  });
+
 });
 
 describe("change stream", () => {

@@ -53,6 +53,8 @@ export const messages: Messages = {
     EXT: t("Ekstenzija", "Extension"),
     SEARCH_PLACEHOLDER: t("Traži u folderu", "Search this folder"),
     EMPTY_PLAIN: t("Folder je prazan.", "The folder is empty."),
+    // the bulk action of the server's view (collections.ts)
+    ACTION_REMOVE: t("Obriši", "Delete"),
   },
   TBL_TRASH: {
     ORIG_PATH: t("Putanja", "Path"),

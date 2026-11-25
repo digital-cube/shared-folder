@@ -17,15 +17,19 @@ import {
   overview,
   reactivateMember,
   removeFile,
+  removeFiles,
   renameFile,
   resetToken,
   restoreTrash,
+  restoreTrashMany,
+  type RemoveItem,
   revokeMember,
   revokeMemberDevice,
   searchUsers,
   setRole,
   type MemberDeviceRow,
 } from "../../shared/actions.js";
+import { removeSummary, restoreSummary } from "../../shared/bulk.js";
 import { BASE_META, isShfdPath, normalizeBase } from "../../shared/base.js";
 import { renameTarget } from "../../shared/rename.js";
 import { registerAccountRoutes } from "./account.js";
@@ -140,6 +144,16 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       throw toUdcError(err, ctx.lang);
     }
   };
+  // An item of a bulk action that shfd refused on its own (a version
+  // changed since, a folder not empty, gone) is the item's failure; a dead
+  // session, a role taken away or an unreachable shfd ends the whole call,
+  // as guard does.
+  const itemRefused = (err: unknown, ctx: Ctx) => {
+    if (err instanceof UdcError) return;
+    if (err instanceof ShfdError && err.status !== 401 && err.status !== 403 && err.code !== "unreachable") return;
+    onRefused(err, ctx);
+    throw toUdcError(err, ctx.lang);
+  };
   const membersChanged = (ctx: Ctx) => changes.notify<Ctx>("members", { op: "update", ctx });
   // The GUI's own rule on top of shfd's: a member who is not an admin
   // browses and downloads, and changes nothing from here.
@@ -219,12 +233,12 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     if (username === ctx.member && ctx.kind === "token") sessions.dropToken(ctx.token);
     return { username, token: r.token };
   });
-  dispatcher.register(restoreTrash, async ({ id }, ctx: Ctx) => {
+  // One trash entry restored, and what to tell the user; shfd's refusal
+  // is thrown as it came (a ShfdError).
+  const restoreOne = async (id: string, ctx: Ctx) => {
     const n = Number(id);
     if (!Number.isInteger(n) || n <= 0) throw new UdcError("validation_error", tr(ctx.lang, "Neispravan unos trash-a.", "Invalid trash entry."));
-    const r = await guard(ctx, () => shfd.restore(ctx.token, ctx.shareId, n));
-    await changes.notify<Ctx>("trash", { op: "update", ctx });
-    await changes.notify<Ctx>("files", { op: "update", ctx });
+    const r = await shfd.restore(ctx.token, ctx.shareId, n);
     const l = ctx.lang;
     let message: string;
     if (r.status === "unchanged")
@@ -233,6 +247,39 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
       message = tr(l, `Putanja je zauzeta drugim sadržajem, pa je fajl vraćen kao ${r.path}.`, `The path holds other content, so the file was restored as ${r.path}.`);
     else message = tr(l, `Vraćeno u ${r.path}.`, `Restored to ${r.path}.`);
     return { path: r.path, status: r.status, renamed: !!r.renamed, message };
+  };
+  const trashChanged = async (ctx: Ctx) => {
+    await changes.notify<Ctx>("trash", { op: "update", ctx });
+    await changes.notify<Ctx>("files", { op: "update", ctx });
+  };
+  dispatcher.register(restoreTrash, async ({ id }, ctx: Ctx) => {
+    const r = await guard(ctx, () => restoreOne(id, ctx));
+    await trashChanged(ctx);
+    return r;
+  });
+  dispatcher.register(restoreTrashMany, async ({ ids }, ctx: Ctx) => {
+    let restored = 0;
+    let renamed = 0;
+    let unchanged = 0;
+    const failed: { id: string; message: string }[] = [];
+    try {
+      for (const id of ids) {
+        try {
+          const r = await restoreOne(id, ctx);
+          if (r.status === "unchanged") unchanged++;
+          else {
+            restored++;
+            if (r.renamed) renamed++;
+          }
+        } catch (err) {
+          itemRefused(err, ctx);
+          failed.push({ id, message: toUdcError(err, ctx.lang).message });
+        }
+      }
+    } finally {
+      if (restored + unchanged > 0) await trashChanged(ctx);
+    }
+    return { restored, renamed, unchanged, failed, message: restoreSummary(ctx.lang, { restored, renamed, unchanged, failed: failed.length }) };
   });
   // Rename and remove are ops of the sync protocol, made with the admin's
   // token like a device would: shfd checks the version (base_hash), sends a
@@ -250,11 +297,11 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     await filesChanged(ctx);
     return { path: r.path, status: r.status, message: tr(ctx.lang, `Preimenovano u ${r.path.split("/").pop()}.`, `Renamed to ${r.path.split("/").pop()}.`) };
   });
-  dispatcher.register(removeFile, async ({ path, kind, base_hash }, ctx: Ctx) => {
-    requireAdmin(ctx);
+  // One file deleted (to the trash) or one empty folder removed, as a
+  // device would; shfd's refusal is thrown as it came (a ShfdError).
+  const removeOne = async ({ path, kind, base_hash }: RemoveItem, ctx: Ctx) => {
     const req = kind === "dir" ? ({ op: "rmdir", path } as const) : ({ op: "delete", path, base_hash } as const);
-    const r = await guard(ctx, () => shfd.op(ctx.token, ctx.shareId, req));
-    await filesChanged(ctx);
+    const r = await shfd.op(ctx.token, ctx.shareId, req);
     const name = path.split("/").pop();
     const l = ctx.lang;
     let message: string;
@@ -262,6 +309,35 @@ export async function buildGui(o: AppOptions): Promise<GuiApp> {
     else if (kind === "dir") message = tr(l, `Folder ${name} je obrisan.`, `The folder ${name} was removed.`);
     else message = tr(l, `${name} je obrisan; može se vratiti iz Trash-a.`, `${name} was removed; it can be restored from the Trash.`);
     return { path: r.path, status: r.status, message };
+  };
+  dispatcher.register(removeFile, async (item, ctx: Ctx) => {
+    requireAdmin(ctx);
+    const r = await guard(ctx, () => removeOne(item, ctx));
+    await filesChanged(ctx);
+    return r;
+  });
+  dispatcher.register(removeFiles, async ({ items }, ctx: Ctx) => {
+    requireAdmin(ctx);
+    let removed = 0;
+    let unchanged = 0;
+    const failed: { path: string; message: string }[] = [];
+    try {
+      // In order, one at a time: the same rules as one delete each, and a
+      // folder listed after its files is empty by the time it comes.
+      for (const item of items) {
+        try {
+          const r = await removeOne(item, ctx);
+          if (r.status === "unchanged") unchanged++;
+          else removed++;
+        } catch (err) {
+          itemRefused(err, ctx);
+          failed.push({ path: item.path, message: toUdcError(err, ctx.lang).message });
+        }
+      }
+    } finally {
+      if (removed > 0) await filesChanged(ctx);
+    }
+    return { removed, unchanged, failed, message: removeSummary(ctx.lang, { removed, unchanged, failed: failed.length }) };
   });
   dispatcher.register(overview, async (_p, ctx: Ctx) => {
     if (ctx.role !== "admin") {
