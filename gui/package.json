@@ -15,9 +15,9 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@jsudc/core": "^0.8.0",
-    "@jsudc/react": "^0.8.0",
-    "@jsudc/server": "^0.8.0",
+    "@jsudc/core": "^0.8.1",
+    "@jsudc/react": "^0.8.1",
+    "@jsudc/server": "^0.9.0",
     "@tanstack/react-query": "^5.108.4",
     "@tanstack/react-table": "^8.21.3",
     "drizzle-orm": "^0.45.4",
